@@ -1,0 +1,38 @@
+.detail
+
+# Android Studio and local SDK configuration
+.idea/
+*.iml
+local.properties
+captures/
+
+# Gradle and Kotlin build state
+.gradle/
+.kotlin/
+**/build/
+
+# Native build intermediates
+**/.cxx/
+**/.externalNativeBuild/
+
+# Signing material must stay local
+*.jks
+*.keystore
+keystore.properties
+
+# Local API research notes
+docs/API.md
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
+
+# Cloudflare publisher tool and deployment state stay local
+**/node_modules/
+tool/update-publisher/
+
+# Local AI assistant workspace
+.agents/
+.codex/
+.trellis/
+AGENTS.md

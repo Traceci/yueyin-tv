@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- 仅 debug：版式预览页，用 adb 直接拉起 -->
+        <activity
+            android:name=".UiPreviewActivity"
+            android:exported="true"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+    </application>
+
+</manifest>

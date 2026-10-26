@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108" fill="none">
+  <!-- 悦音唱片标识：与启动页同一套比例（米白外圈 + 珊瑚高光弧 + 珊瑚内圈 + 细圈 + 珊瑚中心） -->
+  <circle cx="54" cy="54" r="45.6" stroke="#F5F1E8" stroke-width="5.14"/>
+  <path d="M66.6 10.2 A45.6 45.6 0 0 1 98.9 46.1"
+        stroke="#FF7A5C" stroke-width="5.91" stroke-linecap="round"/>
+  <circle cx="54" cy="54" r="34.7" stroke="#FF7A5C" stroke-width="3.34"/>
+  <circle cx="54" cy="54" r="23.1" stroke="#F5F1E8" stroke-opacity="0.35" stroke-width="2.31"/>
+  <circle cx="54" cy="54" r="11.6" fill="#FF7A5C"/>
+</svg>

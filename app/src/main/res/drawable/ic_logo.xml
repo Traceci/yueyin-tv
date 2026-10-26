@@ -1,0 +1,41 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 深炭圆角底 -->
+    <path
+        android:fillColor="#111315"
+        android:pathData="M22,0H86C98.15,0 108,9.85 108,22V86C108,98.15 98.15,108 86,108H22C9.85,108 0,98.15 0,86V22C0,9.85 9.85,0 22,0Z" />
+    <!-- 黑胶唱片：圆心 (54,54)，起点统一取圆心正左方 -->
+    <!-- 米白外圈 r=35.5 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M18.5,54a35.5,35.5 0 1,0 71,0a35.5,35.5 0 1,0 -71,0"
+        android:strokeColor="#F5F1E8"
+        android:strokeWidth="4" />
+    <!-- 珊瑚高光弧（右上四分之一圆） -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M54,18.5A35.5,35.5 0 0,1 89.5,54"
+        android:strokeColor="#FF684D"
+        android:strokeLineCap="round"
+        android:strokeWidth="4.6" />
+    <!-- 珊瑚纹圈 r=27 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M27,54a27,27 0 1,0 54,0a27,27 0 1,0 -54,0"
+        android:strokeColor="#FF684D"
+        android:strokeWidth="2.6" />
+    <!-- 米白细圈 r=18 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M36,54a18,18 0 1,0 36,0a18,18 0 1,0 -36,0"
+        android:strokeColor="#F5F1E8"
+        android:strokeAlpha="0.35"
+        android:strokeWidth="1.8" />
+    <!-- 珊瑚中心标签 r=9 -->
+    <path
+        android:fillColor="#FF684D"
+        android:pathData="M45,54a9,9 0 1,0 18,0a9,9 0 1,0 -18,0" />
+</vector>

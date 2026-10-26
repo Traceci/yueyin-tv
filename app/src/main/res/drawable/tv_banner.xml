@@ -1,0 +1,55 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180"
+    tools:ignore="VectorRaster">
+    <!-- 深炭底 -->
+    <path android:fillColor="#111315" android:pathData="M0,0h320v180h-320z" />
+    <!-- 黑胶唱片：圆心 (110,90)，与右侧回声弧同心；起点取圆心正左方 -->
+    <!-- 米白外圈 r=52 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M58,90a52,52 0 1,0 104,0a52,52 0 1,0 -104,0"
+        android:strokeColor="#F5F1E8"
+        android:strokeWidth="6.5" />
+    <!-- 珊瑚纹圈 r=40 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M70,90a40,40 0 1,0 80,0a40,40 0 1,0 -80,0"
+        android:strokeColor="#FF684D"
+        android:strokeWidth="3.8" />
+    <!-- 米白细圈 r=26 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M84,90a26,26 0 1,0 52,0a26,26 0 1,0 -52,0"
+        android:strokeColor="#F5F1E8"
+        android:strokeAlpha="0.35"
+        android:strokeWidth="2.6" />
+    <!-- 珊瑚中心标签 r=13 -->
+    <path
+        android:fillColor="#FF684D"
+        android:pathData="M97,90a13,13 0 1,0 26,0a13,13 0 1,0 -26,0" />
+    <!-- 三道回声弧：圆心 (110,90)，r=60/74/88 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M159.1,55.6A60,60 0 0,1 159.1,124.4"
+        android:strokeColor="#FF684D"
+        android:strokeLineCap="round"
+        android:strokeWidth="6.5" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M170.6,47.5A74,74 0 0,1 170.6,132.5"
+        android:strokeColor="#FF684D"
+        android:strokeAlpha="0.55"
+        android:strokeLineCap="round"
+        android:strokeWidth="6.5" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M182.1,39.5A88,88 0 0,1 182.1,140.5"
+        android:strokeColor="#FF684D"
+        android:strokeAlpha="0.3"
+        android:strokeLineCap="round"
+        android:strokeWidth="6.5" />
+</vector>

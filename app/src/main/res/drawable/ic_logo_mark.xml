@@ -1,0 +1,30 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 黑胶唱片标记（透明底）：圆心 (54,54)，起点取圆心正左方 -->
+    <!-- 米白外圈 r=42 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M12,54a42,42 0 1,0 84,0a42,42 0 1,0 -84,0"
+        android:strokeColor="#F5F1E8"
+        android:strokeWidth="8" />
+    <!-- 珊瑚纹圈 r=30 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M24,54a30,30 0 1,0 60,0a30,30 0 1,0 -60,0"
+        android:strokeColor="#FF684D"
+        android:strokeWidth="5" />
+    <!-- 米白细圈 r=17 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M37,54a17,17 0 1,0 34,0a17,17 0 1,0 -34,0"
+        android:strokeColor="#F5F1E8"
+        android:strokeAlpha="0.35"
+        android:strokeWidth="3.5" />
+    <!-- 珊瑚中心标签 r=9 -->
+    <path
+        android:fillColor="#FF684D"
+        android:pathData="M45,54a9,9 0 1,0 18,0a9,9 0 1,0 -18,0" />
+</vector>
