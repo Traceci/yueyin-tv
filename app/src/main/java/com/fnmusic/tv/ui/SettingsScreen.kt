@@ -74,6 +74,7 @@ private val SettingsBorderColor = Color(0xFF303735)
 internal fun SettingsScreen(container: AuthenticatedAppDependencies) {
     val preferences by container.appPreferences.state.collectAsStateWithLifecycle()
     val updateState by container.updateController.state.collectAsStateWithLifecycle()
+    val lastCheckedAt by container.updateController.lastCheckedAt.collectAsStateWithLifecycle()
     val scope = LocalLibraryRetainedState.current.scope
     val coverStyleFocus = remember { FocusRequester() }
     val posterStyleFocus = remember { FocusRequester() }
@@ -392,72 +393,21 @@ internal fun SettingsScreen(container: AuthenticatedAppDependencies) {
             Spacer(Modifier.height(14.dp))
             Text("关于", fontSize = 16.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(10.dp))
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .height(114.dp)
-                    .background(SettingsPanel, RoundedCornerShape(9.dp))
-                    .border(0.75.dp, SettingsBorderColor, RoundedCornerShape(9.dp))
-                    .padding(horizontal = 22.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row(
-                    Modifier.width(238.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Image(
-                        painter = painterResource(R.drawable.ic_logo_mark),
-                        contentDescription = null,
-                        modifier = Modifier.size(52.dp),
-                    )
-                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("悦音", fontSize = 17.sp, lineHeight = 20.sp, fontWeight = FontWeight.Bold)
-                        Text(
-                            "Android TV 飞牛音乐第三方客户端",
-                            color = FnColors.Muted,
-                            fontSize = 10.sp,
-                            lineHeight = 12.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+            AboutSection(
+                updateState = updateState,
+                updateEnabled = container.updateController.enabled,
+                lastCheckedAt = lastCheckedAt,
+                updateFocus = updateFocus,
+                updateUpFocus = songCacheClearFocus,
+                updateDownFocus = remoteGuideFocus,
+                onUpdateAction = {
+                    if (updateState is UpdateUiState.Available) {
+                        container.updateController.startDownload()
+                    } else {
+                        container.updateController.checkManually()
                     }
-                }
-                AboutDivider()
-                Column(
-                    Modifier
-                        .weight(1f)
-                        .padding(horizontal = 26.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    AboutValue("版本", BuildConfig.VERSION_NAME)
-                }
-                if (container.updateController.enabled) {
-                    AboutDivider()
-                    Column(
-                        Modifier.width(175.dp).padding(start = 20.dp),
-                        verticalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        Text("软件更新", color = FnColors.Muted, fontSize = 12.sp, lineHeight = 14.sp)
-                        SettingsActionButton(
-                            label = updateButtonLabel(updateState),
-                            leading = "↓",
-                            enabled = (updateState as? UpdateUiState.Checking)?.source != UpdateCheckSource.Manual,
-                            onClick = container.updateController::checkManually,
-                            modifier = Modifier
-                                .width(128.dp)
-                                .height(36.dp)
-                                .focusProperties {
-                                    up = songCacheClearFocus
-                                    down = remoteGuideFocus
-                                    left = FocusRequester.Cancel
-                                    right = FocusRequester.Cancel
-                                }
-                                .focusRequester(updateFocus),
-                        )
-                    }
-                }
-            }
+                },
+            )
 
             Spacer(Modifier.height(14.dp))
             Row(
@@ -523,26 +473,6 @@ private fun SettingsDivider() {
     Box(Modifier.fillMaxWidth().height(0.5.dp).background(SettingsDividerColor))
 }
 
-@Composable
-private fun AboutDivider() {
-    Box(Modifier.width(0.5.dp).height(82.dp).background(SettingsDividerColor))
-}
-
-@Composable
-private fun AboutValue(label: String, value: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = FnColors.Muted, fontSize = 12.sp, modifier = Modifier.width(63.dp))
-        Text(
-            value,
-            modifier = Modifier.weight(1f),
-            fontSize = 13.sp,
-            lineHeight = 15.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
 
 @Composable
 private fun SettingsChoiceButton(
@@ -587,12 +517,13 @@ private fun SettingsChoiceButton(
 }
 
 @Composable
-private fun SettingsActionButton(
+internal fun SettingsActionButton(
     label: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     leading: String? = null,
+    emphasis: Boolean = false,
 ) {
     val shape = RoundedCornerShape(18.dp)
     Button(
@@ -602,17 +533,20 @@ private fun SettingsActionButton(
         shape = ButtonDefaults.shape(shape, shape, shape, shape, shape),
         scale = ButtonDefaults.scale(focusedScale = 1f),
         colors = ButtonDefaults.colors(
-            containerColor = SettingsControl,
+            containerColor = if (emphasis) FnColors.Coral else SettingsControl,
             contentColor = FnColors.Text,
             focusedContainerColor = FnColors.Coral,
             focusedContentColor = FnColors.Text,
             pressedContainerColor = FnColors.Coral,
             pressedContentColor = FnColors.Text,
-            disabledContainerColor = Color(0xFF24282B),
+            disabledContainerColor = if (emphasis) Color(0xFF5A3A33) else Color(0xFF24282B),
             disabledContentColor = FnColors.Muted,
         ),
         border = ButtonDefaults.border(
-            border = Border(BorderStroke(0.5.dp, Color(0xFF454B4D)), shape = shape),
+            border = Border(
+                BorderStroke(if (emphasis) 1.5.dp else 0.5.dp, if (emphasis) FnColors.Coral else Color(0xFF454B4D)),
+                shape = shape,
+            ),
             focusedBorder = Border(BorderStroke(3.dp, FnFocus.ringColor), shape = shape),
             pressedBorder = Border(BorderStroke(3.dp, FnFocus.ringColor), shape = shape),
         ),
@@ -686,13 +620,6 @@ internal fun SettingsCheckbox(
             overflow = TextOverflow.Ellipsis,
         )
     }
-}
-
-private fun updateButtonLabel(state: UpdateUiState): String = when (state) {
-    is UpdateUiState.Checking -> "正在检查…"
-    is UpdateUiState.UpToDate -> "已是最新版本"
-    is UpdateUiState.Error -> if (state.manifest == null) "检查失败，重试" else "检查更新"
-    else -> "检查更新"
 }
 
 private fun formatBytes(bytes: Long): String = when {

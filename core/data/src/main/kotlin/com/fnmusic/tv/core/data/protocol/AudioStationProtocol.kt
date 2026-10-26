@@ -308,7 +308,7 @@ class AudioStationProtocol(
     private suspend fun getText(url: String): String {
         val request = Request.Builder().url(url).get().build()
         client.cancellableCall(request).use { response ->
-            val text = response.body?.string().orEmpty()
+            val text = response.body.string()
             if (!response.isSuccessful) error("HTTP ${response.code}")
             return text
         }

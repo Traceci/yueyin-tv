@@ -227,7 +227,7 @@ class SubsonicProtocol(
             .get()
             .build()
         client.cancellableCall(request).use { response ->
-            val text = response.body?.string().orEmpty()
+            val text = response.body.string()
             if (!response.isSuccessful) error("HTTP ${response.code}")
             return json.decodeFromString(Envelope.serializer(), text)
         }

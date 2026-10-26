@@ -189,7 +189,7 @@ class WebDavProtocol(
                 .build()
             client.cancellableCall(request).use { response ->
                 if (!response.isSuccessful) return@runCatching null
-                response.body?.string()?.takeIf { it.isNotBlank() }
+                response.body.string().takeIf { it.isNotBlank() }
             }
         }.getOrNull()
     }
@@ -304,7 +304,7 @@ class WebDavProtocol(
             .build()
         client.cancellableCall(request).use { response ->
             if (!response.isSuccessful) return null
-            val body = response.body?.string().orEmpty()
+            val body = response.body.string()
             return parseMultiStatus(body, rootPathOf(profile))
         }
     }

@@ -716,13 +716,9 @@ private fun LiquidBackdrop(modifier: Modifier = Modifier) {
     val hue by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(durationMillis = 26000, easing = LinearEasing)))
     Canvas(modifier) {
         drawRect(FnColors.Background)
-        val blobs = listOf(
-            Pair(t1, Color.hsv((14f + hue) % 360f, 0.62f, 0.95f, 0.55f)),
-            Pair(t2, Color.hsv((190f + hue) % 360f, 0.62f, 0.95f, 0.50f)),
-            Pair(t3, Color.hsv((265f + hue) % 360f, 0.60f, 0.95f, 0.45f)),
-            Pair(t4, Color.hsv((35f + hue) % 360f, 0.65f, 0.95f, 0.45f)),
-        )
-        for ((t, color) in blobs) {
+        // 这段每帧都会跑，直接展开四次绘制，避免临时 List/Pair 分配。
+        fun blob(t: Float, baseHue: Float, saturation: Float, alpha: Float) {
+            val color = Color.hsv((baseHue + hue) % 360f, saturation, 0.95f, alpha)
             val angle = t * 2f * PI.toFloat()
             val cx = size.width * (0.5f + 0.42f * sin(angle))
             val cy = size.height * (0.5f + 0.42f * cos(angle + 1.7f))
@@ -738,6 +734,10 @@ private fun LiquidBackdrop(modifier: Modifier = Modifier) {
                 blendMode = BlendMode.Screen,
             )
         }
+        blob(t1, 14f, 0.62f, 0.55f)
+        blob(t2, 190f, 0.62f, 0.50f)
+        blob(t3, 265f, 0.60f, 0.45f)
+        blob(t4, 35f, 0.65f, 0.45f)
         drawRect(
             Brush.verticalGradient(
                 colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f)),

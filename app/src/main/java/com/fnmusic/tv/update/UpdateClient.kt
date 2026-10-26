@@ -9,6 +9,7 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
@@ -22,48 +23,88 @@ internal fun interface UpdateManifestSource {
     suspend fun fetchManifest(): UpdateManifest
 }
 
+/**
+ * 依次尝试多个清单地址：jsDelivr 镜像在国内更稳，raw.githubusercontent.com 兜底。
+ * 任何一个成功即返回，全部失败才把最后一个错误抛出。
+ */
+internal class FallbackManifestSource(
+    private val sources: List<UpdateManifestSource>,
+) : UpdateManifestSource {
+    override suspend fun fetchManifest(): UpdateManifest {
+        var lastFailure: Throwable? = null
+        for (source in sources) {
+            try {
+                return source.fetchManifest()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                lastFailure = error
+            }
+        }
+        throw lastFailure ?: UpdateFailure("没有可用的更新地址")
+    }
+}
+
 internal class UpdateClient(
     private val endpoint: String,
     private val client: OkHttpClient = defaultUpdateHttpClient(),
+    private val policy: UpdateUrlPolicy = YueyinUpdatePolicy,
 ) : UpdateManifestSource {
     private val json = Json { ignoreUnknownKeys = false; isLenient = false }
 
     override suspend fun fetchManifest(): UpdateManifest {
-        val endpointUri = validateHttpsUri(endpoint, "更新地址")
-        val request = Request.Builder()
-            .url(endpoint)
-            .header("Accept", "application/json")
-            .header("Cache-Control", "no-cache")
-            .build()
-        return client.newCall(request).await().use { response ->
-            if (!response.isSuccessful) throw UpdateFailure("检查更新失败（${response.code}）")
-            if (response.request.url.host != endpointUri.host) throw UpdateFailure("更新地址发生了跨域跳转")
-            val contentLength = response.body.contentLength()
-            if (contentLength > MAX_UPDATE_MANIFEST_BYTES) throw UpdateFailure("更新信息过大")
-            val bytes = response.body.byteStream().use { input ->
-                val output = ByteArrayOutputStream()
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (output.size() <= MAX_UPDATE_MANIFEST_BYTES) {
-                    val count = input.read(buffer, 0, minOf(buffer.size, MAX_UPDATE_MANIFEST_BYTES + 1 - output.size()))
-                    if (count < 0) break
-                    output.write(buffer, 0, count)
+        var endpointUri = policy.requireManifest(validateHttpsUri(endpoint, "更新地址"))
+        var hops = 0
+        while (true) {
+            val request = Request.Builder()
+                .url(endpointUri.toString())
+                .header("Accept", "application/json")
+                .header("Cache-Control", "no-cache")
+                .build()
+            val response = client.newCall(request).await()
+            // jsDelivr 等镜像会先回到规范地址，这里手动跟随，但每一跳都要过渠道校验。
+            if (response.code in 300..399) {
+                val location = response.header("Location")
+                response.close()
+                if (location.isNullOrBlank()) throw UpdateFailure("更新地址跳转缺少目标")
+                if (++hops > MAX_UPDATE_REDIRECTS) throw UpdateFailure("更新地址跳转次数过多")
+                endpointUri = policy.requireManifest(
+                    policy.resolveRedirect(endpointUri, location, "更新地址"),
+                )
+                continue
+            }
+            return response.use { current ->
+                if (!current.isSuccessful) throw UpdateFailure("检查更新失败（${current.code}）")
+                val contentLength = current.body.contentLength()
+                if (contentLength > MAX_UPDATE_MANIFEST_BYTES) throw UpdateFailure("更新信息过大")
+                val bytes = current.body.byteStream().use { input ->
+                    val output = ByteArrayOutputStream()
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (output.size() <= MAX_UPDATE_MANIFEST_BYTES) {
+                        val count = input.read(buffer, 0, minOf(buffer.size, MAX_UPDATE_MANIFEST_BYTES + 1 - output.size()))
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                    }
+                    output.toByteArray()
                 }
-                output.toByteArray()
+                if (bytes.size > MAX_UPDATE_MANIFEST_BYTES) throw UpdateFailure("更新信息过大")
+                val dto = try {
+                    json.decodeFromString<UpdateManifestDto>(bytes.decodeToString())
+                } catch (_: SerializationException) {
+                    throw UpdateFailure("更新信息格式无效")
+                } catch (_: IllegalArgumentException) {
+                    throw UpdateFailure("更新信息格式无效")
+                }
+                validateManifest(dto, policy)
             }
-            if (bytes.size > MAX_UPDATE_MANIFEST_BYTES) throw UpdateFailure("更新信息过大")
-            val dto = try {
-                json.decodeFromString<UpdateManifestDto>(bytes.decodeToString())
-            } catch (_: SerializationException) {
-                throw UpdateFailure("更新信息格式无效")
-            } catch (_: IllegalArgumentException) {
-                throw UpdateFailure("更新信息格式无效")
-            }
-            validateManifest(dto, endpointUri)
         }
     }
 }
 
-internal fun validateManifest(dto: UpdateManifestDto, endpointUri: URI): UpdateManifest {
+internal fun validateManifest(
+    dto: UpdateManifestDto,
+    policy: UpdateUrlPolicy = YueyinUpdatePolicy,
+): UpdateManifest {
     if (dto.schemaVersion != 1) throw UpdateFailure("暂不支持这个更新信息版本")
     if (dto.packageName != UPDATE_PACKAGE_NAME) throw UpdateFailure("更新包名不匹配")
     if (dto.versionName.isBlank() || dto.versionName.length > 64 || dto.versionCode <= 0) {
@@ -75,10 +116,7 @@ internal fun validateManifest(dto: UpdateManifestDto, endpointUri: URI): UpdateM
     if (dto.apk.size <= 0 || !LOWERCASE_SHA256.matches(dto.apk.sha256)) {
         throw UpdateFailure("更新文件信息无效")
     }
-    val apkUri = validateHttpsUri(dto.apk.url, "APK 地址")
-    if (!apkUri.host.equals(endpointUri.host, ignoreCase = true)) {
-        throw UpdateFailure("APK 与更新信息必须使用同一下载域名")
-    }
+    val apkUri = policy.requireApk(validateHttpsUri(dto.apk.url, "APK 地址"))
     if (!isValidPublishedAt(dto.publishedAt)) throw UpdateFailure("发布时间无效")
     validateHttpsUri(dto.githubReleaseUrl, "GitHub Release 地址")
     return UpdateManifest(

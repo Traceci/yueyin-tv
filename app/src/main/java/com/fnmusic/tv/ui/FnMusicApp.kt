@@ -312,7 +312,7 @@ internal fun LoginScreen(
                     value = server,
                     onValueChange = {
                         server = it
-                        Regex("^(https?)://", RegexOption.IGNORE_CASE).find(it.trim())
+                        HTTP_SCHEME_PREFIX.find(it.trim())
                             ?.groupValues?.get(1)
                             ?.let { scheme -> https = scheme.equals("https", ignoreCase = true) }
                         selectedProfileId = null
@@ -974,3 +974,6 @@ private fun errorMessage(error: AppError): String = when (error) {
     AppError.FnIdUnavailable -> "FNID 无可用连接，请检查输入或网络"
     else -> "连接失败，请重试"
 }
+
+// 输入框每次按键都会走一遍协议前缀判断，正则只编译一次。
+private val HTTP_SCHEME_PREFIX = Regex("^(https?)://", RegexOption.IGNORE_CASE)

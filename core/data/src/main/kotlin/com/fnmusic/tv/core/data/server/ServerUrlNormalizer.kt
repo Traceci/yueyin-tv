@@ -30,7 +30,7 @@ sealed interface ServerUrlResult {
 object ServerUrlNormalizer {
     fun editableInput(input: String, currentUseHttps: Boolean): EditableServerInput {
         val value = input.trim()
-        val scheme = Regex("^(https?)://", RegexOption.IGNORE_CASE).find(value)
+        val scheme = HTTP_SCHEME_PREFIX.find(value)
         val useHttps = when (scheme?.groupValues?.get(1)?.lowercase()) {
             "https" -> true
             "http" -> false
@@ -47,7 +47,7 @@ object ServerUrlNormalizer {
     fun normalize(input: String, useHttps: Boolean): ServerUrlResult {
         val value = input.trim()
         if (value.isEmpty()) return ServerUrlResult.Invalid(ServerUrlResult.Reason.Empty)
-        val explicitScheme = Regex("^[A-Za-z][A-Za-z0-9+.-]*://").find(value)?.value
+        val explicitScheme = ANY_SCHEME_PREFIX.find(value)?.value
         if (explicitScheme != null && explicitScheme.lowercase() !in setOf("http://", "https://")) {
             return ServerUrlResult.Invalid(ServerUrlResult.Reason.UnsupportedScheme)
         }
@@ -89,6 +89,10 @@ object ServerUrlNormalizer {
         val apiBase = origin.newBuilder().encodedPath("$prefix/").build()
         return ServerUrlResult.Valid(NormalizedServer(origin, apiBase, schemeHttps))
     }
+
+    // 地址解析在输入过程中会被反复调用，正则只编译一次。
+    private val HTTP_SCHEME_PREFIX = Regex("^(https?)://", RegexOption.IGNORE_CASE)
+    private val ANY_SCHEME_PREFIX = Regex("^[A-Za-z][A-Za-z0-9+.-]*://")
 
     private const val DEFAULT_HTTP_PORT = 5666
     private const val HTTP_PORT = 80

@@ -36,7 +36,7 @@ class UpdateClientTest {
         val apkUrl = server.url("/releases/22/app.apk")
         server.enqueue(MockResponse.Builder().body(manifest(apkUrl.toString())).build())
 
-        val result = UpdateClient(server.url("/update.json").toString(), client).fetchManifest()
+        val result = UpdateClient(server.url("/update.json").toString(), client, TestUpdatePolicy).fetchManifest()
 
         assertEquals(22L, result.versionCode)
         assertEquals(apkUrl.toString(), result.apkUrl)
@@ -47,7 +47,7 @@ class UpdateClientTest {
         server.enqueue(MockResponse.Builder().body("x".repeat(MAX_UPDATE_MANIFEST_BYTES + 1)).build())
 
         assertThrows(UpdateFailure::class.java) {
-            runBlocking { UpdateClient(server.url("/update.json").toString(), client).fetchManifest() }
+            runBlocking { UpdateClient(server.url("/update.json").toString(), client, TestUpdatePolicy).fetchManifest() }
         }
         Unit
     }

@@ -26,8 +26,7 @@ internal class UpdateCoordinator(
     private val application: Application,
     private val scope: CoroutineScope,
     private val preferences: UpdatePreferences = UpdatePreferences(application),
-    private val client: UpdateManifestSource? = BuildConfig.UPDATE_MANIFEST_URL.takeIf { BuildConfig.SELF_UPDATE_ENABLED && it.isNotBlank() }
-        ?.let(::UpdateClient),
+    private val client: UpdateManifestSource? = defaultUpdateSource(),
     private val downloader: UpdateApkDownloader = UpdateDownloader(application),
     private val verifier: UpdateApkVerifier = ApkVerifier(application),
     private val installer: UpdateApkInstaller = UpdateInstaller(application),
@@ -36,6 +35,8 @@ internal class UpdateCoordinator(
 ) : UpdateController {
     private val mutableState = MutableStateFlow<UpdateUiState>(if (client == null) UpdateUiState.Disabled else UpdateUiState.Idle)
     override val state: StateFlow<UpdateUiState> = mutableState.asStateFlow()
+    private val lastChecked = MutableStateFlow<Long?>(null)
+    override val lastCheckedAt: StateFlow<Long?> = lastChecked.asStateFlow()
     private val effectChannel = Channel<UpdateEffect>(Channel.BUFFERED)
     override val effects: Flow<UpdateEffect> = effectChannel.receiveAsFlow()
     override val enabled: Boolean = client != null
@@ -129,11 +130,12 @@ internal class UpdateCoordinator(
                 nextAutomaticCheckAt = clock() + AUTO_CHECK_INTERVAL_MS
                 when {
                     manifest.versionCode <= BuildConfig.VERSION_CODE.toLong() -> {
-                        mutableState.value = if (effectiveSource == UpdateCheckSource.Manual) {
-                            UpdateUiState.UpToDate(BuildConfig.VERSION_NAME)
-                        } else {
-                            UpdateUiState.Idle
-                        }
+                        // 自动检查也进 UpToDate，这样设置页始终能显示「已是最新版本」；
+                        // 只有手动检查才会弹「已是最新」对话框（由 UpdateDialog 判断 source）。
+                        mutableState.value = UpdateUiState.UpToDate(
+                            currentVersionName = BuildConfig.VERSION_NAME,
+                            source = effectiveSource,
+                        )
                     }
                     effectiveSource == UpdateCheckSource.Manual -> showAvailable(manifest, effectiveSource)
                     preferences.isIgnored(manifest.versionCode) -> mutableState.value = UpdateUiState.Idle
@@ -165,6 +167,7 @@ internal class UpdateCoordinator(
                 }
             } finally {
                 checkJob = null
+                lastChecked.value = clock()
                 if (!succeeded && nextAutomaticCheckAt == null) {
                     nextAutomaticCheckAt = clock() + AUTO_RETRY_INTERVAL_MS
                 }
@@ -355,3 +358,16 @@ private fun Application.canRequestPackageInstallsCompat(): Boolean =
     } else {
         true
     }
+
+/** 侧载包镜像优先、raw 兜底；商店包不启用应用内更新。 */
+private fun defaultUpdateSource(): UpdateManifestSource? {
+    if (!BuildConfig.SELF_UPDATE_ENABLED) return null
+    val endpoints = listOf(BuildConfig.UPDATE_MANIFEST_URL, BuildConfig.UPDATE_MANIFEST_FALLBACK_URL)
+        .filter { it.isNotBlank() }
+        .distinct()
+    return when (endpoints.size) {
+        0 -> null
+        1 -> UpdateClient(endpoints.first())
+        else -> FallbackManifestSource(endpoints.map(::UpdateClient))
+    }
+}

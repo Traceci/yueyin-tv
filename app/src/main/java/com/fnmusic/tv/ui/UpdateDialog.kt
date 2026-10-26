@@ -61,12 +61,15 @@ internal fun UpdateDialogHost(state: UpdateUiState, controller: UpdateController
         is UpdateUiState.Checking -> if (state.source == com.fnmusic.tv.update.UpdateCheckSource.Manual) {
             UpdateStatusDialog("正在检查更新", "正在从更新服务器读取最新版本…", null, null)
         }
-        is UpdateUiState.UpToDate -> UpdateStatusDialog(
-            title = "已是最新版本",
-            message = "当前版本 ${state.currentVersionName} 已是最新版本。",
-            primaryLabel = "知道了",
-            onPrimary = controller::dismiss,
-        )
+        // 自动检查结束时静默，只有用户手动点「检查更新」才弹「已是最新」提示。
+        is UpdateUiState.UpToDate -> if (state.source == com.fnmusic.tv.update.UpdateCheckSource.Manual) {
+            UpdateStatusDialog(
+                title = "已是最新版本",
+                message = "当前版本 ${state.currentVersionName} 已是最新版本。",
+                primaryLabel = "知道了",
+                onPrimary = controller::dismiss,
+            )
+        }
         is UpdateUiState.Available -> UpdateAvailableDialog(state, controller)
         is UpdateUiState.Downloading -> UpdateProgressDialog(
             title = "正在下载更新",

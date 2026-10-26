@@ -29,9 +29,16 @@ val releaseSigningPassword = providers.gradleProperty("fnMusicReleasePassword").
     ?: releasePasswordFile.takeIf { it.isFile }?.readText()?.trim()
 val releaseSigningReady = releaseKeystoreFile.isFile && !releaseSigningPassword.isNullOrBlank()
 val allowUnsignedRelease = providers.gradleProperty("allowUnsignedRelease").orNull?.toBoolean() == true
+// 侧载包（GitHub 分发）的自更新清单：默认指向仓库里的 update.json。
+// jsDelivr 镜像在国内比 raw.githubusercontent.com 稳定，UpdateClient 会在失败时回退。
+val defaultUpdateManifestUrl = "https://cdn.jsdelivr.net/gh/Traceci/yueyin-tv@main/update.json"
+val defaultUpdateManifestFallbackUrl = "https://raw.githubusercontent.com/Traceci/yueyin-tv/main/update.json"
+val updateManifestFallbackUrl = providers.gradleProperty("fnMusicUpdateManifestFallbackUrl").orNull
+    ?: providers.environmentVariable("FN_MUSIC_UPDATE_MANIFEST_FALLBACK_URL").orNull
+    ?: defaultUpdateManifestFallbackUrl
 val updateManifestUrl = providers.gradleProperty("fnMusicUpdateManifestUrl").orNull
     ?: providers.environmentVariable("FN_MUSIC_UPDATE_MANIFEST_URL").orNull
-    ?: ""
+    ?: defaultUpdateManifestUrl
 val flacDecoderAar = rootProject.file(
     "third_party/media3-decoder-flac/media3-decoder-flac-1.10.1-libflac-1.5.0.aar",
 )
@@ -72,11 +79,17 @@ android {
             dimension = "distribution"
             buildConfigField("boolean", "SELF_UPDATE_ENABLED", "true")
             buildConfigField("String", "UPDATE_MANIFEST_URL", updateManifestUrl.asBuildConfigString())
+            buildConfigField(
+                "String",
+                "UPDATE_MANIFEST_FALLBACK_URL",
+                updateManifestFallbackUrl.asBuildConfigString(),
+            )
         }
         create("store") {
             dimension = "distribution"
             buildConfigField("boolean", "SELF_UPDATE_ENABLED", "false")
             buildConfigField("String", "UPDATE_MANIFEST_URL", "".asBuildConfigString())
+            buildConfigField("String", "UPDATE_MANIFEST_FALLBACK_URL", "".asBuildConfigString())
         }
     }
 
@@ -236,6 +249,7 @@ dependencies {
     implementation(project(":third_party:accompanist-lyrics-ui"))
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
+    implementation(libs.zxing.core)
     "sideloadImplementation"(libs.appupdate)
     "storeImplementation"(libs.appupdate.noop)
     baselineProfile(project(":baselineprofile"))

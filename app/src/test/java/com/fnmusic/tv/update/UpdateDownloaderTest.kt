@@ -80,7 +80,7 @@ class UpdateDownloaderTest {
                 .joinToString("") { "%02x".format(it) },
         )
         val request = async(Dispatchers.IO) {
-            UpdateDownloader(context, client).download(manifest) {}
+            UpdateDownloader(context, TestUpdatePolicy, client).download(manifest) {}
         }
 
         assertTrue(bodyStarted.await(5, TimeUnit.SECONDS))
@@ -90,5 +90,15 @@ class UpdateDownloaderTest {
         assertTrue(request.isCancelled)
         val updateFiles = File(context.cacheDir, "updates").listFiles().orEmpty()
         assertFalse(updateFiles.any { it.name.endsWith(".part") || it.name.endsWith(".apk") })
+    }
+}
+
+/** 测试用：放行本地 MockWebServer 的地址。 */
+internal object TestUpdatePolicy : UpdateUrlPolicy {
+    override fun requireManifest(uri: java.net.URI): java.net.URI = uri
+    override fun requireApk(uri: java.net.URI): java.net.URI = uri
+    override fun resolveRedirect(base: java.net.URI, location: String, label: String): java.net.URI {
+        val resolved = requireNotNull(base.resolve(location)) { "$label 跳转目标无效" }
+        return validateHttpsUri(resolved.toString(), label)
     }
 }

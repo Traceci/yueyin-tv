@@ -191,7 +191,7 @@ object LocalStreamProxy {
                     headers = headers,
                 )
                 if (request.method == "HEAD") return
-                response.body?.byteStream()?.use { body -> copyFully(body, out, Long.MAX_VALUE) }
+                response.body.byteStream().use { body -> copyFully(body, out, Long.MAX_VALUE) }
             }
         }.onFailure {
             runCatching { writeHead(out, 502, "Bad Gateway", emptyList()) }

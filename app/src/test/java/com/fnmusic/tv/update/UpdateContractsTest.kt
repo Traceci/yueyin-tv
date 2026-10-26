@@ -6,19 +6,32 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class UpdateContractsTest {
-    private val endpoint = URI("https://download.example.com/update.json")
-
-    @Test fun `valid manifest uses the fixed package and same R2 host`() {
-        val result = validateManifest(validDto(), endpoint)
+    @Test fun `valid manifest keeps the fixed package and the release URL`() {
+        val result = validateManifest(validDto())
 
         assertEquals(22L, result.versionCode)
-        assertEquals("https://download.example.com/releases/22/app.apk", result.apkUrl)
+        assertEquals(APK_URL, result.apkUrl)
     }
 
-    @Test fun `rejects APK on a second host`() {
-        val dto = validDto().copy(apk = validDto().apk.copy(url = "https://github.com/app.apk"))
+    @Test fun `rejects APK hosted outside the project channel`() {
+        val dto = validDto().copy(apk = validDto().apk.copy(url = "https://evil.example.com/app.apk"))
 
-        assertThrows(UpdateFailure::class.java) { validateManifest(dto, endpoint) }
+        assertThrows(UpdateFailure::class.java) { validateManifest(dto) }
+    }
+
+    @Test fun `rejects manifest from another jsDelivr repository`() {
+        assertThrows(UpdateFailure::class.java) {
+            YueyinUpdatePolicy.requireManifest(
+                URI("https://cdn.jsdelivr.net/gh/someone-else/other-repo@main/update.json"),
+            )
+        }
+    }
+
+    @Test fun `accepts release asset and the signed object storage host`() {
+        YueyinUpdatePolicy.requireApk(URI(APK_URL))
+        YueyinUpdatePolicy.requireApk(
+            URI("https://release-assets.githubusercontent.com/github-production-release-asset/1/2"),
+        )
     }
 
     @Test fun `rejects unknown schema package uppercase digest and excessive notes`() {
@@ -28,7 +41,7 @@ class UpdateContractsTest {
             validDto().copy(apk = validDto().apk.copy(sha256 = "A".repeat(64))),
             validDto().copy(notes = "x".repeat(MAX_UPDATE_NOTES_LENGTH + 1)),
         ).forEach { dto ->
-            assertThrows(UpdateFailure::class.java) { validateManifest(dto, endpoint) }
+            assertThrows(UpdateFailure::class.java) { validateManifest(dto) }
         }
     }
 
@@ -44,11 +57,15 @@ class UpdateContractsTest {
         title = "v1.0.6",
         notes = "更新内容",
         apk = UpdateApkDto(
-            url = "https://download.example.com/releases/22/app.apk",
+            url = APK_URL,
             size = 1_024,
             sha256 = "a".repeat(64),
         ),
         publishedAt = "2026-08-11T00:00:00Z",
-        githubReleaseUrl = "https://github.com/QiaoKes/fn-music-tv/releases/tag/v1.0.6",
+        githubReleaseUrl = "https://github.com/Traceci/yueyin-tv/releases/tag/v1.0.6",
     )
+
+    private companion object {
+        const val APK_URL = "https://github.com/Traceci/yueyin-tv/releases/download/v1.0.6/yueyin-1.0.6.apk"
+    }
 }

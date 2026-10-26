@@ -126,7 +126,7 @@ internal fun RemoteControlGuide(onDismiss: () -> Unit) {
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        "Android TV 飞牛音乐第三方客户端",
+                        "Android TV 自建音乐库播放器",
                         color = FnColors.Muted,
                         fontSize = 15.sp,
                         lineHeight = 18.sp,

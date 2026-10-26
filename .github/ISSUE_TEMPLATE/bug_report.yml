@@ -1,0 +1,68 @@
+name: 问题反馈
+description: 播放、连接、界面或遥控器操作出现异常
+title: "[问题] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量填全下面几项，能省掉来回追问的时间。
+
+  - type: input
+    id: version
+    attributes:
+      label: 悦音版本
+      description: 在「设置 → 关于」可以看到版本与构建号
+      placeholder: 1.0.0（构建 01）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 连接的音乐服务
+      options:
+        - 飞牛 fnOS
+        - Emby
+        - Jellyfin
+        - Plex
+        - Navidrome / Subsonic
+        - WebDAV（Alist 等）
+        - SMB 共享
+        - AudioStation
+        - 其他 / 不确定
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: 电视或盒子型号
+      placeholder: TCL TCK65K、小米电视 4A、NVIDIA Shield …
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从打开 App 开始，一步一步写，越具体越好
+      placeholder: |
+        1. 打开悦音，进入首页
+        2. 选中「全部歌单」
+        3. 按右键翻到第 2 页
+        4. 界面卡住不动
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望的结果
+      placeholder: 应该正常翻页并显示第 2 页歌单
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 截图、录屏或日志
+      description: 图片可以直接拖进这个输入框

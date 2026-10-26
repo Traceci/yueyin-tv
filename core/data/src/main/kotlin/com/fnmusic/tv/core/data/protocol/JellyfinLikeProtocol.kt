@@ -309,7 +309,7 @@ class JellyfinLikeProtocol(
                 .build()
             val text = client.cancellableCall(request).use { response ->
                 if (!response.isSuccessful) return@runCatching null
-                response.body?.string().orEmpty()
+                response.body.string()
             }
             val root = json.parseToJsonElement(text).jsonObject
             val token = root.str("AccessToken") ?: return@runCatching null
@@ -341,7 +341,7 @@ class JellyfinLikeProtocol(
             .build()
         return client.cancellableCall(request).use { response ->
             if (!response.isSuccessful) error("HTTP ${response.code}")
-            response.body?.string().orEmpty()
+            response.body.string()
         }
     }
 

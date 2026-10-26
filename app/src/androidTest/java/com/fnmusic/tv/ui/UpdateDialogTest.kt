@@ -108,6 +108,7 @@ private class FakeUpdateController : UpdateController {
     override val state: StateFlow<UpdateUiState> = MutableStateFlow(UpdateUiState.Idle)
     override val effects: Flow<UpdateEffect> = emptyFlow()
     override val enabled = true
+    override val lastCheckedAt: StateFlow<Long?> = MutableStateFlow(null)
     var downloadCount = 0
     var cancelCount = 0
 

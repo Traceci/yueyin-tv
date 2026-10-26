@@ -1,11 +1,17 @@
 package com.fnmusic.tv.update
 
 import android.content.Intent
+import com.fnmusic.tv.BuildConfig
 import kotlinx.serialization.Serializable
 
-internal const val UPDATE_PACKAGE_NAME = "com.fnmusic.tv"
+/**
+ * 更新包必须与当前安装包同包名。这里取实际的 applicationId：
+ * 共存包是 `com.fnmusic.tv.fork`，写死上游的 `com.fnmusic.tv` 会让自更新永远校验失败。
+ */
+internal val UPDATE_PACKAGE_NAME: String = BuildConfig.APPLICATION_ID
 internal const val MAX_UPDATE_MANIFEST_BYTES = 256 * 1024
 internal const val MAX_UPDATE_NOTES_LENGTH = 4_000
+internal const val MAX_UPDATE_REDIRECTS = 5
 
 @Serializable
 internal data class UpdateManifestDto(
@@ -43,7 +49,10 @@ internal sealed interface UpdateUiState {
     data object Disabled : UpdateUiState
     data object Idle : UpdateUiState
     data class Checking(val source: UpdateCheckSource) : UpdateUiState
-    data class UpToDate(val currentVersionName: String) : UpdateUiState
+    data class UpToDate(
+        val currentVersionName: String,
+        val source: UpdateCheckSource = UpdateCheckSource.Automatic,
+    ) : UpdateUiState
     data class Available(
         val manifest: UpdateManifest,
         val ignored: Boolean,
@@ -65,6 +74,9 @@ internal interface UpdateController {
     val state: kotlinx.coroutines.flow.StateFlow<UpdateUiState>
     val effects: kotlinx.coroutines.flow.Flow<UpdateEffect>
     val enabled: Boolean
+
+    /** 最近一次检查完成的时间（`SystemClock.elapsedRealtime()`），从未检查过为 null。 */
+    val lastCheckedAt: kotlinx.coroutines.flow.StateFlow<Long?>
 
     fun checkManually()
     fun ignoreAvailableVersion()
