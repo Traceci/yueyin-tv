@@ -76,7 +76,7 @@ val generateFnConnectPayload by tasks.registering {
         generatedFile.parentFile.mkdirs()
         generatedFile.writeText(
             """
-            package com.fnmusic.tv.core.data.server
+            package com.yueyin.tv.core.data.server
 
             internal object GeneratedFnConnectPayload {
                 const val isConfigured: Boolean = $configured
@@ -109,7 +109,7 @@ val verifyFnConnectReleaseConfiguration by tasks.registering {
 }
 
 android {
-    namespace = "com.fnmusic.tv.core.data"
+    namespace = "com.yueyin.tv.core.data"
     compileSdk = 36
 
     defaultConfig {

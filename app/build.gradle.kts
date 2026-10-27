@@ -60,12 +60,12 @@ fun String.asBuildConfigString(): String = buildString {
 }
 
 android {
-    namespace = "com.fnmusic.tv"
+    namespace = "com.yueyin.tv"
     compileSdk = 36
 
     defaultConfig {
-        // Fork 共存包：与官方版 (com.fnmusic.tv) 可同时安装、互不干扰。
-        applicationId = "com.fnmusic.tv.fork"
+        // 悦音 TV：applicationId 即系统底层包名，已统一为 com.yueyin.tv
+        applicationId = "com.yueyin.tv"
         minSdk = 23
         targetSdk = 36
         versionCode = managedVersionCode
@@ -143,7 +143,7 @@ android {
 }
 
 base {
-    archivesName.set("fn-music-tv-$managedVersionName")
+    archivesName.set("yueyin-tv-$managedVersionName")
 }
 
 val verifyReleaseSigning by tasks.registering {

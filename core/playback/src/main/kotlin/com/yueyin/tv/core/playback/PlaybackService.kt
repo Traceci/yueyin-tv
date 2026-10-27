@@ -1,0 +1,212 @@
+package com.yueyin.tv.core.playback
+
+import android.content.Context
+import android.util.Log
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.SimpleCache
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder
+import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionError
+import androidx.media3.session.SessionResult
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
+import java.io.File
+import java.util.ArrayList
+
+internal const val FORWARD_BUFFER_DURATION_MS = 50_000
+internal const val BACK_BUFFER_DURATION_MS = 15_000
+internal const val SONG_CACHE_DIRECTORY = "song-cache"
+internal const val SONG_CACHE_MAX_BYTES = 512L * 1024L * 1024L
+private const val LEGACY_AUDIO_CACHE_DIRECTORY = "media"
+private const val TAG = "PlaybackService"
+
+internal fun validatedShuffleIndices(
+    canonicalIds: List<String>,
+    requestedIds: List<String>,
+): IntArray? {
+    if (
+        requestedIds.size != canonicalIds.size ||
+        requestedIds.any(String::isBlank) ||
+        canonicalIds.any(String::isBlank) ||
+        requestedIds.distinct().size != requestedIds.size ||
+        canonicalIds.distinct().size != canonicalIds.size ||
+        requestedIds.toSet() != canonicalIds.toSet()
+    ) {
+        return null
+    }
+    val indexById = canonicalIds.withIndex().associate { (index, id) -> id to index }
+    return requestedIds.map { id -> indexById.getValue(id) }.toIntArray()
+}
+
+@androidx.annotation.OptIn(UnstableApi::class)
+internal fun createPlaybackLoadControl(): DefaultLoadControl = DefaultLoadControl.Builder()
+    .setBufferDurationsMs(
+        FORWARD_BUFFER_DURATION_MS,
+        FORWARD_BUFFER_DURATION_MS,
+        DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
+        DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
+    )
+    .setBackBuffer(BACK_BUFFER_DURATION_MS, false)
+    .build()
+
+@androidx.annotation.OptIn(UnstableApi::class)
+internal fun createPlaybackRenderersFactory(context: Context): DefaultRenderersFactory =
+    DefaultRenderersFactory(context)
+        .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+
+@androidx.annotation.OptIn(UnstableApi::class)
+internal fun createPlaybackHttpDataSourceFactory(): DefaultHttpDataSource.Factory =
+    DefaultHttpDataSource.Factory()
+        .setAllowCrossProtocolRedirects(false)
+        .setUserAgent("FnMusicTV/0.1")
+
+internal fun playbackRequestHeaders(token: String, accessCode: String?, relayMode: Boolean): Map<String, String> =
+    buildMap {
+        put("Authorization", token)
+        if (relayMode) put("Cookie", "music-token=$token; mode=relay")
+        if (!accessCode.isNullOrBlank()) {
+            put("x-access-code", accessCode)
+            put("x-access-source", "app")
+        }
+    }
+
+internal fun deleteLegacyAudioCache(cacheDirectory: File): Boolean = runCatching {
+    val canonicalCacheDirectory = cacheDirectory.canonicalFile
+    val legacyCache = File(canonicalCacheDirectory, LEGACY_AUDIO_CACHE_DIRECTORY)
+    if (!legacyCache.exists()) {
+        legacyCache.delete()
+        return@runCatching true
+    }
+    if (legacyCache.canonicalFile != legacyCache.absoluteFile) {
+        return@runCatching legacyCache.delete()
+    }
+    legacyCache.deleteRecursively()
+}.getOrDefault(false)
+
+@androidx.annotation.OptIn(UnstableApi::class)
+class PlaybackService : MediaSessionService() {
+    private var player: ExoPlayer? = null
+    private var mediaSession: MediaSession? = null
+    private var songCache: SimpleCache? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        if (!deleteLegacyAudioCache(cacheDir)) {
+            Log.w(TAG, "Unable to delete legacy audio cache")
+        }
+        val audioAttributes = AudioAttributes.Builder()
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .setUsage(C.USAGE_MEDIA)
+            .build()
+        val httpFactory = createPlaybackHttpDataSourceFactory()
+        // 歌曲磁盘缓存：对流式音频做本地缓存，方便断网续播，也可在设置中查看占用并一键清空。
+        val cache = SimpleCache(
+            File(filesDir, SONG_CACHE_DIRECTORY),
+            LeastRecentlyUsedCacheEvictor(SONG_CACHE_MAX_BYTES),
+        )
+        songCache = cache
+        val cachingSourceFactory = CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(httpFactory)
+        val exoPlayer = ExoPlayer.Builder(
+            this,
+            createPlaybackRenderersFactory(this),
+        )
+            .setMediaSourceFactory(DefaultMediaSourceFactory(cachingSourceFactory))
+            .setLoadControl(createPlaybackLoadControl())
+            .build().apply {
+            setAudioAttributes(audioAttributes, true)
+            setHandleAudioBecomingNoisy(true)
+        }
+        player = exoPlayer
+        mediaSession = MediaSession.Builder(this, RoutingPlayer(exoPlayer))
+            .setCallback(object : MediaSession.Callback {
+                override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
+                    val available = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
+                        .add(PlaybackCommands.ConfigureAuthCommand)
+                        .add(PlaybackCommands.ClearAuthCommand)
+                        .add(PlaybackCommands.SetShuffleOrderCommand)
+                        .add(PlaybackCommands.ClearSongCacheCommand)
+                        .build()
+                    return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                        .setAvailableSessionCommands(available)
+                        .build()
+                }
+
+                override fun onCustomCommand(
+                    session: MediaSession,
+                    controller: MediaSession.ControllerInfo,
+                    customCommand: SessionCommand,
+                    args: android.os.Bundle,
+                ): ListenableFuture<SessionResult> {
+                    if (customCommand.customAction == PlaybackCommands.ClearAuth) {
+                        httpFactory.setDefaultRequestProperties(emptyMap())
+                        return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                    }
+                    if (customCommand.customAction == PlaybackCommands.ClearSongCache) {
+                        // 逐条移除缓存的资源；正在播放中的片段可能无法移除，但不影响当前播放。
+                        runCatching {
+                            songCache?.keys?.forEach { key -> runCatching { songCache?.removeResource(key) } }
+                        }
+                        return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                    }
+                    if (customCommand.customAction == PlaybackCommands.ConfigureAuth) {
+                        val token = args.getString(PlaybackCommands.Token)
+                        val namespace = args.getString(PlaybackCommands.CacheNamespace)
+                        if (token.isNullOrBlank() || namespace.isNullOrBlank()) {
+                            return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+                        }
+                        val relayMode = args.getBoolean(PlaybackCommands.RelayMode, false)
+                        val accessCode = args.getString(PlaybackCommands.AccessCode)
+                        val headers = playbackRequestHeaders(token, accessCode, relayMode)
+                        httpFactory.setDefaultRequestProperties(headers)
+                        return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                    }
+                    if (customCommand.customAction == PlaybackCommands.SetShuffleOrder) {
+                        val requested = args.getStringArrayList(PlaybackCommands.MediaIds).orEmpty()
+                        val revision = args.getLong(PlaybackCommands.SnapshotRevision, -1L)
+                        val canonical = List(exoPlayer.mediaItemCount) { index ->
+                            exoPlayer.getMediaItemAt(index).mediaId
+                        }
+                        val order = validatedShuffleIndices(canonical, requested)
+                        if (revision < 0L || order == null) {
+                            return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+                        }
+                        exoPlayer.setShuffleOrder(DefaultShuffleOrder(order, revision))
+                        val acknowledgement = android.os.Bundle().apply {
+                            putLong(PlaybackCommands.SnapshotRevision, revision)
+                            putStringArrayList(PlaybackCommands.MediaIds, ArrayList(requested))
+                        }
+                        return Futures.immediateFuture(
+                            SessionResult(SessionResult.RESULT_SUCCESS, acknowledgement),
+                        )
+                    }
+                    return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
+                }
+            })
+            .build()
+    }
+
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
+
+    override fun onDestroy() {
+        mediaSession?.release()
+        mediaSession = null
+        player?.release()
+        player = null
+        runCatching { songCache?.release() }
+        songCache = null
+        super.onDestroy()
+    }
+}

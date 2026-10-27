@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.fnmusic.tv.core.playback"
+    namespace = "com.yueyin.tv.core.playback"
     compileSdk = 36
 
     defaultConfig { minSdk = 23 }

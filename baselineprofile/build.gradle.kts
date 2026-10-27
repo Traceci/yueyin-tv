@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.fnmusic.tv.baselineprofile"
+    namespace = "com.yueyin.tv.baselineprofile"
     compileSdk = 36
     targetProjectPath = ":app"
 

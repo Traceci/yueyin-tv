@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
-  "packageName": "com.fnmusic.tv.fork",
+  "packageName": "com.yueyin.tv",
   "versionName": "1.0.0",
   "versionCode": 1,
   "title": "悦音 1.0.0",
-  "notes": "## 关于与反馈\n- 设置页「关于」重排为两张卡片：版本、构建号、许可证一屏可见\n- 新增仓库反馈二维码，手机扫码即可提交问题\n## 应用内更新\n- 接入 GitHub Releases：自动检查新版本，有更新时在关于区直接提示\n- 下载后先校验 SHA-256 与 APK 签名，再交给系统安装\n## 性能\n- 移除长期闲置的分页控件与多余的空安全调用\n- 输入框与地址解析改为复用预编译正则",
+  "notes": "## 修复\n- 搜索：修复飞牛等无服务端搜索平台下的搜索超时与无结果问题（软超时 + 流式扫描 + 诊断提示）\n- 收藏：修复 Emby / Jellyfin / Subsonic / Plex 等协议收藏不生效，新增本地收藏兜底（Room 收藏表）\n## 品牌与包名\n- 应用显示名「悦音」，包名统一为 com.yueyin.tv\n## 其他（沿用 1.0.0）\n- 关于页重排、反馈二维码、应用内更新（GitHub Releases 自动检查 + SHA-256/签名校验）\n- 性能：移除闲置分页控件、复用预编译正则",
   "apk": {
-    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v1.0.0/fn-music-tv-1.0.0-sideload-release.apk",
-    "size": 7126224,
-    "sha256": "7d2a3941b6ebcdf38f7e8f15e3cf6d10de336339501925e449a5884135fc8454"
+    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v1.0.0/yueyin-tv-1.0.0-sideload-release.apk",
+    "size": 7126246,
+    "sha256": "b445ea045a566ba101c502ec7f7253aeb41dae14228554bf4995c156c87ddf35"
   },
-  "publishedAt": "2026-10-27T00:53:00Z",
+  "publishedAt": "2026-10-27T12:50:00Z",
   "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v1.0.0"
 }
