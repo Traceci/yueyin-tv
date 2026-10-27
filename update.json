@@ -6,7 +6,7 @@
   "title": "悦音 1.0.0",
   "notes": "## 修复\n- 搜索：修复飞牛等无服务端搜索平台下的搜索超时与无结果问题（软超时 + 流式扫描 + 诊断提示）\n- 收藏：修复 Emby / Jellyfin / Subsonic / Plex 等协议收藏不生效，新增本地收藏兜底（Room 收藏表）\n## 品牌与包名\n- 应用显示名「悦音」，包名统一为 com.yueyin.tv\n## 其他（沿用 1.0.0）\n- 关于页重排、反馈二维码、应用内更新（GitHub Releases 自动检查 + SHA-256/签名校验）\n- 性能：移除闲置分页控件、复用预编译正则",
   "apk": {
-    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v1.0.0/yueyin-tv-1.0.0-sideload-release.apk",
+    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v1.0.0/yueyin-tv-1.0.0.apk",
     "size": 7126246,
     "sha256": "b445ea045a566ba101c502ec7f7253aeb41dae14228554bf4995c156c87ddf35"
   },
