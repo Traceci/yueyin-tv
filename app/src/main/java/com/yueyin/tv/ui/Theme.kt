@@ -247,7 +247,7 @@ object FnGrid {
 
 /**
  * 折算后的**有效设计画布宽度（dp）**。
- * FnMusicTheme 已把密度按 [FnAdaptive.canvasScale] 放大，所以 16:9 电视上恒为 960dp；
+ * YueYinTheme 已把密度按 [FnAdaptive.canvasScale] 放大，所以 16:9 电视上恒为 960dp；
  * 这里反算出来，供网格计算列数时减去边距使用（不能用 Configuration.screenWidthDp，那是缩放前的值）。
  */
 @Composable
@@ -488,7 +488,7 @@ fun FnSkeleton(
 }
 
 @Composable
-fun FnMusicTheme(uiScale: Float = 1f, content: @Composable () -> Unit) {
+fun YueYinTheme(uiScale: Float = 1f, content: @Composable () -> Unit) {
     // 4K 电视（如 TCK65K）画布为 1920×1080dp，若按原密度渲染所有元素会显得只有
     // 1080p 电视的一半。这里做全局密度补偿：宽画布按 2× 折算，有效画布回到
     // 960×540dp，与 1080p 电视视觉完全一致；1080p 及以下设备不受影响。

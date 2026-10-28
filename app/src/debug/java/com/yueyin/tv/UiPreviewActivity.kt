@@ -44,7 +44,7 @@ import com.yueyin.tv.ui.BandEntry
 import com.yueyin.tv.ui.BandKind
 import com.yueyin.tv.ui.FeatureArtworkItem
 import com.yueyin.tv.ui.FnColors
-import com.yueyin.tv.ui.FnMusicTheme
+import com.yueyin.tv.ui.YueYinTheme
 import com.yueyin.tv.ui.HomePlaylistLockup
 import com.yueyin.tv.ui.HomeScreenLayout
 import com.yueyin.tv.ui.LocalAuthenticatedDependencies
@@ -63,7 +63,7 @@ class UiPreviewActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 val app = application as TvMusicApplication
                 val container = remember { AppContainer(app) }
                 CompositionLocalProvider(LocalAuthenticatedDependencies provides container) {

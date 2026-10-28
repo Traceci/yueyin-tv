@@ -79,6 +79,6 @@ class OkHttpLyricsHttpClient(
         }
 
     private companion object {
-        const val USER_AGENT = "FnMusicTV/0.1 (https://github.com/QiaoKes/fn-music-tv)"
+        const val USER_AGENT = "YueYinTV/1.0 (https://github.com/Traceci/yueyin-tv)"
     }
 }

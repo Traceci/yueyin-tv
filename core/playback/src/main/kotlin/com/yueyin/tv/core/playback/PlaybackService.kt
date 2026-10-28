@@ -69,7 +69,7 @@ internal fun createPlaybackRenderersFactory(context: Context): DefaultRenderersF
 internal fun createPlaybackHttpDataSourceFactory(): DefaultHttpDataSource.Factory =
     DefaultHttpDataSource.Factory()
         .setAllowCrossProtocolRedirects(false)
-        .setUserAgent("FnMusicTV/0.1")
+        .setUserAgent("YueYinTV/1.0")
 
 internal fun playbackRequestHeaders(token: String, accessCode: String?, relayMode: Boolean): Map<String, String> =
     buildMap {

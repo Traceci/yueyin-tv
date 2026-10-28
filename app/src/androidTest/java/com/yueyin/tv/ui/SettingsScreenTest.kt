@@ -26,7 +26,7 @@ class SettingsScreenTest {
         compose.setContent {
             val scope = rememberCoroutineScope()
             val retainedState = remember(scope) { LibraryRetainedStateStore(scope) }
-            FnMusicTheme {
+            YueYinTheme {
                 CompositionLocalProvider(LocalLibraryRetainedState provides retainedState) {
                     SettingsScreen(application.container)
                 }

@@ -32,7 +32,7 @@ class TouchButtonTest {
     @Test fun physicalTapInvokesCallbackExactlyOnce() {
         val clicks = AtomicInteger(0)
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 Button(
                     onClick = { clicks.incrementAndGet() },
                     modifier = Modifier
@@ -54,7 +54,7 @@ class TouchButtonTest {
         val clicks = AtomicInteger(0)
         lateinit var rowState: LazyListState
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 rowState = rememberLazyListState()
                 Box(Modifier.width(420.dp).height(140.dp)) {
                     LazyRow(
@@ -89,7 +89,7 @@ class TouchButtonTest {
         val clicks = AtomicInteger(0)
         lateinit var columnState: LazyListState
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 columnState = rememberLazyListState()
                 Box(Modifier.width(280.dp).height(240.dp)) {
                     LazyColumn(

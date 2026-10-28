@@ -1976,7 +1976,7 @@ private fun BrowseMy(
         com.yueyin.tv.core.model.connect.ConnectType.EMBY -> "Emby"
         else -> activeProfile.active?.type?.displayName.orEmpty()
     }
-    // Dialog 是独立 Window，不会继承 FnMusicTheme 里放大过的 LocalDensity；
+    // Dialog 是独立 Window，不会继承 YueYinTheme 里放大过的 LocalDensity；
     // 不透传就会导致弹层里 48dp 边距在 4K 上几乎贴边、560dp 输入框却占满屏（比例全乱）。
     Box(Modifier.fillMaxSize()) {
     Column(

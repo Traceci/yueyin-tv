@@ -32,7 +32,7 @@ class SettingsCheckboxTest {
     @Test fun dpadCenterAndTouchEachToggleExactlyOnce() {
         val toggles = AtomicInteger(0)
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 var selected by remember { mutableStateOf(false) }
                 val focusRequester = remember { FocusRequester() }
                 val inputModeManager = LocalInputModeManager.current

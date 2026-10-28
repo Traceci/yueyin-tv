@@ -7,7 +7,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.yueyin.tv.core.data.repository.LoginDraft
 import com.yueyin.tv.core.data.repository.LoginHistoryEntry
-import com.yueyin.tv.ui.FnMusicTheme
+import com.yueyin.tv.ui.YueYinTheme
 import com.yueyin.tv.ui.LoginScreen
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -24,7 +24,7 @@ class LoginHistorySmokeTest {
         val selectedProfile = AtomicReference<String>()
         val entry = LoginHistoryEntry("profile-1", "10.0.0.115:5666", "test", useHttps = false)
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 LoginScreen(
                     savedServer = "",
                     recentServers = emptyList(),
@@ -68,7 +68,7 @@ class LoginHistorySmokeTest {
         val deleteCount = AtomicInteger()
         val entry = LoginHistoryEntry("profile-1", "nas.local", "test", useHttps = true)
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 LoginScreen(
                     savedServer = "",
                     recentServers = emptyList(),

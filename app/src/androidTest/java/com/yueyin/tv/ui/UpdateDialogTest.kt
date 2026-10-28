@@ -27,7 +27,7 @@ class UpdateDialogTest {
     @Test fun ignoredManualVersionShowsAllActionsAndUpdatesOnce() {
         val controller = FakeUpdateController()
         compose.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 UpdateDialogHost(
                     UpdateUiState.Available(manifest(), ignored = true, source = UpdateCheckSource.Manual),
                     controller,
@@ -62,7 +62,7 @@ class UpdateDialogTest {
         """.trimIndent()
 
         compose.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 UpdateDialogHost(
                     UpdateUiState.Available(
                         manifest().copy(notes = longNotes),
@@ -83,7 +83,7 @@ class UpdateDialogTest {
     @Test fun downloadProgressHasPercentAndCancelAction() {
         val controller = FakeUpdateController()
         compose.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 UpdateDialogHost(UpdateUiState.Downloading(manifest(), downloadedBytes = 512), controller)
             }
         }

@@ -20,12 +20,12 @@ val managedVersionName = requireNotNull(versionProperties.getProperty("VERSION_N
     "VERSION_NAME is required in version.properties"
 }
 val releaseSigningDirectory = file(System.getProperty("user.home")).resolve(".config/fn-music-tv")
-val releaseKeystoreFile = providers.gradleProperty("fnMusicReleaseStoreFile").orNull
+val releaseKeystoreFile = providers.gradleProperty("yueyinReleaseStoreFile").orNull
     ?.let(::file)
     ?: releaseSigningDirectory.resolve("release.jks")
 val releasePasswordFile = releaseSigningDirectory.resolve("release.password")
-val releaseSigningPassword = providers.gradleProperty("fnMusicReleasePassword").orNull
-    ?: providers.environmentVariable("FN_MUSIC_RELEASE_PASSWORD").orNull
+val releaseSigningPassword = providers.gradleProperty("yueyinReleasePassword").orNull
+    ?: providers.environmentVariable("YUEYIN_RELEASE_PASSWORD").orNull
     ?: releasePasswordFile.takeIf { it.isFile }?.readText()?.trim()
 val releaseSigningReady = releaseKeystoreFile.isFile && !releaseSigningPassword.isNullOrBlank()
 val allowUnsignedRelease = providers.gradleProperty("allowUnsignedRelease").orNull?.toBoolean() == true
@@ -33,11 +33,11 @@ val allowUnsignedRelease = providers.gradleProperty("allowUnsignedRelease").orNu
 // jsDelivr 镜像在国内比 raw.githubusercontent.com 稳定，UpdateClient 会在失败时回退。
 val defaultUpdateManifestUrl = "https://cdn.jsdelivr.net/gh/Traceci/yueyin-tv@main/update.json"
 val defaultUpdateManifestFallbackUrl = "https://raw.githubusercontent.com/Traceci/yueyin-tv/main/update.json"
-val updateManifestFallbackUrl = providers.gradleProperty("fnMusicUpdateManifestFallbackUrl").orNull
-    ?: providers.environmentVariable("FN_MUSIC_UPDATE_MANIFEST_FALLBACK_URL").orNull
+val updateManifestFallbackUrl = providers.gradleProperty("yueyinUpdateManifestFallbackUrl").orNull
+    ?: providers.environmentVariable("YUEYIN_UPDATE_MANIFEST_FALLBACK_URL").orNull
     ?: defaultUpdateManifestFallbackUrl
-val updateManifestUrl = providers.gradleProperty("fnMusicUpdateManifestUrl").orNull
-    ?: providers.environmentVariable("FN_MUSIC_UPDATE_MANIFEST_URL").orNull
+val updateManifestUrl = providers.gradleProperty("yueyinUpdateManifestUrl").orNull
+    ?: providers.environmentVariable("YUEYIN_UPDATE_MANIFEST_URL").orNull
     ?: defaultUpdateManifestUrl
 val flacDecoderAar = rootProject.file(
     "third_party/media3-decoder-flac/media3-decoder-flac-1.10.1-libflac-1.5.0.aar",
@@ -148,14 +148,14 @@ base {
 
 val verifyReleaseSigning by tasks.registering {
     group = "verification"
-    description = "Verifies the local Fn Music TV release signing identity."
+    description = "Verifies the local YueYin TV release signing identity."
     doLast {
         if (allowUnsignedRelease) return@doLast
         check(releaseKeystoreFile.isFile) {
             "Release keystore is missing: $releaseKeystoreFile"
         }
         check(!releaseSigningPassword.isNullOrBlank()) {
-            "Release signing password is missing. Set fnMusicReleasePassword, FN_MUSIC_RELEASE_PASSWORD, or $releasePasswordFile"
+            "Release signing password is missing. Set yueyinReleasePassword, YUEYIN_RELEASE_PASSWORD, or $releasePasswordFile"
         }
     }
 }
@@ -171,7 +171,7 @@ val verifySideloadUpdateConfiguration by tasks.registering {
                 parsed?.userInfo == null &&
                 parsed?.fragment == null,
         ) {
-            "Sideload Release requires an HTTPS fnMusicUpdateManifestUrl without credentials or fragments."
+            "Sideload Release requires an HTTPS yueyinUpdateManifestUrl without credentials or fragments."
         }
     }
 }

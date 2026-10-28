@@ -6,7 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.lifecycleScope
-import com.yueyin.tv.ui.FnMusicApp
+import com.yueyin.tv.ui.YueYinApp
 import com.yueyin.tv.update.UpdateEffect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -20,7 +20,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val container = appContainer
         setContent {
-            FnMusicApp(container) { exitApplication(container) }
+            YueYinApp(container) { exitApplication(container) }
         }
         lifecycleScope.launch {
             container.updateCoordinator.effects.collectLatest { effect ->

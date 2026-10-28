@@ -60,7 +60,7 @@ class PlayerOverlayFocusTest {
             PlaybackQueueItem("last", "Last", "Artist C", queueIndex = 52, isCurrent = false),
         )
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 PlaybackQueueOverlay(
                     items = items,
                     loadedCount = 9,
@@ -91,7 +91,7 @@ class PlayerOverlayFocusTest {
             ),
         )
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 PlaybackQueueOverlay(
                     items = queue.value,
                     loadedCount = queue.value.size,
@@ -143,7 +143,7 @@ class PlayerOverlayFocusTest {
             )
         }
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 PlaybackQueueOverlay(
                     items = items,
                     loadedCount = items.size,
@@ -167,7 +167,7 @@ class PlayerOverlayFocusTest {
     @Test fun queueRowTraversesToDeleteAndRemovesItsOccurrenceIndex() {
         val removedQueueIndex = AtomicInteger(-1)
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 PlaybackQueueOverlay(
                     items = listOf(
                         PlaybackQueueItem("current", "Current", "Artist", queueIndex = 37, isCurrent = true),
@@ -271,7 +271,7 @@ class PlayerOverlayFocusTest {
     @Test fun nowPlayingPillKeepsCjkTitleInsideItsBounds() {
         val titleLayout = AtomicReference<TextLayoutResult>()
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     NowPlayingPill(
                         playback = PlaybackUiState(
@@ -316,7 +316,7 @@ class PlayerOverlayFocusTest {
 
     @Test fun queueTrackTextGroupIsCenteredInsideItsRow() {
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 PlaybackQueueOverlay(
                     items = listOf(
                         PlaybackQueueItem("current", "队列歌曲", "队列歌手", queueIndex = 0, isCurrent = true),
@@ -345,7 +345,7 @@ class PlayerOverlayFocusTest {
         val retries = AtomicInteger(0)
         val interactions = AtomicInteger(0)
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 PlayerRetryHarness(
                     onRetry = { retries.incrementAndGet() },
                     onInteraction = { interactions.incrementAndGet() },
@@ -371,7 +371,7 @@ class PlayerOverlayFocusTest {
     @Test fun touchingModeResetsTheInteractionTimer() {
         val interactions = AtomicInteger(0)
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 PlayerControlHarness(
                     roaming = false,
                     initialFocus = ControlInitialFocus.Mode,
@@ -391,7 +391,7 @@ class PlayerOverlayFocusTest {
     @Test fun touchingProgressSeeksToTheTappedPosition() {
         val seekDelta = AtomicLong(Long.MIN_VALUE)
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 PlayerControlHarness(
                     roaming = false,
                     onCycleMode = {},
@@ -425,7 +425,7 @@ class PlayerOverlayFocusTest {
     @Test fun touchingTransportInvokesTheExistingPlaybackCallback() {
         val playPauseCalls = AtomicInteger(0)
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 PlayerControlHarness(
                     roaming = false,
                     onCycleMode = {},
@@ -463,7 +463,7 @@ class PlayerOverlayFocusTest {
 
     @Test fun firstBackPressHidesVisibleControls() {
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 PlayerBackKeyHarness()
             }
         }
@@ -478,7 +478,7 @@ class PlayerOverlayFocusTest {
     @Test fun centerPressWithHiddenControlsTogglesPlaybackOnlyOnce() {
         val playPauseCalls = AtomicInteger(0)
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 PlayerRevealKeyHarness(onPlayPause = { playPauseCalls.incrementAndGet() })
             }
         }
@@ -494,7 +494,7 @@ class PlayerOverlayFocusTest {
     @Test fun fastCenterPressDoesNotConsumeTheNextPlaybackToggle() {
         val playPauseCalls = AtomicInteger(0)
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 PlayerRevealKeyHarness(onPlayPause = { playPauseCalls.incrementAndGet() })
             }
         }
@@ -519,7 +519,7 @@ class PlayerOverlayFocusTest {
         }
         val showQueue = mutableStateOf(false)
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 if (showQueue.value) {
                     PlaybackQueueOverlay(
                         items = items,
@@ -552,7 +552,7 @@ class PlayerOverlayFocusTest {
 
     @Test fun selectedFavoriteKeepsItsStateWhileFocused() {
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 PlayerControlHarness(
                     roaming = false,
                     initialFocus = ControlInitialFocus.Favorite,
@@ -584,7 +584,7 @@ class PlayerOverlayFocusTest {
         exits: AtomicInteger = AtomicInteger(),
     ) {
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 PlayerControlHarness(
                     roaming = roaming,
                     onCycleMode = { modeCycles.incrementAndGet() },

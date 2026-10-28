@@ -42,7 +42,7 @@ class PlayerLyricsLayoutTest {
 
     @Test fun lyricLinesStayOutOfTheDpadFocusGraph() {
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 val buttonFocus = remember { FocusRequester() }
                 val inputModeManager = LocalInputModeManager.current
                 LaunchedEffect(Unit) {
@@ -68,7 +68,7 @@ class PlayerLyricsLayoutTest {
     @Test fun longLyricsWrapInsideTheAvailableWidth() {
         val longLine = "这是一句用于验证电视歌词布局的很长歌词，它需要在可用宽度内自然换行而不能越过播放器边界"
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 Box(Modifier.width(520.dp).testTag("lyrics-host")) {
                     TvLyrics(
                         SyncedLyrics(listOf(SyncedLine(longLine, null, 0, 4_000))),
@@ -93,7 +93,7 @@ class PlayerLyricsLayoutTest {
         lateinit var positionMs: MutableState<Long>
         composeRule.mainClock.autoAdvance = false
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 positionMs = rememberTestState(0L)
                 TvLyrics(
                     lyrics = testLyrics,

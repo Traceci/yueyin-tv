@@ -25,7 +25,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "FnMusicTV"
+rootProject.name = "YueYinTV"
 include(":app")
 include(":core:model")
 include(":core:lyrics")

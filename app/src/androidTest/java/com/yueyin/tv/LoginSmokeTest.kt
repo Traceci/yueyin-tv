@@ -20,7 +20,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.state.ToggleableState
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
-import com.yueyin.tv.ui.FnMusicTheme
+import com.yueyin.tv.ui.YueYinTheme
 import com.yueyin.tv.ui.LoginScreen
 import org.junit.Before
 import org.junit.Rule
@@ -34,7 +34,7 @@ class LoginSmokeTest {
     @Before fun renderLogin() {
         loginAttempts.set(0)
         composeRule.setContent {
-            FnMusicTheme {
+            YueYinTheme {
                 LoginScreen(
                     savedServer = "",
                     recentServers = emptyList(),

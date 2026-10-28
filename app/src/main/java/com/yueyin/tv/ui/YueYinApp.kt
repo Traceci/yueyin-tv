@@ -35,6 +35,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,6 +63,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -96,12 +98,19 @@ import kotlinx.coroutines.launch
 private const val STARTUP_SPLASH_HOLD_MS = 620L
 
 @Composable
-internal fun FnMusicApp(container: AppUiDependencies, onExitApplication: () -> Unit) {
+internal fun YueYinApp(container: AppUiDependencies, onExitApplication: () -> Unit) {
     val session by container.sessionRepository.state.collectAsStateWithLifecycle()
     val playback by container.playbackController.state.collectAsStateWithLifecycle()
     val updateState by container.updateController.state.collectAsStateWithLifecycle()
     // 界面缩放档位（设置页可调）：登录前后都生效，所以在这里读而不是在 AuthenticatedApp 里。
     val preferences by container.appPreferences.state.collectAsStateWithLifecycle()
+    // 听歌时保持屏幕常亮：避免电视在连续播放过程中因系统空闲超时进入屏保。
+    // 仅在正在播放时加 FLAG_KEEP_SCREEN_ON；暂停或退出即恢复，不影响息屏省电。
+    val view = LocalView.current
+    DisposableEffect(playback.isPlaying) {
+        view.keepScreenOn = playback.isPlaying
+        onDispose { view.keepScreenOn = false }
+    }
     // 启动过渡：冷启动先展示品牌图标，停留后图标淡出放大，同时首页内容淡入。
     var splashDismissed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
@@ -115,7 +124,7 @@ internal fun FnMusicApp(container: AppUiDependencies, onExitApplication: () -> U
             guideVisible = true
         }
     }
-    FnMusicTheme(uiScale = preferences.uiScale.factor) {
+    YueYinTheme(uiScale = preferences.uiScale.factor) {
         Box(Modifier.fillMaxSize().background(FnColors.Background)) {
             val contentAlpha by animateFloatAsState(
                 targetValue = if (splashDismissed) 1f else 0f,
