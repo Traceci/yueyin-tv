@@ -1429,8 +1429,11 @@ internal fun HomeScreenLayout(
     }
     // 内容边距 48dp：官方过扫描保护下限（960×5%）。
     // 一级导航条已上提到路由之外常驻，这里只负责内容区。
+    // 顶部总留白 = 这里的 8dp + 网格自身 contentPadding 的 4dp = 12dp。
+    // 四个一级页面（首页 / 专辑 / 歌单 / 我的）首屏第一个元素的顶边对齐到同一条线，
+    // 基准取「我的」页 ProfileStrip 上方的 12dp。原来是 6dp，比基准少 6dp，看着顶部发紧。
     Column(Modifier.fillMaxSize().padding(horizontal = 48.dp).padding(bottom = 24.dp)) {
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(8.dp))
         LazyVerticalGrid(
             state = gridState,
             columns = GridCells.Fixed(playlistColumns),
@@ -2875,7 +2878,10 @@ private fun AllPlaylists(
         Modifier
             .fillMaxSize()
             // 与首页统一为 48dp（官方过扫描下限）：两页同宽，翻页时卡片不会左右跳动
-            .padding(horizontal = 48.dp, vertical = 28.dp)
+            // 顶部 12dp 与「首页 / 专辑 / 我的」统一（基准是「我的」页 ProfileStrip 上方的 12dp）；
+            // 原来上下对称给 28dp，比专辑页多 8dp，歌单页首屏内容整体比别的页低一截。
+            .padding(horizontal = 48.dp)
+            .padding(top = 12.dp, bottom = 28.dp)
             .onPreviewKeyEvent { event ->
                 val key = event.key
                 val type = event.type
@@ -2923,26 +2929,30 @@ private fun AllPlaylists(
             },
     ) {
         Column(Modifier.fillMaxSize()) {
-            Spacer(Modifier.height(6.dp))
+            // 页头结构与「全部专辑」页（PagedCatalogPage）逐项对齐：
+            // 同样的 34sp 标题、标题右侧同行的灰色小字、标题后 14dp 进网格。
+            // 原来是「30sp 标题 + 独占一行的 14sp 副标题 + 16dp」，比专辑页多吃两行高度，
+            // 首屏第一排卡片因此比专辑页低 31dp，看着像「歌单页和导航栏之间空得太开」。
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Column {
-                    Text("歌单", fontSize = 30.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        when {
-                            reordering && pickedUp -> "移动中：方向键调整位置，按确定键放下，返回键保存"
-                            reordering -> "排序模式：方向键选择歌单，按确定键拾起"
-                            else -> "共 ${displayList.size} 个歌单 · 全部铺开 · 长按确定键进入排序"
-                        },
-                        color = FnColors.Muted,
-                        fontSize = 14.sp,
-                    )
-                }
+                Text("歌单", fontSize = 34.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.width(14.dp))
+                Text(
+                    when {
+                        reordering && pickedUp -> "移动中：方向键调整位置，按确定键放下，返回键保存"
+                        reordering -> "排序模式：方向键选择歌单，按确定键拾起"
+                        else -> "共 ${displayList.size} 个歌单 · 全部铺开 · 长按确定键进入排序"
+                    },
+                    color = FnColors.Muted,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
                 if (reordering) {
+                    Spacer(Modifier.width(18.dp))
                     Text(
                         if (pickedUp) "移动中…" else "排序中…",
                         color = FnColors.Coral,
@@ -2951,7 +2961,7 @@ private fun AllPlaylists(
                     )
                 }
             }
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(14.dp))
             if (displayList.isEmpty()) {
                 Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                     Text("还没有歌单", color = FnColors.Muted, fontSize = 19.sp)
@@ -3142,7 +3152,9 @@ private fun <T> PagedCatalogPage(
     // 每列实际宽度：整行吸附要靠它反推行高（海报卡高 = 列宽 + 文字块）
     val columnWidth =
         ((availableWidthDp - (columns - 1) * FnGrid.Gutter.value) / columns).dp
-    Column(Modifier.fillMaxSize().padding(horizontal = 48.dp).padding(top = 20.dp, bottom = 28.dp)) {
+    // 顶部留白 12dp：与「我的」页 ProfileStrip 上方、「首页」品牌区上方同一条基准线。
+    // 原先是 20dp，比另外两页低 8dp，切页时标题会在垂直方向上跳一下。
+    Column(Modifier.fillMaxSize().padding(horizontal = 48.dp).padding(top = 12.dp, bottom = 28.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, fontSize = 34.sp, fontWeight = FontWeight.Bold)
             snapshot.total?.let { total ->
