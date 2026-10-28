@@ -176,7 +176,8 @@ fun DrawScope.drawLyricsLine(
     blendMode: BlendMode,
     isRtl: Boolean,
     showDebugRectangles: Boolean = false,
-    showPhonetic: Boolean = true
+    showPhonetic: Boolean = true,
+    karaokeProgressEnabled: Boolean = true
 ) {
     rowRenderData.forEach { rowData ->
         val rowLayouts = rowData.rowLayouts
@@ -207,7 +208,12 @@ fun DrawScope.drawLyricsLine(
                 showPhonetic
             )
 
-            val progressBrush = createLineGradientBrush(rowData, currentTimeMs, isRtl)
+            val progressBrush = if (karaokeProgressEnabled) {
+                createLineGradientBrush(rowData, currentTimeMs, isRtl)
+            } else {
+                // 关闭逐字填充：当前句整体点亮，不做从左到右的扫填
+                SolidColor(Color.White)
+            }
             drawRect(
                 brush = progressBrush,
                 topLeft = layerBounds.topLeft,
@@ -425,7 +431,8 @@ fun KaraokeLineText(
     showPhonetic: Boolean = true,
     precalculatedLayouts: List<SyllableLayout>? = null,
     isDuoView: Boolean = false,
-    textMeasurer: TextMeasurer = rememberTextMeasurer()
+    textMeasurer: TextMeasurer = rememberTextMeasurer(),
+    karaokeProgressEnabled: Boolean = true
 ) {
     val isLineRtl = remember(line.syllables) { line.syllables.any { it.content.isRtl() } }
 
@@ -503,7 +510,8 @@ fun KaraokeLineText(
                         showDebugRectangles = showDebugRectangles,
                         showTranslation = showTranslation,
                         showPhonetic = showPhonetic,
-                        textMeasurer = textMeasurer
+                        textMeasurer = textMeasurer,
+                        karaokeProgressEnabled = karaokeProgressEnabled
                     )
                 }
             }
@@ -617,7 +625,8 @@ fun KaraokeLineText(
                     blendMode = blendMode,
                     isRtl = isLineRtl,
                     showDebugRectangles = showDebugRectangles,
-                    showPhonetic = showPhonetic
+                    showPhonetic = showPhonetic,
+                    karaokeProgressEnabled = karaokeProgressEnabled
                 )
             }
         }

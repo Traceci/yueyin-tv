@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
   "packageName": "com.yueyin.tv",
-  "versionName": "1.0.0",
-  "versionCode": 1,
-  "title": "悦音 1.0.0",
-  "notes": "## 修复\n- 搜索：修复飞牛等无服务端搜索平台下的搜索超时与无结果问题（软超时 + 流式扫描 + 诊断提示）\n- 收藏：修复 Emby / Jellyfin / Subsonic / Plex 等协议收藏不生效，新增本地收藏兜底（Room 收藏表）\n## 品牌与包名\n- 应用显示名「悦音」，包名统一为 com.yueyin.tv\n## 其他（沿用 1.0.0）\n- 关于页重排、反馈二维码、应用内更新（GitHub Releases 自动检查 + SHA-256/签名校验）\n- 性能：移除闲置分页控件、复用预编译正则",
+  "versionName": "1.0.1",
+  "versionCode": 2,
+  "title": "悦音 1.0.1",
+  "notes": "## 文字与布局自适应（本版重点）\n- 歌单卡 / 专辑卡文字高度按系统字体缩放（sp×fontScale）计算，在 1.17× 等大字体下不再被截断或省略\n- 专辑页整行吸附行高与卡片同源，首页与全部歌单共用同一歌单卡组件（一处改两边生效）\n- 设置 / 登录 / 连接 / 遥控器说明等滚动页焦点自动滚入视野（新增 FocusScroll 组件）\n## 播放页与视觉\n- 重写 LiquidBackdrop 氛围背景，新增 AmbientGlowOverlay / DiscArtwork 涟漪 / PosterBlurredBackdrop\n- 设计令牌收敛：FnType / FnRadius / FnColors 统一，消除逐帧重组\n- 新增「氛围特效」设置分区（环境光 / 涟漪 / 动态配色 / 卡拉OK填充 / 模糊背景等开关）\n- 卡拉OK 歌词层 UI 开关（核心播放改动已回退至干净 1.0.0 基线）\n## 沿用 1.0.0 的修复\n- 搜索：飞牛等无服务端搜索平台下的软超时 + 流式扫描 + 诊断提示\n- 收藏：Emby / Jellyfin / Subsonic / Plex 协议收藏，本地收藏兜底（Room 收藏表）\n- 应用显示名「悦音」，包名 com.yueyin.tv，应用内更新自动检查 + SHA-256/签名校验",
   "apk": {
-    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v1.0.0/yueyin-tv-1.0.0.apk",
-    "size": 7126246,
-    "sha256": "b445ea045a566ba101c502ec7f7253aeb41dae14228554bf4995c156c87ddf35"
+    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v1.0.1/yueyin-tv-1.0.1.apk",
+    "size": 7142624,
+    "sha256": "9dea82ea032b8be33f05325f265ede9bc6eb2acad323865dd9a1e0dfccd9bf05"
   },
-  "publishedAt": "2026-10-27T12:50:00Z",
-  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v1.0.0"
+  "publishedAt": "2026-10-28T11:40:00Z",
+  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v1.0.1"
 }

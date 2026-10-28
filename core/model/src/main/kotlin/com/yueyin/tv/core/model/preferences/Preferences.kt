@@ -29,6 +29,21 @@ enum class UiScale(val factor: Float) {
     }
 }
 
+/**
+ * 播放页氛围特效：控制 CD 唱片 / 大海报模式下的视觉增强。
+ * - Off：关闭所有特效
+ * - Glow：全屏呼吸光晕（颜色跟随封面主色），适合大海报模式
+ * - Ripple：网易云式 3D 唱片涟漪（扩散环 + 随机光点），适合 CD 模式
+ * - Auto：按显示形态自动选择（CD→Ripple，大海报→Glow，迷你歌词→Off）
+ */
+enum class AmbientEffect {
+    Off, Glow, Ripple, Auto;
+
+    companion object {
+        fun of(name: String?): AmbientEffect = entries.firstOrNull { it.name == name } ?: Auto
+    }
+}
+
 data class AppPreferencesState(
     val playerStyle: PlayerStyle = PlayerStyle.Cover,
     val cacheBudget: CacheBudget = CacheBudget.Default,
@@ -39,6 +54,14 @@ data class AppPreferencesState(
     val backgroundContinueOnExit: Boolean = false,
     /** 界面缩放档位，默认「紧凑」（全局缩小 8%）。 */
     val uiScale: UiScale = UiScale.Compact,
+    /** 播放页氛围特效模式（关闭/呼吸光晕/3D唱片涟漪/自动）。 */
+    val ambientEffect: AmbientEffect = AmbientEffect.Auto,
+    /** 是否从封面提取主色并给播放页整体染色。 */
+    val dynamicColor: Boolean = true,
+    /** 是否启用逐字卡拉OK歌词填充（当前句按时间从左到右高亮）。 */
+    val karaokeFill: Boolean = true,
+    /** 大海报模式是否把封面虚化为全屏背景。 */
+    val blurredBackdrop: Boolean = true,
 )
 
 data class CacheUsage(

@@ -131,7 +131,9 @@ fun KaraokeLyricsView(
     offset: Dp = 32.dp,
     keepAliveZone: Dp = 100.dp,
     blurDelta: Float = 3f,
-    showDebugRectangles: Boolean = false
+    showDebugRectangles: Boolean = false,
+    /** 是否启用逐字卡拉OK填充（关：当前句整体点亮，不从左到右扫填）。 */
+    karaokeProgressEnabled: Boolean = true
 ) {
     val density = LocalDensity.current
     val stableNormalTextStyle = remember(normalLineTextStyle) { normalLineTextStyle }
@@ -471,7 +473,8 @@ fun KaraokeLyricsView(
                                                 showDebugRectangles = showDebugRectangles,
                                                 showTranslation = showTranslation,
                                                 showPhonetic = showPhonetic,
-                                                precalculatedLayouts = layoutCache[index]
+                                                precalculatedLayouts = layoutCache[index],
+                                                karaokeProgressEnabled = karaokeProgressEnabled
                                             )
                                         }
                                     }

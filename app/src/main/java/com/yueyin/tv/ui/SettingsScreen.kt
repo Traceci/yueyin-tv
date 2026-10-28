@@ -65,10 +65,19 @@ import com.yueyin.tv.update.UpdateUiState
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 
-private val SettingsPanel = Color(0xFF151A19)
-private val SettingsControl = Color(0xFF292D31)
-private val SettingsDividerColor = Color(0xFF2A302F)
-private val SettingsBorderColor = Color(0xFF303735)
+// 面板与控件统一走全局 FnColors（蓝黑系）。
+// 原来这里有一套独立的绿灰配色（#151A19 / #292D31 / #2A302F / #303735），
+// 色相与主界面完全不同，从首页点进设置会像换了一套皮肤——现已全部对齐。
+private val SettingsPanel = FnColors.Surface
+private val SettingsControl = FnColors.SurfaceAlt
+private val SettingsDividerColor = Color.White.copy(alpha = 0.08f)
+private val SettingsBorderColor = Color.White.copy(alpha = 0.10f)
+/** 选中底色：主色 16% 压暗后的暗珊瑚，和主界面选中态同源。 */
+private val SettingsSelected = FnColors.Coral.copy(alpha = 0.16f)
+/** 未选中项的聚焦底色：在面板色上提亮一档的中性蓝。 */
+private val SettingsControlFocused = Color(0xFF232B36)
+/** 未选中项的描边：中性白发丝线，不再用灰绿色。 */
+private val SettingsControlBorder = Color.White.copy(alpha = 0.16f)
 
 @Composable
 internal fun SettingsScreen(container: AuthenticatedAppDependencies) {
@@ -111,27 +120,14 @@ internal fun SettingsScreen(container: AuthenticatedAppDependencies) {
         runCatching { coverStyleFocus.requestFocus() }
     }
 
-    Box(Modifier.fillMaxSize().background(FnColors.Background)) {
-        Box(
-            Modifier
-                .align(Alignment.TopEnd)
-                .offset(x = 84.dp, y = (-132).dp)
-                .size(280.dp)
-                .background(Color(0xFF141719), CircleShape),
-        )
-        Box(
-            Modifier
-                .align(Alignment.BottomEnd)
-                .offset(x = 70.dp, y = 104.dp)
-                .size(230.dp)
-                .background(Color(0xFF131617), CircleShape),
-        )
-
+    // 不再自绘不透明底色与两个灰绿装饰圆：让全局氛围背景透出来，
+    // 设置页与首页共用同一层底，翻页时底色不会突变。
+    Box(Modifier.fillMaxSize()) {
         Column(
             Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 40.dp, vertical = 28.dp),
+                .padding(horizontal = 48.dp, vertical = 28.dp),
         ) {
             Text("设置", fontSize = 30.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
@@ -141,8 +137,8 @@ internal fun SettingsScreen(container: AuthenticatedAppDependencies) {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .background(SettingsPanel, RoundedCornerShape(9.dp))
-                    .border(0.75.dp, SettingsBorderColor, RoundedCornerShape(9.dp))
+                    .background(SettingsPanel, RoundedCornerShape(FnRadius.md))
+                    .border(1.dp, SettingsBorderColor, RoundedCornerShape(FnRadius.md))
                     .padding(horizontal = 22.dp),
             ) {
                 SettingsRow(label = "播放界面", height = 65.dp) {
@@ -414,8 +410,8 @@ internal fun SettingsScreen(container: AuthenticatedAppDependencies) {
                 Modifier
                     .fillMaxWidth()
                     .height(64.dp)
-                    .background(SettingsPanel, RoundedCornerShape(9.dp))
-                    .border(0.75.dp, SettingsBorderColor, RoundedCornerShape(9.dp))
+                    .background(SettingsPanel, RoundedCornerShape(FnRadius.md))
+                    .border(1.dp, SettingsBorderColor, RoundedCornerShape(FnRadius.md))
                     .padding(horizontal = 22.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -481,24 +477,24 @@ private fun SettingsChoiceButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(FnRadius.lg)
     Button(
         onClick = onClick,
-        modifier = modifier.height(34.dp),
+        modifier = modifier.focusBringIntoView().height(34.dp),
         shape = ButtonDefaults.shape(shape, shape, shape, shape, shape),
         scale = ButtonDefaults.scale(focusedScale = 1f),
         colors = ButtonDefaults.colors(
-            containerColor = if (selected) Color(0xFF4B3936) else SettingsControl,
+            containerColor = if (selected) SettingsSelected else SettingsControl,
             contentColor = FnColors.Text,
             // 聚焦≠选中：未选中的聚焦用中性蓝，避免被误认为“也被选中”
-            focusedContainerColor = if (selected) Color(0xFF513B37) else Color(0xFF232B36),
+            focusedContainerColor = if (selected) SettingsSelected else SettingsControlFocused,
             focusedContentColor = FnColors.Text,
             pressedContainerColor = FnColors.FocusFill,
             pressedContentColor = FnColors.Text,
         ),
         border = ButtonDefaults.border(
             border = Border(
-                BorderStroke(if (selected) 1.5.dp else 0.5.dp, if (selected) FnColors.Coral else Color(0xFF454B4D)),
+                BorderStroke(if (selected) 1.5.dp else 0.5.dp, if (selected) FnColors.Coral else SettingsControlBorder),
                 shape = shape,
             ),
             // 聚焦边框：选中项用珊瑚橙，未选中项用暖金，一眼可辨
@@ -525,11 +521,11 @@ internal fun SettingsActionButton(
     leading: String? = null,
     emphasis: Boolean = false,
 ) {
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(FnRadius.lg)
     Button(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.height(34.dp),
+        modifier = modifier.focusBringIntoView().height(34.dp),
         shape = ButtonDefaults.shape(shape, shape, shape, shape, shape),
         scale = ButtonDefaults.scale(focusedScale = 1f),
         colors = ButtonDefaults.colors(
@@ -539,12 +535,12 @@ internal fun SettingsActionButton(
             focusedContentColor = FnColors.Text,
             pressedContainerColor = FnColors.Coral,
             pressedContentColor = FnColors.Text,
-            disabledContainerColor = if (emphasis) Color(0xFF5A3A33) else Color(0xFF24282B),
+            disabledContainerColor = if (emphasis) FnColors.Coral.copy(alpha = 0.34f) else FnColors.SurfaceAlt.copy(alpha = 0.55f),
             disabledContentColor = FnColors.Muted,
         ),
         border = ButtonDefaults.border(
             border = Border(
-                BorderStroke(if (emphasis) 1.5.dp else 0.5.dp, if (emphasis) FnColors.Coral else Color(0xFF454B4D)),
+                BorderStroke(if (emphasis) 1.5.dp else 0.5.dp, if (emphasis) FnColors.Coral else SettingsControlBorder),
                 shape = shape,
             ),
             focusedBorder = Border(BorderStroke(3.dp, FnFocus.ringColor), shape = shape),
@@ -571,14 +567,15 @@ internal fun SettingsCheckbox(
     var focused by remember { mutableStateOf(false) }
     Row(
         modifier = modifier
+            .focusBringIntoView()
             .width(320.dp)
             .height(44.dp)
             .onFocusChanged { focused = it.isFocused }
-            .background(SettingsControl, RoundedCornerShape(5.dp))
+            .background(SettingsControl, RoundedCornerShape(FnRadius.sm))
             .border(
                 if (focused) 1.5.dp else 0.5.dp,
-                if (focused) FnColors.Coral else Color(0xFF454B4D),
-                RoundedCornerShape(5.dp),
+                if (focused) FnColors.Coral else SettingsControlBorder,
+                RoundedCornerShape(FnRadius.sm),
             )
             .focusable()
             .onPreviewKeyEvent { event ->

@@ -5,6 +5,7 @@ import com.yueyin.tv.core.data.local.LocalStore
 import com.yueyin.tv.core.model.PlayerStyle
 import com.yueyin.tv.core.model.preferences.AppPreferencesState
 import com.yueyin.tv.core.model.preferences.CacheBudget
+import com.yueyin.tv.core.model.preferences.AmbientEffect
 import com.yueyin.tv.core.model.preferences.UiScale
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,12 +34,20 @@ class AppPreferences(context: Context, private val localStore: LocalStore) {
                 playlistOrder = readPlaylistOrder(value),
                 backgroundContinueOnExit = store.getBoolean(BACKGROUND_CONTINUE_ON_EXIT, false),
                 uiScale = readUiScale(),
+                ambientEffect = readAmbientEffect(),
+                dynamicColor = readDynamicColor(),
+                karaokeFill = readKaraokeFill(),
+                blurredBackdrop = readBlurredBackdrop(),
             )
             migratedNamespace == null -> read().also { store.edit().putString(MIGRATED_NAMESPACE, value).apply() }
             else -> AppPreferencesState(
                 playlistOrder = readPlaylistOrder(value),
                 backgroundContinueOnExit = store.getBoolean(BACKGROUND_CONTINUE_ON_EXIT, false),
                 uiScale = readUiScale(),
+                ambientEffect = readAmbientEffect(),
+                dynamicColor = readDynamicColor(),
+                karaokeFill = readKaraokeFill(),
+                blurredBackdrop = readBlurredBackdrop(),
             )
         }
         // 一次性迁移：早期版本默认值写错，会把用户从未选择过的“大海报模式”写进存储。
@@ -102,6 +111,26 @@ class AppPreferences(context: Context, private val localStore: LocalStore) {
         _state.value = _state.value.copy(uiScale = scale)
     }
 
+    fun setAmbientEffect(value: AmbientEffect) {
+        store.edit().putString(AMBIENT_EFFECT, value.name).apply()
+        _state.value = _state.value.copy(ambientEffect = value)
+    }
+
+    fun setDynamicColor(enabled: Boolean) {
+        store.edit().putBoolean(DYNAMIC_COLOR, enabled).apply()
+        _state.value = _state.value.copy(dynamicColor = enabled)
+    }
+
+    fun setKaraokeFill(enabled: Boolean) {
+        store.edit().putBoolean(KARAOKE_FILL, enabled).apply()
+        _state.value = _state.value.copy(karaokeFill = enabled)
+    }
+
+    fun setBlurredBackdrop(enabled: Boolean) {
+        store.edit().putBoolean(BLURRED_BACKDROP, enabled).apply()
+        _state.value = _state.value.copy(blurredBackdrop = enabled)
+    }
+
     /** 是否已经看过遥控器按键说明（首次安装后展示一次，之后不再自动弹出）。 */
     fun remoteControlGuideSeen(): Boolean = store.getBoolean(REMOTE_CONTROL_GUIDE_SEEN, false)
 
@@ -128,6 +157,10 @@ class AppPreferences(context: Context, private val localStore: LocalStore) {
     }
 
     private fun readUiScale(): UiScale = UiScale.of(store.getString(UI_SCALE, null))
+    private fun readAmbientEffect(): AmbientEffect = AmbientEffect.of(store.getString(AMBIENT_EFFECT, null))
+    private fun readDynamicColor(): Boolean = store.getBoolean(DYNAMIC_COLOR, true)
+    private fun readKaraokeFill(): Boolean = store.getBoolean(KARAOKE_FILL, true)
+    private fun readBlurredBackdrop(): Boolean = store.getBoolean(BLURRED_BACKDROP, true)
 
     private fun read() = AppPreferencesState(
         playerStyle = store.getString(PLAYER_STYLE, null)?.let { runCatching { PlayerStyle.valueOf(it) }.getOrNull() }
@@ -138,6 +171,10 @@ class AppPreferences(context: Context, private val localStore: LocalStore) {
         playlistOrder = namespace?.let(::readPlaylistOrder).orEmpty(),
         backgroundContinueOnExit = store.getBoolean(BACKGROUND_CONTINUE_ON_EXIT, false),
         uiScale = readUiScale(),
+        ambientEffect = readAmbientEffect(),
+        dynamicColor = readDynamicColor(),
+        karaokeFill = readKaraokeFill(),
+        blurredBackdrop = readBlurredBackdrop(),
     )
 
     private companion object {
@@ -148,6 +185,10 @@ class AppPreferences(context: Context, private val localStore: LocalStore) {
         const val BACKGROUND_CONTINUE_ON_EXIT = "background_continue_on_exit"
         const val REMOTE_CONTROL_GUIDE_SEEN = "remote_control_guide_seen"
         const val UI_SCALE = "ui_scale"
+        const val AMBIENT_EFFECT = "ambient_effect"
+        const val DYNAMIC_COLOR = "dynamic_color"
+        const val KARAOKE_FILL = "karaoke_fill"
+        const val BLURRED_BACKDROP = "blurred_backdrop"
         const val POSTER_DEFAULT_MIGRATED = "poster_default_migrated_v2"
         const val PLAY_LIST_ORDER_PREFIX = "playlist_order_"
         const val PROFILE_SEPARATOR = "\u0001"

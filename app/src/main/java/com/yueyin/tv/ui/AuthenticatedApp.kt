@@ -28,6 +28,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -421,9 +422,12 @@ internal fun AuthenticatedApp(
         LocalPlayerRouteOpen provides (route is LibraryRoute.Player),
     ) {
         Box(Modifier.fillMaxSize()) {
-            // 全局氛围背景：所有路由共用一层缓慢漂移的光斑，避免大面积纯黑显得沉闷；
-            // 播放页自带沉浸式背景，会把这层完全盖住，不会叠加。
-            FnAmbientBackdrop(Modifier.fillMaxSize())
+            // 全局氛围背景：所有路由共用一层缓慢漂移的光斑，避免大面积纯黑显得沉闷。
+            // 播放页自带整屏沉浸背景（不透明，会把这层完全盖住），因此直接不画——
+            // 省掉一整屏 24fps 的径向渐变填充，是这轮最划算的一处优化。
+            if (route !is LibraryRoute.Player) {
+                FnAmbientBackdrop(Modifier.fillMaxSize())
+            }
             Column(Modifier.fillMaxSize()) {
                 // 一级导航条常驻在 AnimatedContent **外面**：
                 // 切页时它不参与重建，焦点永远停在同一个 Tab 上，左右键链不会断。
@@ -924,7 +928,7 @@ private fun SegmentedLibraryTabs(
                 .align(Alignment.TopStart)
                 .offset(x = indicatorX + 11.dp, y = 49.5.dp)
                 .size(width = tabWidth - 22.dp, height = 2.5.dp)
-                .background(FnGradients.Primary, RoundedCornerShape(1.25.dp)),
+                .background(FnGradients.Primary, RoundedCornerShape(FnRadius.sm)),
         )
     }
 }
@@ -990,10 +994,53 @@ internal fun NowPlayingPill(
     val pillHeight = (42f + (fontScale - 1f).coerceAtLeast(0f) * 28f).dp
     // 标题切换时重置挤压标记，让新标题重新获得一次「标题 + 歌手」的测量机会
     var titleCrowded by remember(playback.title) { mutableStateOf(false) }
+    // 真实播放进度：进度流每 250ms 更新一次，这里刻意只在「绘制阶段」取值（draw 相位订阅），
+    // 这样进度刷新只触发重绘，不会重组整个胶囊，也不会牵动封面加载。
+    val progressState = LocalAuthenticatedDependencies.current.playbackController.progress
+        .collectAsStateWithLifecycle()
     Button(
         onClick = onClick,
         modifier = modifier
             .size(width = 186.dp, height = pillHeight)
+            // 胶囊底部内嵌一条细进度线：左右各内缩 14dp 避开两端圆角，
+            // 已播放段用品牌珊瑚色 + 末端光点；暂停时整条压暗、去掉光点。
+            .drawWithContent {
+                drawContent()
+                val state = progressState.value
+                val durationMs = state.durationMs
+                if (durationMs <= 0L) return@drawWithContent
+                val trackHeight = 2.5.dp.toPx()
+                val inset = 14.dp.toPx()
+                val left = inset
+                val top = size.height - trackHeight - 3.5.dp.toPx()
+                val trackWidth = (size.width - inset * 2f).coerceAtLeast(1f)
+                drawRoundRect(
+                    color = Color.White.copy(alpha = if (playback.isPlaying) 0.16f else 0.09f),
+                    topLeft = Offset(left, top),
+                    size = Size(trackWidth, trackHeight),
+                    cornerRadius = CornerRadius(trackHeight / 2f),
+                )
+                val fraction = (state.positionMs.toFloat() / durationMs).coerceIn(0f, 1f)
+                if (fraction <= 0f) return@drawWithContent
+                val playedWidth = (trackWidth * fraction).coerceAtLeast(trackHeight)
+                drawRoundRect(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(FnColors.Coral.copy(alpha = 0.62f), FnColors.Coral),
+                        startX = left,
+                        endX = left + playedWidth,
+                    ),
+                    topLeft = Offset(left, top),
+                    size = Size(playedWidth, trackHeight),
+                    cornerRadius = CornerRadius(trackHeight / 2f),
+                )
+                if (playback.isPlaying) {
+                    drawCircle(
+                        color = Color.White.copy(alpha = 0.92f),
+                        radius = trackHeight * 0.85f,
+                        center = Offset(left + playedWidth, top + trackHeight / 2f),
+                    )
+                }
+            }
             .semantics { contentDescription = "当前播放：${playback.title}" },
         shape = ButtonDefaults.shape(shape, shape, shape, shape, shape),
         scale = ButtonDefaults.scale(focusedScale = 1f),
@@ -1076,7 +1123,7 @@ internal fun NowPlayingPill(
                 }
             }
             Spacer(Modifier.width(5.dp))
-            Text("›", color = FnColors.Muted, fontSize = 17.sp, lineHeight = 17.sp)
+            Text("›", color = FnColors.Muted, fontSize = 16.sp, lineHeight = 17.sp)
         }
     }
 }
@@ -1090,7 +1137,7 @@ private fun NowPlayingArtworkFallback(title: String) {
         Text(
             title.trim().take(1).ifBlank { "音" }.uppercase(),
             color = FnColors.Teal,
-            fontSize = 11.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold,
         )
     }
@@ -1378,20 +1425,23 @@ internal fun HomeScreenLayout(
             if (!playlistsLoaded) {
                 // 首屏骨架：歌单未到位前按「当前列数 × 2 行」铺占位块，尺寸与加载完成后的歌单卡完全一致，
                 // 避免“先空一片、再整块弹出”的布局跳变。
+                // 骨架屏也走同一套尺寸：封面高、两段文字高都与真卡一致，加载完不会跳一下。
                 items(homeLimit, key = { "home:skeleton:$it" }) {
+                    val metrics = rememberPlaylistMetrics()
+                    val textLine = metrics.titleBlock / PlaylistTitleLines.toFloat()
                     Column(Modifier.fillMaxWidth()) {
                         FnSkeleton(
-                            Modifier.fillMaxWidth().height(126.dp),
+                            Modifier.fillMaxWidth().height(metrics.cover),
                             shape = RoundedCornerShape(FnRadius.lg),
                         )
-                        Spacer(Modifier.height(9.dp))
+                        Spacer(Modifier.height(PlaylistCoverGap))
                         FnSkeleton(
-                            Modifier.fillMaxWidth(0.72f).height(14.dp),
+                            Modifier.fillMaxWidth(0.72f).height(textLine * 0.62f),
                             shape = RoundedCornerShape(FnRadius.sm),
                         )
                         Spacer(Modifier.height(5.dp))
                         FnSkeleton(
-                            Modifier.fillMaxWidth(0.42f).height(11.dp),
+                            Modifier.fillMaxWidth(0.42f).height(metrics.captionBlock * 0.85f),
                             shape = RoundedCornerShape(FnRadius.sm),
                         )
                     }
@@ -1518,7 +1568,7 @@ private fun HomeFeatureCard(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(22.dp)
+    val shape = RoundedCornerShape(FnRadius.xl)
     val background = when (kind) {
         HomeArtworkKind.Roam -> Brush.linearGradient(
             listOf(Color(0xFF07201C), Color(0xFF0E3A31), Color(0xFF12312C)),
@@ -1570,7 +1620,7 @@ private fun HomeFeatureCard(
             Text(
                 title,
                 modifier = Modifier.align(Alignment.BottomStart).padding(start = 20.dp, bottom = 18.dp),
-                fontSize = 20.sp,
+                fontSize = 19.sp,
                 lineHeight = 22.sp,
                 fontWeight = FontWeight.Bold,
             )
@@ -1589,7 +1639,7 @@ private fun FeatureCoverDeck(
     Box(modifier.clipToBounds()) {
         placements.forEach { placement ->
             val item = artwork.getOrNull(placement.itemIndex) ?: return@forEach
-            val artworkShape = RoundedCornerShape(7.dp)
+            val artworkShape = RoundedCornerShape(FnRadius.md)
             Box(
                 Modifier
                     .align(Alignment.CenterEnd)
@@ -1707,6 +1757,46 @@ private fun FeatureGlyph(kind: HomeArtworkKind, modifier: Modifier = Modifier) {
     }
 }
 
+/*
+ * 歌单卡（首页「我的歌单」与「全部歌单」共用）。
+ *
+ * 卡片总高固定 182dp 不动 —— 首页是「品牌头 + 两张功能卡 + 标题行 + 两行歌单」，
+ * 一屏几乎没有余量，卡一长高第二行歌单就会被挤出屏幕。
+ *
+ * 所以文字块高度改成按字号换算（`sp.toDp()`，内部已乘系统字体缩放），封面吃掉剩下的空间。
+ * 之前文字块写死 44dp / 15dp：电视把系统字体放大到 1.17 倍时，两行歌单名需要 51dp 却只有 44dp、
+ * 12sp 汉字自然行高 17.4sp 却只给了 15dp，于是长名字被压成一行省略号、曲目数下缘被卡片底边裁掉。
+ * 现在字体放大多少文字块就长多少，封面相应变矮，一个字都不会被切；
+ * 字体 1.0 倍的设备上封面为 104dp（原 111dp），肉眼几乎无差。
+ */
+private val PlaylistTileHeight = 182.dp
+private val PlaylistCoverGap = 9.dp
+private val PlaylistCaptionGap = 3.dp
+
+/** 19sp 标题的行高。24sp（1.26em）给汉字下缘留出余量，22sp 时第二行底部会被压掉。 */
+private val PlaylistTitleLineHeight = 24.sp
+
+/** 12sp 副标题的行高。汉字自然行高约 1.45em = 17.4sp，给到 18sp 才不切字。 */
+private val PlaylistCaptionLineHeight = 18.sp
+private const val PlaylistTitleLines = 2
+
+/** 歌单卡三块尺寸：文字块由字号换算，封面吃掉 182dp 里剩下的部分。 */
+private data class PlaylistMetrics(val cover: Dp, val titleBlock: Dp, val captionBlock: Dp)
+
+@Composable
+private fun rememberPlaylistMetrics(): PlaylistMetrics {
+    val density = LocalDensity.current
+    return remember(density) {
+        with(density) {
+            val titleBlock = (PlaylistTitleLineHeight.value * PlaylistTitleLines).sp.toDp()
+            val captionBlock = PlaylistCaptionLineHeight.toDp()
+            val cover = (PlaylistTileHeight - PlaylistCoverGap - PlaylistCaptionGap - titleBlock - captionBlock)
+                .coerceAtLeast(72.dp)
+            PlaylistMetrics(cover = cover, titleBlock = titleBlock, captionBlock = captionBlock)
+        }
+    }
+}
+
 @Composable
 internal fun HomePlaylistLockup(
     title: String,
@@ -1716,13 +1806,14 @@ internal fun HomePlaylistLockup(
     fallback: HomeArtworkKind? = null,
     onClick: () -> Unit,
 ) {
+    val metrics = rememberPlaylistMetrics()
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(FnRadius.lg)
     Button(
         onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .height(182.dp)
+            .height(PlaylistTileHeight)
             .focusGlow(focused = focused, cornerRadius = 16.dp)
             .onFocusChanged { focused = it.isFocused },
         shape = ButtonDefaults.shape(shape, shape, shape, shape, shape),
@@ -1741,7 +1832,7 @@ internal fun HomePlaylistLockup(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(126.dp)
+                    .height(metrics.cover)
                     // 封面区焦点外观统一走 FnFocus：聚焦主色描边 + 光晕，未聚焦一道淡描边
                     .fnFocusRing(focused = focused, shape = shape, cornerRadius = 14.dp)
                     .clip(shape),
@@ -1754,10 +1845,29 @@ internal fun HomePlaylistLockup(
                     featureArtwork = fallback,
                 )
             }
-            Spacer(Modifier.height(9.dp))
-            Text(title, fontSize = FnType.Body, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(3.dp))
-            Text(subtitle, color = FnColors.Muted, fontSize = FnType.Caption, lineHeight = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(PlaylistCoverGap))
+            // 歌单名允许两行：一列只有 187dp 左右，19sp 一行只放得下 9 个字，
+            // 「我喜欢的音乐（每周更新）」这类名字会被截成半截。与专辑卡同一套规则：
+            // 标题固定占两行的高度，行内卡片才对得齐；曲目数跟在后面。
+            Text(
+                title,
+                fontSize = FnType.Body,
+                lineHeight = PlaylistTitleLineHeight,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = PlaylistTitleLines,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().height(metrics.titleBlock),
+            )
+            Spacer(Modifier.height(PlaylistCaptionGap))
+            Text(
+                subtitle,
+                color = FnColors.Muted,
+                fontSize = FnType.Caption,
+                lineHeight = PlaylistCaptionLineHeight,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().height(metrics.captionBlock),
+            )
         }
     }
 }
@@ -2136,7 +2246,7 @@ private fun ProfileActionButton(
     onClick: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(8.dp)
+    val shape = RoundedCornerShape(FnRadius.md)
     Button(
         onClick = onClick,
         modifier = modifier
@@ -2164,7 +2274,7 @@ private fun ProfileActionButton(
         contentPadding = PaddingValues(0.dp),
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(label, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+            Text(label, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
         }
     }
 }
@@ -2263,7 +2373,7 @@ internal fun MediaBand(
         Spacer(Modifier.height(10.dp))
         LazyRow(
             contentPadding = PaddingValues(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(22.dp),
+            horizontalArrangement = Arrangement.spacedBy(FnGrid.Gutter),
         ) {
             itemsIndexed(entries, key = { _, entry -> entry.focusKey }) { index, entry ->
                 BandLockup(
@@ -2381,8 +2491,8 @@ private fun MyLibraryLockup(
     onClick: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(8.dp)
-    val artworkShape = RoundedCornerShape(4.dp)
+    val shape = RoundedCornerShape(FnRadius.md)
+    val artworkShape = RoundedCornerShape(FnRadius.sm)
     Button(
         enabled = enabled,
         onClick = onClick,
@@ -2422,8 +2532,8 @@ private fun PlaylistBandLockup(
 ) {
     val container = LocalAuthenticatedDependencies.current
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(8.dp)
-    val artworkShape = RoundedCornerShape(4.dp)
+    val shape = RoundedCornerShape(FnRadius.md)
+    val artworkShape = RoundedCornerShape(FnRadius.sm)
     Button(
         enabled = enabled,
         onClick = onClick,
@@ -2689,7 +2799,7 @@ private fun AllPlaylists(
                             else -> "共 ${displayList.size} 个歌单 · 全部铺开 · 长按确定键进入排序"
                         },
                         color = FnColors.Muted,
-                        fontSize = 15.sp,
+                        fontSize = 14.sp,
                     )
                 }
                 if (reordering) {
@@ -2707,57 +2817,63 @@ private fun AllPlaylists(
                     Text("还没有歌单", color = FnColors.Muted, fontSize = 19.sp)
                 }
             } else {
-                LazyVerticalGrid(
-                    state = gridState,
-                    columns = GridCells.Fixed(playlistColumns),
-                    contentPadding = PaddingValues(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 28.dp),
-                    horizontalArrangement = Arrangement.spacedBy(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(18.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    gridItemsIndexed(
-                        displayList,
-                        key = { _, playlist -> playlist.guid.value },
-                    ) { index, playlist ->
-                        val isPicked = reordering && pickedUp && index == focusedIndex
-                        HomePlaylistLockup(
-                            title = playlist.name,
-                            subtitle = "${playlist.trackCount ?: 0} 首",
-                            coverId = playlist.coverId,
-                            modifier = Modifier
-                                .focusRequester(focusRequesters[index])
-                                .then(
-                                    if (reordering) {
-                                        Modifier.focusProperties {
-                                            up = FocusRequester.Cancel
-                                            down = FocusRequester.Cancel
-                                            left = FocusRequester.Cancel
-                                            right = FocusRequester.Cancel
-                                        }
-                                    } else {
-                                        Modifier
-                                    },
-                                )
-                                .then(
-                                    if (isPicked) {
-                                        Modifier.graphicsLayer {
-                                            alpha = 0.55f
-                                            scaleX = 1.05f
-                                            scaleY = 1.05f
-                                        }
-                                    } else {
-                                        Modifier
-                                    },
-                                )
-                                .onFocusChanged { if (it.isFocused) focusedIndex = index },
-                            onClick = {
-                                focusedIndex = index
-                                onOpen(playlist)
-                            },
-                        )
-                    }
-                    item(span = { GridItemSpan(maxLineSpan) }, key = "all-playlists-footer") {
-                        Spacer(Modifier.height(10.dp))
+                // 与「全部专辑」同一套吸附规则：底部只剩一条切边时收掉这半行，
+                // 否则最后一行会被页面底边横着切一半（文字正好被切断）。
+                BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
+                    LazyVerticalGrid(
+                        state = gridState,
+                        columns = GridCells.Fixed(playlistColumns),
+                        contentPadding = PaddingValues(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 28.dp),
+                        horizontalArrangement = Arrangement.spacedBy(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(18.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(catalogGridHeight(maxHeight, PlaylistTileHeight, gutter = 18.dp)),
+                    ) {
+                        gridItemsIndexed(
+                            displayList,
+                            key = { _, playlist -> playlist.guid.value },
+                        ) { index, playlist ->
+                            val isPicked = reordering && pickedUp && index == focusedIndex
+                            HomePlaylistLockup(
+                                title = playlist.name,
+                                subtitle = "${playlist.trackCount ?: 0} 首",
+                                coverId = playlist.coverId,
+                                modifier = Modifier
+                                    .focusRequester(focusRequesters[index])
+                                    .then(
+                                        if (reordering) {
+                                            Modifier.focusProperties {
+                                                up = FocusRequester.Cancel
+                                                down = FocusRequester.Cancel
+                                                left = FocusRequester.Cancel
+                                                right = FocusRequester.Cancel
+                                            }
+                                        } else {
+                                            Modifier
+                                        },
+                                    )
+                                    .then(
+                                        if (isPicked) {
+                                            Modifier.graphicsLayer {
+                                                alpha = 0.55f
+                                                scaleX = 1.05f
+                                                scaleY = 1.05f
+                                            }
+                                        } else {
+                                            Modifier
+                                        },
+                                    )
+                                    .onFocusChanged { if (it.isFocused) focusedIndex = index },
+                                onClick = {
+                                    focusedIndex = index
+                                    onOpen(playlist)
+                                },
+                            )
+                        }
+                        item(span = { GridItemSpan(maxLineSpan) }, key = "all-playlists-footer") {
+                            Spacer(Modifier.height(10.dp))
+                        }
                     }
                 }
             }
@@ -2783,14 +2899,22 @@ private fun ArtistGrid(container: AuthenticatedAppDependencies, onOpen: (Artist)
 
 @Composable
 private fun AlbumGrid(container: AuthenticatedAppDependencies, onOpen: (Album) -> Unit) {
+    // 文字块高度随系统字体缩放变化，行高必须用同一个值算，否则「整行吸附」会算错
+    val metrics = rememberAlbumPosterMetrics()
     PagedCatalogPage(
         stateKey = "albums",
         title = "全部专辑",
         totalLabel = { "$it 张专辑" },
+        // 列数按海报卡的目标宽度算（960 画布 → 6 列、每列 131dp），
+        // 与卡片自身的宽度来源保持同一个值，否则又会「算 5 列、卡片按 6 列画」。
+        cardWidth = FnGrid.PosterCardWidth,
+        // 海报卡高 = 列宽（封面 1:1） + 文字块，交给网格做整行吸附，
+        // 否则底部会留下一条只露封面顶边的「切边」
+        rowHeightFor = { columnWidth -> columnWidth + metrics.textBlock },
         loader = { page -> container.musicRepository.albums(page, FULL_CATALOG_PAGE_SIZE) },
         key = { it.guid.value },
     ) { album, modifier ->
-        AlbumLockup(album.name, album.artistName.orEmpty(), album.coverId, modifier = modifier) { onOpen(album) }
+        AlbumPosterCard(album.name, album.artistName.orEmpty(), album.coverId, modifier = modifier) { onOpen(album) }
     }
 }
 
@@ -2801,6 +2925,12 @@ private fun <T> PagedCatalogPage(
     totalLabel: (Int) -> String,
     loader: suspend (Int) -> Page<T>,
     key: (T) -> String,
+    cardWidth: Dp = FnGrid.MinCardWidth,
+    /**
+     * 已知卡片行高时传入（入参是每列实际宽度），用于「整行吸附」：
+     * 底部只剩一条切边时直接收掉这半行。不传则保持原来的 `weight(1f)` 撑满。
+     */
+    rowHeightFor: ((columnWidth: Dp) -> Dp)? = null,
     item: @Composable (T, Modifier) -> Unit,
 ) {
     val retainedStore = LocalLibraryRetainedState.current
@@ -2866,9 +2996,12 @@ private fun <T> PagedCatalogPage(
 
     // 与首页 / 歌单页统一口径：48dp 页边距 + 自适应列数（960 画布 → 5 列），
     // 否则专辑页会比别的页少一列、卡也更宽，翻页时明显不协调。
-    val columns = FnGrid.columnsFor(
-        rememberCanvasWidthDp() - FnCanvas.MinSafeHorizontal.value * 2 - FnGrid.ContentInsetDp,
-    )
+    val availableWidthDp =
+        rememberCanvasWidthDp() - FnCanvas.MinSafeHorizontal.value * 2 - FnGrid.ContentInsetDp
+    val columns = FnGrid.columnsFor(availableWidthDp, targetCardWidth = cardWidth)
+    // 每列实际宽度：整行吸附要靠它反推行高（海报卡高 = 列宽 + 文字块）
+    val columnWidth =
+        ((availableWidthDp - (columns - 1) * FnGrid.Gutter.value) / columns).dp
     Column(Modifier.fillMaxSize().padding(horizontal = 48.dp).padding(top = 20.dp, bottom = 28.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, fontSize = 34.sp, fontWeight = FontWeight.Bold)
@@ -2882,38 +3015,63 @@ private fun <T> PagedCatalogPage(
             }
         }
         Spacer(Modifier.height(14.dp))
-        LazyVerticalGrid(
-            state = gridState,
-            columns = GridCells.Fixed(columns),
-            contentPadding = PaddingValues(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-            modifier = Modifier.fillMaxWidth().weight(1f),
-        ) {
-            items(entries, key = { key(it) }) { entry ->
-                val entryKey = key(entry)
-                item(
-                    entry,
-                    Modifier
-                        .then(if (focusedKey == entryKey) Modifier.focusRequester(contentFocus) else Modifier)
-                        .onFocusChanged { if (it.isFocused) focusedKey = entryKey },
-                )
-            }
-            if (entries.isEmpty() && snapshot.error != null) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    CatalogRetryButton(
-                        loading = retained.loading,
-                        modifier = Modifier.focusRequester(retryFocus),
-                    ) { load(1) }
+        BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
+            LazyVerticalGrid(
+                state = gridState,
+                columns = GridCells.Fixed(columns),
+                contentPadding = PaddingValues(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(FnGrid.Gutter),
+                verticalArrangement = Arrangement.spacedBy(FnGrid.Gutter),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(catalogGridHeight(maxHeight, rowHeightFor?.invoke(columnWidth))),
+            ) {
+                items(entries, key = { key(it) }) { entry ->
+                    val entryKey = key(entry)
+                    item(
+                        entry,
+                        Modifier
+                            .then(if (focusedKey == entryKey) Modifier.focusRequester(contentFocus) else Modifier)
+                            .onFocusChanged { if (it.isFocused) focusedKey = entryKey },
+                    )
                 }
-            }
-            if (retained.loading) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    Text("正在加载更多…", color = FnColors.Muted, fontSize = 13.sp)
+                if (entries.isEmpty() && snapshot.error != null) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        CatalogRetryButton(
+                            loading = retained.loading,
+                            modifier = Modifier.focusRequester(retryFocus),
+                        ) { load(1) }
+                    }
+                }
+                if (retained.loading) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        Text("正在加载更多…", color = FnColors.Muted, fontSize = 12.sp)
+                    }
                 }
             }
         }
     }
+}
+
+/**
+ * 网格可视高度：能放几整行就放几整行。
+ *
+ * 底部只剩「半行的一小条」（专辑页实测约 10dp，只露出封面的一道顶边）时，
+ * 看起来像排版被切坏，所以剩余空间不足一行 40% 时直接收掉这半行，
+ * 把余量并入底部留白；剩余空间足够（≥ 40%）仍保留半行，作为「下面还有内容」的提示。
+ *
+ * [available] 是外层可用高度，[rowHeight] 为卡片行高（含封面与文字块），null 表示不吸附。
+ */
+private fun catalogGridHeight(available: Dp, rowHeight: Dp?, gutter: Dp = FnGrid.Gutter): Dp {
+    if (rowHeight == null || rowHeight <= 0.dp) return available
+    val verticalInset = 8.dp // contentPadding 上下各 4dp
+    val step = rowHeight + gutter
+    if (step <= 0.dp) return available
+    val rows = ((available - verticalInset + gutter) / step).toInt().coerceAtLeast(1)
+    val fullHeight = step * rows.toFloat() - gutter + verticalInset
+    // 一行的整数倍反而更高（可用高度还不够一行）时不做吸附，交给系统裁剪
+    if (fullHeight >= available) return available
+    return if (available - fullHeight < rowHeight * 0.4f) fullHeight else available
 }
 
 @Composable
@@ -2945,8 +3103,8 @@ private fun <T> GridPage(
             state = gridState,
             columns = GridCells.Fixed(columns),
             contentPadding = PaddingValues(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(FnGrid.Gutter),
+            verticalArrangement = Arrangement.spacedBy(FnGrid.Gutter),
         ) {
             items(entries, key = key) { entry ->
                 val entryKey = key(entry)
@@ -3119,7 +3277,7 @@ private fun ArtistAlbumGrid(
                         .padding(9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    FnSkeleton(Modifier.size(88.dp), shape = RoundedCornerShape(4.dp))
+                    FnSkeleton(Modifier.size(88.dp), shape = RoundedCornerShape(FnRadius.sm))
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
                         FnSkeleton(
@@ -3179,7 +3337,7 @@ private fun ArtistAlbumGrid(
 private fun DetailAlbumCard(album: Album, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val container = LocalAuthenticatedDependencies.current
     val albumCoverId = album.coverId
-    val shape = RoundedCornerShape(6.dp)
+    val shape = RoundedCornerShape(FnRadius.sm)
     Button(
         onClick = onClick,
         modifier = modifier
@@ -3204,7 +3362,7 @@ private fun DetailAlbumCard(album: Album, modifier: Modifier = Modifier, onClick
     ) {
         val contentColor = LocalContentColor.current
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-            val artworkShape = RoundedCornerShape(4.dp)
+            val artworkShape = RoundedCornerShape(FnRadius.sm)
             if (albumCoverId != null) {
                 RemoteArtwork(
                     container = container,
@@ -3483,7 +3641,7 @@ private fun DetailTrackCollection(
     alternateContent: @Composable () -> Unit,
     emptyMessage: String,
 ) {
-    Column(Modifier.fillMaxSize().padding(horizontal = 42.dp, vertical = 24.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 24.dp)) {
         Row(Modifier.fillMaxWidth().height(184.dp), verticalAlignment = Alignment.Top) {
             DetailBackButton(
                 modifier = Modifier
@@ -3492,7 +3650,7 @@ private fun DetailTrackCollection(
                 onClick = header.onBack,
             )
             Spacer(Modifier.width(18.dp))
-            val artworkShape = RoundedCornerShape(6.dp)
+            val artworkShape = RoundedCornerShape(FnRadius.sm)
             CollectionArtwork(
                 container = container,
                 title = title,
@@ -3504,7 +3662,7 @@ private fun DetailTrackCollection(
             Spacer(Modifier.width(24.dp))
             Column(Modifier.weight(1f).fillMaxHeight()) {
                 if (header.kind.isNotBlank() && header.kind != title) {
-                    Text(header.kind, color = FnColors.Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text(header.kind, color = FnColors.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(7.dp))
                 }
                 Text(
@@ -3548,7 +3706,7 @@ private fun DetailTrackCollection(
                             onClick = tab.onSelect,
                         )
                     }
-                    val primaryShape = RoundedCornerShape(6.dp)
+                    val primaryShape = RoundedCornerShape(FnRadius.sm)
                     Button(
                         enabled = primaryActionEnabled,
                         onClick = onPrimaryAction,
@@ -3592,8 +3750,10 @@ private fun DetailTrackCollection(
             LazyColumn(
                 Modifier.weight(1f),
                 state = listState,
-                verticalArrangement = Arrangement.spacedBy(5.dp),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                // 左右不再额外内缩：焦点框左缘落在页面基准线（42dp）上，
+                // 与上方标题、返回键同一条竖线；行内再统一内缩 20dp 放文字。
+                contentPadding = PaddingValues(horizontal = 0.dp, vertical = 6.dp),
             ) {
                 if (error != null) {
                     item { InlineError(error) }
@@ -3605,6 +3765,7 @@ private fun DetailTrackCollection(
                             Modifier.fillMaxWidth().height(56.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            Spacer(Modifier.width(TrackRowHorizontalPadding))
                             FnSkeleton(Modifier.size(42.dp), shape = RoundedCornerShape(FnRadius.sm))
                             Spacer(Modifier.width(13.dp))
                             Column(Modifier.weight(1f)) {
@@ -3631,7 +3792,7 @@ private fun DetailTrackCollection(
                         Text(
                             emptyMessage,
                             color = FnColors.Muted,
-                            fontSize = 17.sp,
+                            fontSize = 16.sp,
                             modifier = Modifier.padding(vertical = 24.dp),
                         )
                     }
@@ -3744,7 +3905,7 @@ private fun DetailBackButton(modifier: Modifier = Modifier, onClick: () -> Unit)
 
 @Composable
 private fun DetailTabButton(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(12.dp)
+    val shape = RoundedCornerShape(FnRadius.md)
     Button(
         onClick = onClick,
         modifier = modifier.height(42.dp).semantics { this.selected = selected },
@@ -3765,24 +3926,48 @@ private fun DetailTabButton(label: String, selected: Boolean, modifier: Modifier
                 Box(Modifier.width(5.dp).height(5.dp).background(FnGradients.Primary, CircleShape))
                 Spacer(Modifier.width(7.dp))
             }
-            Text(label, fontSize = 15.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium)
+            Text(label, fontSize = 14.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium)
         }
     }
 }
 
 @Composable
 private fun DetailTrackColumnHeader() {
+    // 与 DetailTrackRow 共用同一套列宽与内边距（56 / 自适应 / 240 / 80，左右 20dp），
+    // 否则表头与数据行会各走一套边界，看起来"列是歪的"。
     Row(
-        Modifier.fillMaxWidth().height(34.dp).padding(horizontal = 15.dp),
+        Modifier.fillMaxWidth().height(32.dp).padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("#", color = FnColors.Muted, fontSize = 12.sp, modifier = Modifier.width(68.dp))
-        Text("歌曲", color = FnColors.Muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
-        Text("歌手", color = FnColors.Muted, fontSize = 12.sp, modifier = Modifier.width(220.dp))
-        Text("时长", color = FnColors.Muted, fontSize = 12.sp, textAlign = TextAlign.End, modifier = Modifier.width(70.dp))
+        Text("#", color = FnColors.Muted, fontSize = FnType.Caption, modifier = Modifier.width(TrackColIndex))
+        Text("歌曲", color = FnColors.Muted, fontSize = FnType.Caption, modifier = Modifier.weight(1f))
+        Text("歌手", color = FnColors.Muted, fontSize = FnType.Caption, modifier = Modifier.width(TrackColArtist))
+        Text(
+            "时长",
+            color = FnColors.Muted,
+            fontSize = FnType.Caption,
+            textAlign = TextAlign.End,
+            modifier = Modifier.width(TrackColDuration),
+        )
     }
 }
 
+/** 歌曲列表列宽：表头与数据行共用这三个值，任何改动只需改这里。 */
+private val TrackColIndex = 56.dp
+private val TrackColArtist = 240.dp
+private val TrackColDuration = 80.dp
+private val TrackRowHorizontalPadding = 20.dp
+
+/**
+ * 歌曲行：**单行 56dp**。
+ *
+ * 旧实现把「标题 + 专辑」当一个两行的块整体居中，而序号、歌手、时长各自居中，
+ * 于是一行里出现两条文字中线，标题看起来比框的中心高约 9dp——就是"字不在框中央"。
+ *
+ * 现在整行只有一行文字：序号 / 标题 / 歌手 / 时长，全部垂直居中，
+ * 结构上就不可能出现"某列比别的列高一点"。专辑名不再单独占一行（歌手列里用 · 接在后面），
+ * 行高因此从 66dp 收到 56dp，一屏能多显示一行。
+ */
 @Composable
 private fun DetailTrackRow(
     index: Int,
@@ -3791,13 +3976,13 @@ private fun DetailTrackRow(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(10.dp)
+    val shape = RoundedCornerShape(FnRadius.md)
     Button(
         enabled = enabled,
         onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .height(66.dp)
+            .height(56.dp)
             .semantics {
                 contentDescription = "${index + 1}. ${track.title} ${track.artistName.orEmpty()}"
             },
@@ -3813,36 +3998,41 @@ private fun DetailTrackRow(
             disabledContainerColor = Color.Transparent,
             disabledContentColor = FnColors.Muted.copy(alpha = 0.5f),
         ),
-        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 0.dp),
+        contentPadding = PaddingValues(horizontal = TrackRowHorizontalPadding, vertical = 0.dp),
     ) {
         val contentColor = LocalContentColor.current
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 (index + 1).toString().padStart(2, '0'),
                 color = contentColor.copy(alpha = 0.66f),
-                fontSize = 17.sp,
-                modifier = Modifier.width(68.dp),
+                fontSize = FnType.Label,
+                maxLines = 1,
+                modifier = Modifier.width(TrackColIndex),
             )
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
-                Text(track.title, color = contentColor, fontSize = 22.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                track.albumName?.takeIf(String::isNotBlank)?.let {
-                    Text(it, color = contentColor.copy(alpha = 0.6f), fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
+            Text(
+                track.title,
+                color = contentColor,
+                fontSize = FnType.CardTitle,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
             Text(
                 track.artistName.orEmpty(),
                 color = contentColor.copy(alpha = 0.72f),
-                fontSize = 18.sp,
+                fontSize = FnType.Row,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.width(260.dp),
+                modifier = Modifier.width(TrackColArtist),
             )
             Text(
                 if (track.isCue) "需兼容" else formatDuration(track.durationMs ?: 0),
                 color = contentColor.copy(alpha = 0.72f),
-                fontSize = 18.sp,
+                fontSize = FnType.Row,
                 textAlign = TextAlign.End,
-                modifier = Modifier.width(90.dp),
+                maxLines = 1,
+                modifier = Modifier.width(TrackColDuration),
             )
         }
     }
@@ -3930,7 +4120,7 @@ internal fun PlaylistTile(
     featureArtwork: HomeArtworkKind? = null,
     onClick: () -> Unit,
 ) {
-    val cardShape = RoundedCornerShape(8.dp)
+    val cardShape = RoundedCornerShape(FnRadius.md)
     Button(
         enabled = enabled,
         onClick = onClick,
@@ -3966,7 +4156,7 @@ internal fun PlaylistTile(
             ) {
                 Text(
                     title,
-                    fontSize = 13.sp,
+                    fontSize = 12.sp,
                     lineHeight = 15.sp,
                     maxLines = if (subtitle.isBlank()) 2 else 1,
                     overflow = TextOverflow.Ellipsis,
@@ -4365,6 +4555,158 @@ private fun ArtistAvatarPlaceholder(
     }
 }
 
+/** 海报卡封面与文字之间的上间距。 */
+private val AlbumPosterTextTop = 8.dp
+
+/** 海报卡文字块下间距。 */
+private val AlbumPosterTextBottom = 4.dp
+
+/**
+ * 专辑名字号与行高。
+ *
+ * 21sp / 16sp = 1.31em —— 和歌单卡（19sp/24sp = 1.26em）同一套比例。
+ * 原来是 20sp/16sp = 1.25em，且文字块写死 40dp，**正好等于 2×20sp**，一点余量都没有：
+ * 系统字体只要放大一点点（不少电视默认 1.15~1.3×），第二行就会被裁掉。
+ */
+private val AlbumPosterTitleSize = 16.sp
+private val AlbumPosterTitleLineHeight = 21.sp
+private const val AlbumPosterTitleLines = 2
+
+/** 艺人名字号与行高。19sp / 13sp = 1.46em，与歌单卡副标题（12sp/18sp = 1.5em）同量级。 */
+private val AlbumPosterArtistSize = 13.sp
+private val AlbumPosterArtistLineHeight = 19.sp
+
+/**
+ * 海报卡的文字块尺寸。
+ *
+ * 与歌单卡（[PlaylistMetrics]）同一套规则：**文字块高度由字号换算（sp → dp），不写死 dp**。
+ * sp 转 dp 时会带上系统字体缩放，所以电视把字体放大到 1.17 倍时文字块自动变高，
+ * 第二行专辑名和艺人名都不会被固定高度裁掉；字体 1.0 倍的设备上算出来仍是原来的 40 / 17dp。
+ *
+ * 卡片高度 = 列宽（封面 1:1） + [textBlock]，网格「整行吸附」按它算行高。
+ */
+private data class AlbumPosterMetrics(val titleBlock: Dp, val artistBlock: Dp, val textBlock: Dp)
+
+@Composable
+private fun rememberAlbumPosterMetrics(): AlbumPosterMetrics {
+    val density = LocalDensity.current
+    return remember(density) {
+        with(density) {
+            val titleBlock = (AlbumPosterTitleLineHeight.value * AlbumPosterTitleLines).sp.toDp()
+            val artistBlock = AlbumPosterArtistLineHeight.toDp()
+            AlbumPosterMetrics(
+                titleBlock = titleBlock,
+                artistBlock = artistBlock,
+                // 上下间距是固定 dp，只有两段文字随字号变化
+                textBlock = AlbumPosterTextTop + titleBlock + artistBlock + AlbumPosterTextBottom,
+            )
+        }
+    }
+}
+
+/**
+ * 网格专辑卡（海报式）：封面在上、专辑名与艺人在下。
+ *
+ * 旧实现在网格里复用横向的 [AlbumLockup]，而它把尺寸写死成 `232×132`。
+ * 「全部专辑」5 列时每格只有 160dp，Compose 按父约束压缩后，
+ * 扣掉内边距 20 + 封面 100 + 间距 14，留给专辑名的只有 **26dp —— 一个汉字都放不下**，
+ * 所以卡片右侧永远只剩一两个字加省略号。
+ *
+ * 这里改成宽度由网格决定（`fillMaxWidth`），封面按 1:1 撑满列宽（131dp），
+ * 文字移到封面下方、占满整列宽度（同样 131dp），长专辑名能排两行。
+ * 卡片不再有固定尺寸，列数由 `FnGrid.columnsFor(..., PosterCardWidth)` 决定，两边同一个来源。
+ *
+ * 焦点框只包封面：Button 自己的描边（哪怕 borderless）在聚焦时会把整张卡——含文字——
+ * 一起框住，视觉上像给「封面 + 两行字」套了个信封。所以这里让 Button 永远画透明描边，
+ * 焦点框改由封面这一层自己画，文字因此可以完全贴齐封面左边。
+ */
+@Composable
+private fun AlbumPosterCard(
+    title: String,
+    subtitle: String,
+    coverId: String?,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val container = LocalAuthenticatedDependencies.current
+    val metrics = rememberAlbumPosterMetrics()
+    val shape = RoundedCornerShape(FnRadius.md)
+    val artworkShape = RoundedCornerShape(FnRadius.md)
+    var focused by remember { mutableStateOf(false) }
+    Button(
+        onClick = onClick,
+        modifier = modifier
+            .fillMaxWidth()
+            .onFocusChanged { state ->
+                focused = state.isFocused
+                if (state.isFocused && coverId != null) {
+                    container.artworkBitmapCache.prefetch(coverId, CoverVariant.Grid)
+                }
+            },
+        shape = ButtonDefaults.shape(shape, shape, shape, shape, shape),
+        scale = ButtonDefaults.scale(focusedScale = 1f),
+        colors = lockupButtonColors(),
+        // Button 自己一律不描边：静止态干净、聚焦态也不画（焦点框交给封面，见上）
+        border = invisibleButtonBorder(shape),
+        contentPadding = PaddingValues(0.dp),
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
+                if (coverId != null) {
+                    RemoteArtwork(
+                        container = container,
+                        coverId = coverId,
+                        variant = CoverVariant.Grid,
+                        modifier = Modifier.fillMaxSize(),
+                        shape = artworkShape,
+                        contentScale = ContentScale.Crop,
+                        placeholderContent = {
+                            InitialArtworkPlaceholder(title, FnColors.Coral, Modifier.fillMaxSize(), artworkShape)
+                        },
+                    )
+                } else {
+                    InitialArtworkPlaceholder(
+                        title,
+                        FnColors.Coral,
+                        Modifier.fillMaxSize(),
+                        artworkShape,
+                    )
+                }
+                // 焦点框只包封面：宽度、圆角与封面完全一致，聚焦时正好压在封面边缘上
+                if (focused) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .border(FnFocus.ringWidth, FnFocus.ringColor, artworkShape),
+                    )
+                }
+            }
+            // 文字区不再需要横向内边距——焦点框已经不覆盖文字，直接与封面左边缘对齐
+            Column(Modifier.fillMaxWidth().padding(top = AlbumPosterTextTop, bottom = AlbumPosterTextBottom)) {
+                Text(
+                    title,
+                    fontSize = AlbumPosterTitleSize,
+                    lineHeight = AlbumPosterTitleLineHeight,
+                    maxLines = AlbumPosterTitleLines,
+                    overflow = TextOverflow.Ellipsis,
+                    // 固定两行高度：只占一行时同一行的卡片会高矮不一。
+                    // 高度按 sp 换算，字体被放大时跟着长，第二行才不会被裁掉。
+                    modifier = Modifier.fillMaxWidth().height(metrics.titleBlock),
+                )
+                Text(
+                    subtitle.ifBlank { " " },
+                    color = FnColors.Muted,
+                    fontSize = AlbumPosterArtistSize,
+                    lineHeight = AlbumPosterArtistLineHeight,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth().height(metrics.artistBlock),
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun AlbumLockup(
     title: String,
@@ -4377,8 +4719,8 @@ private fun AlbumLockup(
 ) {
     val container = LocalAuthenticatedDependencies.current
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(8.dp)
-    val artworkShape = RoundedCornerShape(4.dp)
+    val shape = RoundedCornerShape(FnRadius.md)
+    val artworkShape = RoundedCornerShape(FnRadius.sm)
     Button(
         enabled = enabled,
         onClick = onClick,
@@ -4452,13 +4794,26 @@ private fun lockupButtonBorder(shape: Shape, borderless: Boolean = false) = Butt
     pressedBorder = Border(BorderStroke(FnFocus.ringWidth, FnFocus.ringColor), shape = shape),
 )
 
+/**
+ * 三态全透明的描边：Button 完全不参与焦点表达。
+ *
+ * 给 [AlbumPosterCard] 用——它的焦点框只包封面（文字不参与），
+ * 而 Button 的描边永远画在控件外框上，所以只能让 Button 全透明、由封面自己画框。
+ */
+@Composable
+private fun invisibleButtonBorder(shape: Shape) = ButtonDefaults.border(
+    border = Border(BorderStroke(0.dp, Color.Transparent), shape = shape),
+    focusedBorder = Border(BorderStroke(0.dp, Color.Transparent), shape = shape),
+    pressedBorder = Border(BorderStroke(0.dp, Color.Transparent), shape = shape),
+)
+
 @Composable
 private fun CatalogRetryButton(
     loading: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(8.dp)
+    val shape = RoundedCornerShape(FnRadius.md)
     Button(
         enabled = !loading,
         onClick = onClick,
@@ -4483,7 +4838,7 @@ private fun RemoteArtwork(
     variant: CoverVariant,
     modifier: Modifier = Modifier,
     fallbackVariant: CoverVariant? = null,
-    shape: Shape = RoundedCornerShape(8.dp),
+    shape: Shape = RoundedCornerShape(FnRadius.md),
     contentScale: ContentScale = ContentScale.Fit,
     placeholderContent: (@Composable () -> Unit)? = null,
 ) {
@@ -4657,7 +5012,7 @@ private fun SearchScreen(
     Column(
         Modifier
             .fillMaxSize()
-            .padding(horizontal = 64.dp, vertical = 24.dp),
+            .padding(horizontal = 48.dp, vertical = 24.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("搜索", fontSize = FnType.PageTitle, lineHeight = 34.sp, fontWeight = FontWeight.Bold)
@@ -4766,7 +5121,7 @@ private fun SearchField(
     var focused by remember { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
     val imeVisible = WindowInsets.isImeVisible
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(FnRadius.lg)
 
     // 进入搜索页即弹出键盘，焦点由 SearchScreen 的 LaunchedEffect 请求到输入框上，
     // 用户无需再按一次确定键即可直接输入。

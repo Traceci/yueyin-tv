@@ -49,6 +49,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.yueyin.tv.R
+import com.yueyin.tv.ui.focusBringIntoView
 import androidx.compose.ui.unit.sp
 import com.yueyin.tv.core.data.connect.ConnectProfile
 import com.yueyin.tv.core.data.connect.ConnectProfileStore
@@ -125,6 +126,7 @@ private fun PlatformCard(
     val shape = RoundedCornerShape(FnRadius.lg)
     Box(
         modifier = modifier
+            .focusBringIntoView()
             .background(if (enabled) FnColors.SurfaceAlt else FnColors.SurfaceAlt.copy(alpha = 0.5f), shape)
             .onFocusChanged { focused = it.isFocused }
             .focusable(enabled)
@@ -176,6 +178,7 @@ private fun FormField(
                 modifier = Modifier
                     .fillMaxWidth()
                     .focusRequester(focusRequester)
+                    .focusBringIntoView()
                     .onFocusChanged { focused = it.isFocused },
                 decorationBox = { inner ->
                     if (value.isEmpty()) {

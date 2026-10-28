@@ -80,6 +80,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -87,11 +88,14 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -358,8 +362,15 @@ internal fun ImmersivePlayer(
         continuity = visualContinuity,
     )
     val artworkBitmap = artwork?.bitmap
-    val ambienceColor = artwork?.ambienceColor ?: fallbackAmbienceColor()
-    val posterPanelColor = artwork?.posterSurfaceColor ?: posterSurfaceColor(ambienceColor)
+    // 动态取色：关闭时退回固定兜底色，不再跟随封面主色
+    val dynamicColorEnabled = preferences.dynamicColor
+    val fallbackAmbience = fallbackAmbienceColor()
+    val ambienceColor = if (dynamicColorEnabled) (artwork?.ambienceColor ?: fallbackAmbience) else fallbackAmbience
+    val posterPanelColor = if (dynamicColorEnabled) {
+        artwork?.posterSurfaceColor ?: posterSurfaceColor(ambienceColor)
+    } else {
+        posterSurfaceColor(fallbackAmbience)
+    }
     val previousEnabled = playback.canPrevious && !playback.roamBusy
     val nextEnabled = playback.canNext && !playback.roamBusy
     val statusRetryAvailable = playerStatus(
@@ -437,8 +448,16 @@ internal fun ImmersivePlayer(
     ) {
         when {
             lyrics -> LiquidBackdrop(Modifier.fillMaxSize())
-            poster -> PlayerPosterBackdrop(posterPanelColor, Modifier.fillMaxSize())
+            poster -> if (preferences.blurredBackdrop && artworkBitmap != null) {
+                PosterBlurredBackdrop(artworkBitmap, posterPanelColor, Modifier.fillMaxSize())
+            } else {
+                PlayerPosterBackdrop(posterPanelColor, Modifier.fillMaxSize())
+            }
             else -> PlayerBackdrop(ambienceColor, Modifier.fillMaxSize())
+        }
+        // 呼吸光晕只在 CD 唱片模式开启：光打在背板上、内容之下，跟着唱片一起呼吸。
+        if (!poster && !lyrics) {
+            AmbientGlowOverlay(ambienceColor, Modifier.fillMaxSize())
         }
         PlayerMainContent(
             poster = poster,
@@ -447,6 +466,7 @@ internal fun ImmersivePlayer(
             artworkBitmap = artworkBitmap,
             placeholderAccent = ambienceColor,
             posterPanelColor = posterPanelColor,
+            karaokeProgressEnabled = preferences.karaokeFill,
             title = title,
             artist = artist,
             audioFormat = audioFormat,
@@ -706,38 +726,139 @@ private fun PlayerPosterBackdrop(targetColor: Color, modifier: Modifier = Modifi
     }
 }
 
+/**
+ * CD 唱片模式的呼吸光晕：两盏灯围着黑胶"打架"——
+ * 左下暖光（跟随封面主色）从唱片背后溢出，右上冷光（主色向紫偏移）反向游动，
+ * 8s 一个来回、用 Screen 混合叠在背板上。只画在「背板之上、内容之下」，
+ * 所以光落在背景上，不会糊住封面、歌名和歌词。
+ */
+@Composable
+private fun AmbientGlowOverlay(color: Color, modifier: Modifier = Modifier) {
+    // 8s 去 + 8s 回（共 16s 一个来回）：用 24fps 的慢速相位驱动，三角波还原原来的
+    // RepeatMode.Reverse 行为。相位只在绘制阶段读取，既不会每帧重组，
+    // 也不会每帧都重画两层整屏径向渐变。
+    val phaseState = rememberSlowPhase(periodMillis = 16_000)
+    val coolColor = androidx.compose.ui.graphics.lerp(color, FnColors.Violet, 0.62f)
+    Canvas(modifier) {
+        val raw = phaseState.value
+        val phase = if (raw < 0.5f) raw * 2f else 2f - raw * 2f
+        val w = size.width
+        val h = size.height
+        // 暖光：唱片正后方，随呼吸放大并轻微上浮
+        val warmRadius = w * (0.52f + 0.16f * phase)
+        val warmCenter = androidx.compose.ui.geometry.Offset(w * (0.28f + 0.04f * phase), h * (0.54f - 0.03f * phase))
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    color.copy(alpha = 0.32f + 0.24f * phase),
+                    color.copy(alpha = 0.10f + 0.10f * phase),
+                    Color.Transparent,
+                ),
+                center = warmCenter,
+                radius = warmRadius,
+            ),
+            center = warmCenter,
+            radius = warmRadius,
+            blendMode = BlendMode.Screen,
+        )
+        // 冷光：右上角反向摆动，和暖光错开相位，形成"灯在动"的呼吸感
+        val coolRadius = w * (0.40f + 0.12f * (1f - phase))
+        val coolCenter = androidx.compose.ui.geometry.Offset(w * (0.74f - 0.03f * phase), h * (0.30f + 0.05f * phase))
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    coolColor.copy(alpha = 0.26f + 0.14f * (1f - phase)),
+                    Color.Transparent,
+                ),
+                center = coolCenter,
+                radius = coolRadius,
+            ),
+            center = coolCenter,
+            radius = coolRadius,
+            blendMode = BlendMode.Screen,
+        )
+    }
+}
+
+/**
+ * 大海报模式下的毛玻璃背板：把封面放大虚化铺满全屏，右侧叠一层主题色渐变，
+ * 让海报与信息面板之间有一层"雾面"过渡（Android 12 以下 blur 自动降级为虚化前的暗化底）。
+ */
+@Composable
+private fun PosterBlurredBackdrop(bitmap: Bitmap, panelColor: Color, modifier: Modifier = Modifier) {
+    Box(modifier) {
+        Image(
+            bitmap.asImageBitmap(),
+            null,
+            Modifier
+                .fillMaxSize()
+                .blur(56.dp)
+                .graphicsLayer { alpha = 0.62f },
+            contentScale = ContentScale.Crop,
+        )
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.horizontalGradient(
+                    0f to Color.Black.copy(alpha = 0.20f),
+                    0.50f to Color.Transparent,
+                    1f to panelColor.copy(alpha = 0.62f),
+                ),
+            ),
+        )
+    }
+}
+
+/**
+ * 迷你歌词模式的悬浮光效——回到最初版的形态（4 个跨色轮的光球 + Screen 叠加 + 色相整体旋转），
+ * 只把峰值亮度从 0.55/0.50/0.45/0.45 下调到 0.50/0.45/0.41/0.41（约 −9%）。
+ *
+ * 关于"跳"：圆心、纵向偏移、半径呼吸必须由**同一个相位角**派生
+ * （`sin(angle)` / `cos(angle + 1.7)` / `sin(angle + 0.5)`），
+ * 这样相位绕回一圈时三者都回到起点，运动才是连续的。
+ * 一旦按非整数比例派生（如 `sin(angle * 0.62)`、`sin(angle / 1.6)`），
+ * 绕回时值和起点对不上，每个周期就会闪一下位置——之前那版的问题就在这里。
+ *
+ * 唯一保留的额外处理是最后一层 1/255 抖动噪点，它只抹掉大屏上的色阶环，几乎不影响观感。
+ */
 @Composable
 private fun LiquidBackdrop(modifier: Modifier = Modifier) {
-    val transition = rememberInfiniteTransition(label = "liquid")
-    val t1 by transition.animateFloat(0f, 1f, infiniteRepeatable(tween(durationMillis = 17000, easing = LinearEasing)))
-    val t2 by transition.animateFloat(0f, 1f, infiniteRepeatable(tween(durationMillis = 21000, easing = LinearEasing)))
-    val t3 by transition.animateFloat(0f, 1f, infiniteRepeatable(tween(durationMillis = 19000, easing = LinearEasing)))
-    val t4 by transition.animateFloat(0f, 1f, infiniteRepeatable(tween(durationMillis = 25000, easing = LinearEasing)))
-    val hue by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(durationMillis = 26000, easing = LinearEasing)))
+    val dither = rememberDitherBrush()
+    // 四个球各走一个圆周，周期互不相同；色相 26s 转一圈。
+    // 相位由 24fps 的慢速时钟推进、只在绘制阶段读取：4 个大半径径向渐变是全屏填充的大头，
+    // 把 60fps 降到 24fps 后观感无差别，填充量直接降到 40%。
+    val t1 = rememberSlowPhase(periodMillis = 17_000)
+    val t2 = rememberSlowPhase(periodMillis = 21_000)
+    val t3 = rememberSlowPhase(periodMillis = 19_000)
+    val t4 = rememberSlowPhase(periodMillis = 25_000)
+    val hue = rememberSlowPhase(periodMillis = 26_000)
+
     Canvas(modifier) {
         drawRect(FnColors.Background)
+        val hueShift = hue.value * 360f
         // 这段每帧都会跑，直接展开四次绘制，避免临时 List/Pair 分配。
         fun blob(t: Float, baseHue: Float, saturation: Float, alpha: Float) {
-            val color = Color.hsv((baseHue + hue) % 360f, saturation, 0.95f, alpha)
-            val angle = t * 2f * PI.toFloat()
-            val cx = size.width * (0.5f + 0.42f * sin(angle))
-            val cy = size.height * (0.5f + 0.42f * cos(angle + 1.7f))
+            val color = Color.hsv((baseHue + hueShift) % 360f, saturation, 0.95f, alpha)
+            val angle = t * TAU
+            val center = Offset(
+                x = size.width * (0.5f + 0.42f * sin(angle)),
+                y = size.height * (0.5f + 0.42f * cos(angle + 1.7f)),
+            )
             val radius = size.width * (0.42f + 0.10f * sin(angle + 0.5f))
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(color, Color.Transparent),
-                    center = androidx.compose.ui.geometry.Offset(cx, cy),
+                    center = center,
                     radius = radius,
                 ),
-                center = androidx.compose.ui.geometry.Offset(cx, cy),
+                center = center,
                 radius = radius,
                 blendMode = BlendMode.Screen,
             )
         }
-        blob(t1, 14f, 0.62f, 0.55f)
-        blob(t2, 190f, 0.62f, 0.50f)
-        blob(t3, 265f, 0.60f, 0.45f)
-        blob(t4, 35f, 0.65f, 0.45f)
+        blob(t1.value, 14f, 0.62f, 0.50f)
+        blob(t2.value, 190f, 0.62f, 0.45f)
+        blob(t3.value, 265f, 0.60f, 0.41f)
+        blob(t4.value, 35f, 0.65f, 0.41f)
         drawRect(
             Brush.verticalGradient(
                 colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f)),
@@ -752,7 +873,29 @@ private fun LiquidBackdrop(modifier: Modifier = Modifier) {
                 endY = size.height * 0.25f,
             ),
         )
+        // 抖动噪点：8bit 面板上跨几百 px 的渐变会浮出同心色阶环，1/255 的抖动正好抹掉它
+        drawRect(brush = dither, alpha = 0.05f, blendMode = BlendMode.Overlay)
     }
+}
+
+private const val TAU = 6.2831855f
+
+/**
+ * 1/255 的抖动噪点，平铺全屏，用来抹掉 8bit 面板上的色阶环。
+ * 128×128 只生成一次并 remember，每帧仅多一次全屏 fillRect。
+ */
+@Composable
+private fun rememberDitherBrush(): Brush = remember {
+    val side = 128
+    val pixels = IntArray(side * side)
+    val random = Random(0x5EED)
+    for (index in pixels.indices) {
+        val level = random.nextInt(256)
+        pixels[index] = (0xFF shl 24) or (level shl 16) or (level shl 8) or level
+    }
+    val bitmap = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
+    bitmap.setPixels(pixels, 0, side, 0, 0, side, side)
+    ShaderBrush(ImageShader(bitmap.asImageBitmap(), TileMode.Repeated, TileMode.Repeated))
 }
 
 @Composable
@@ -974,6 +1117,7 @@ private fun PlayerMainContent(
     statusRetryFocus: FocusRequester,
     statusRetryReturnFocus: FocusRequester,
     onStatusInteraction: () -> Unit,
+    karaokeProgressEnabled: Boolean,
 ) {
     val placeholder = title.take(1).ifBlank { "音" }
     if (lyrics) {
@@ -1048,6 +1192,7 @@ private fun PlayerMainContent(
                 statusRetryFocus = statusRetryFocus,
                 statusRetryReturnFocus = statusRetryReturnFocus,
                 onStatusInteraction = onStatusInteraction,
+                karaokeProgressEnabled = karaokeProgressEnabled,
                 poster = true,
                 modifier = Modifier.fillMaxWidth(0.46f).fillMaxHeight().align(Alignment.CenterEnd)
                     .padding(
@@ -1092,6 +1237,7 @@ private fun PlayerMainContent(
                 statusRetryFocus = statusRetryFocus,
                 statusRetryReturnFocus = statusRetryReturnFocus,
                 onStatusInteraction = onStatusInteraction,
+                karaokeProgressEnabled = karaokeProgressEnabled,
                 poster = false,
                 modifier = Modifier.weight(0.51f).fillMaxHeight()
                     .padding(
@@ -1131,6 +1277,7 @@ private fun PlayerDetails(
     statusRetryFocus: FocusRequester,
     statusRetryReturnFocus: FocusRequester,
     onStatusInteraction: () -> Unit,
+    karaokeProgressEnabled: Boolean,
     poster: Boolean,
     controlsVisible: Boolean,
     modifier: Modifier = Modifier,
@@ -1174,6 +1321,7 @@ private fun PlayerDetails(
                     failed = lyricsFailed,
                     poster = poster,
                     controlsVisible = controlsVisible,
+                    karaokeProgressEnabled = karaokeProgressEnabled,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -1321,6 +1469,17 @@ private fun DiscArtwork(
         ),
         label = "discBreathPhase",
     )
+    // 3D 唱片涟漪：4 圈错峰扩散的圆环，播放时持续向外推开
+    val rippleTransition = rememberInfiniteTransition(label = "discRipple")
+    val ripplePhase by rippleTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 4_000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "discRipplePhase",
+    )
     // 暂停：唱片整体轻微“回落”，用 spring 让起停都有吸附质感（与停止转动的语义一致）
     val discScale by animateFloatAsState(
         targetValue = if (isPlaying) 1f else 0.965f,
@@ -1349,8 +1508,8 @@ private fun DiscArtwork(
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        FnColors.Teal.copy(alpha = glowAlpha),
-                        FnColors.Violet.copy(alpha = glowAlpha * 0.5f),
+                        placeholderAccent.copy(alpha = glowAlpha),
+                        placeholderAccent.copy(alpha = glowAlpha * 0.5f),
                         Color.Transparent,
                     ),
                     center = androidx.compose.ui.geometry.Offset(this.size.width / 2f, this.size.height / 2f),
@@ -1359,6 +1518,23 @@ private fun DiscArtwork(
                 center = androidx.compose.ui.geometry.Offset(this.size.width / 2f, this.size.height / 2f),
                 radius = radius * 1.02f,
             )
+        }
+        // 3D 唱片涟漪：4 圈错峰扩散的圆环，播放/暂停都持续向外推开，和呼吸光晕同色系
+        Canvas(Modifier.fillMaxSize()) {
+            val cx = this.size.width / 2f
+            val cy = this.size.height / 2f
+            val baseRadius = minOf(this.size.width, this.size.height) / 2f * 0.84f
+            for (index in 0 until 4) {
+                val ripple = (ripplePhase + index * 0.25f) % 1f
+                val ringRadius = baseRadius * (1f + 0.20f * ripple)
+                val ringAlpha = (1f - ripple) * 0.34f
+                drawCircle(
+                    color = placeholderAccent.copy(alpha = ringAlpha),
+                    radius = ringRadius,
+                    center = androidx.compose.ui.geometry.Offset(cx, cy),
+                    style = Stroke(width = 2.dp.toPx()),
+                )
+            }
         }
         Box(Modifier.size(recordSize).graphicsLayer { rotationZ = rotation.value }, contentAlignment = Alignment.Center) {
             Canvas(Modifier.fillMaxSize()) {
@@ -1380,7 +1556,7 @@ private fun DiscArtwork(
                     style = Stroke(width = radius * 0.16f, cap = StrokeCap.Round),
                 )
                 drawArc(
-                    color = FnColors.Teal.copy(alpha = 0.42f),
+                    color = placeholderAccent.copy(alpha = 0.42f),
                     startAngle = -18f,
                     sweepAngle = 36f,
                     useCenter = false,
@@ -1428,6 +1604,7 @@ internal fun TvLyrics(
     poster: Boolean,
     modifier: Modifier = Modifier,
     controlsVisible: Boolean = false,
+    karaokeProgressEnabled: Boolean = true,
 ) {
     Box(
         modifier
@@ -1483,6 +1660,7 @@ internal fun TvLyrics(
                             size = 0.dp,
                             margin = 0.dp,
                         ),
+                        karaokeProgressEnabled = karaokeProgressEnabled,
                     )
                 }
             }

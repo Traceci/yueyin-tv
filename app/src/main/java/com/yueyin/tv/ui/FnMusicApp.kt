@@ -205,13 +205,13 @@ private fun SessionRecoveryScreen(
                 onClick = { scope.launch { onRetry() } },
                 modifier = Modifier.width(190.dp).height(54.dp)
                     .focusProperties { right = loginFocus }
-                    .focusRequester(retryFocus),
+                    .focusRequester(retryFocus).focusBringIntoView(),
             ) { Text("立即重试", fontSize = 20.sp) }
             LoginActionButton(
                 onClick = { scope.launch { onShowLogin() } },
                 modifier = Modifier.width(190.dp).height(54.dp)
                     .focusProperties { left = retryFocus }
-                    .focusRequester(loginFocus),
+                    .focusRequester(loginFocus).focusBringIntoView(),
             ) { Text("切换登录", fontSize = 20.sp) }
         }
     }
@@ -322,7 +322,7 @@ internal fun LoginScreen(
                     modifier = Modifier.weight(1f),
                     downFocus = usernameFocus,
                     rightFocus = historyFocus.takeIf { loginHistory.isNotEmpty() || recentServers.isNotEmpty() },
-                    inputModifier = Modifier.focusRequester(serverFocus).focusProperties {
+                    inputModifier = Modifier.focusRequester(serverFocus).focusBringIntoView().focusProperties {
                         right = if (loginHistory.isNotEmpty() || recentServers.isNotEmpty()) {
                             historyFocus
                         } else {
@@ -340,7 +340,7 @@ internal fun LoginScreen(
                             left = serverFocus
                             down = usernameFocus
                         }
-                        .focusRequester(historyFocus),
+                        .focusRequester(historyFocus).focusBringIntoView(),
                 ) {
                     HistoryIcon(enabled = loginHistory.isNotEmpty() || recentServers.isNotEmpty())
                 }
@@ -358,7 +358,7 @@ internal fun LoginScreen(
                     upFocus = serverFocus,
                     downFocus = passwordFocus,
                     rightFocus = accessCodeFocus,
-                    inputModifier = Modifier.focusRequester(usernameFocus).focusProperties {
+                    inputModifier = Modifier.focusRequester(usernameFocus).focusBringIntoView().focusProperties {
                         up = serverFocus
                         right = accessCodeFocus
                         down = passwordFocus
@@ -372,7 +372,7 @@ internal fun LoginScreen(
                     upFocus = serverFocus,
                     downFocus = passwordFocus,
                     leftFocus = usernameFocus,
-                    inputModifier = Modifier.focusRequester(accessCodeFocus).focusProperties {
+                    inputModifier = Modifier.focusRequester(accessCodeFocus).focusBringIntoView().focusProperties {
                         up = serverFocus
                         left = usernameFocus
                         down = passwordFocus
@@ -397,7 +397,7 @@ internal fun LoginScreen(
                     upFocus = usernameFocus,
                     downFocus = rememberFocus,
                     rightFocus = visibilityFocus,
-                    inputModifier = Modifier.focusRequester(passwordFocus).focusProperties {
+                    inputModifier = Modifier.focusRequester(passwordFocus).focusBringIntoView().focusProperties {
                         up = usernameFocus
                         right = visibilityFocus
                         down = rememberFocus
@@ -413,7 +413,7 @@ internal fun LoginScreen(
                             left = passwordFocus
                             down = rememberFocus
                         }
-                        .focusRequester(visibilityFocus),
+                        .focusRequester(visibilityFocus).focusBringIntoView(),
                 ) {
                     VisibilityIcon(hidden = passwordVisible)
                 }
@@ -428,7 +428,7 @@ internal fun LoginScreen(
                             right = httpsFocus
                             down = httpsFocus
                         }
-                        .focusRequester(rememberFocus),
+                        .focusRequester(rememberFocus).focusBringIntoView(),
                 ) { rememberLogin = !rememberLogin }
                 LoginCheckbox(
                     label = "HTTPS",
@@ -439,7 +439,7 @@ internal fun LoginScreen(
                             left = rememberFocus
                             down = if (canSubmit) loginFocus else FocusRequester.Cancel
                         }
-                        .focusRequester(httpsFocus),
+                        .focusRequester(httpsFocus).focusBringIntoView(),
                 ) {
                     https = !https
                     selectedProfileId = null
@@ -487,7 +487,7 @@ internal fun LoginScreen(
                 modifier = Modifier.fillMaxWidth().height(54.dp)
                     .semantics { contentDescription = "登录" }
                     .focusProperties { up = httpsFocus }
-                    .focusRequester(loginFocus),
+                    .focusRequester(loginFocus).focusBringIntoView(),
             ) {
                 Text(
                     if (submitting) "正在登录" else "登录",
@@ -550,7 +550,7 @@ internal fun LoginScreen(
                                     up = profileRowFocus.getOrNull(index - 1) ?: FocusRequester.Cancel
                                     down = profileRowFocus.getOrNull(index + 1) ?: clearHistoryFocus
                                 }
-                                .focusRequester(profileRowFocus[index]),
+                                .focusRequester(profileRowFocus[index]).focusBringIntoView(),
                             shape = RoundedCornerShape(6.dp),
                             selected = entry.id == selectedProfileId,
                         ) {
@@ -581,7 +581,7 @@ internal fun LoginScreen(
                                     up = profileDeleteFocus.getOrNull(index - 1) ?: FocusRequester.Cancel
                                     down = profileDeleteFocus.getOrNull(index + 1) ?: clearHistoryFocus
                                 }
-                                .focusRequester(profileDeleteFocus[index]),
+                                .focusRequester(profileDeleteFocus[index]).focusBringIntoView(),
                             shape = RoundedCornerShape(6.dp),
                         ) {
                             DeleteHistoryIcon()
@@ -604,7 +604,7 @@ internal fun LoginScreen(
                                     up = legacyRowFocus.getOrNull(index - 1) ?: FocusRequester.Cancel
                                     down = legacyRowFocus.getOrNull(index + 1) ?: clearHistoryFocus
                                 }
-                                .focusRequester(legacyRowFocus[index]),
+                                .focusRequester(legacyRowFocus[index]).focusBringIntoView(),
                             shape = RoundedCornerShape(6.dp),
                         ) {
                             Text(editable.address, fontSize = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -624,7 +624,7 @@ internal fun LoginScreen(
                                 ?: legacyRowFocus.lastOrNull()
                                 ?: FocusRequester.Cancel
                         }
-                        .focusRequester(clearHistoryFocus),
+                        .focusRequester(clearHistoryFocus).focusBringIntoView(),
                     shape = RoundedCornerShape(6.dp),
                 ) { Text("清除所有历史记录", color = FnColors.Coral, fontSize = 19.sp) }
             }

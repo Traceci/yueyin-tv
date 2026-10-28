@@ -223,7 +223,7 @@ private fun GuideActionButton(
     val shape = RoundedCornerShape(12.dp)
     Button(
         onClick = onClick,
-        modifier = modifier.height(48.dp),
+        modifier = modifier.focusBringIntoView().height(48.dp),
         shape = ButtonDefaults.shape(shape, shape, shape, shape, shape),
         scale = ButtonDefaults.scale(focusedScale = 1.03f),
         colors = ButtonDefaults.colors(

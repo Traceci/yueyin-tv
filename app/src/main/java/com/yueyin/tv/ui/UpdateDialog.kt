@@ -134,17 +134,17 @@ private fun UpdateAvailableDialog(state: UpdateUiState.Available, controller: Up
         BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             val dialogWidth = minOf(maxWidth * 0.88f, 640.dp)
             val dialogHeight = minOf(maxHeight * 0.86f, 420.dp)
-            val dialogShape = RoundedCornerShape(22.dp)
+            val dialogShape = RoundedCornerShape(FnRadius.xl)
             Box(
                 Modifier
                     .width(dialogWidth)
                     .height(dialogHeight)
                     .clip(dialogShape)
                     .background(
-                        Brush.linearGradient(listOf(Color(0xFF20242B), Color(0xFF181B21))),
+                        Brush.linearGradient(listOf(FnColors.SurfaceAlt, FnColors.Surface)),
                         dialogShape,
                     )
-                    .border(1.dp, Color(0xFF454B56), dialogShape),
+                    .border(1.dp, Color.White.copy(alpha = 0.14f), dialogShape),
             ) {
                 Column(Modifier.fillMaxSize().padding(22.dp)) {
                     UpdateDialogHeader(state)
@@ -158,14 +158,14 @@ private fun UpdateAvailableDialog(state: UpdateUiState.Available, controller: Up
                         Text("本次更新", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.weight(1f))
                         if (notesScroll.maxValue > 0) {
-                            Text("使用遥控器上下键查看更多", color = Color(0xFF737C88), fontSize = 10.sp)
+                            Text("使用遥控器上下键查看更多", color = FnColors.Muted, fontSize = 10.sp)
                         }
                     }
                     Spacer(Modifier.height(7.dp))
                     Box(
                         Modifier.fillMaxWidth().weight(1f)
-                            .background(Color(0xFF14171C), RoundedCornerShape(14.dp))
-                            .border(1.dp, Color(0xFF303640), RoundedCornerShape(14.dp)),
+                            .background(FnColors.SurfaceAlt, RoundedCornerShape(FnRadius.lg))
+                            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(FnRadius.lg)),
                     ) {
                         Column(
                             Modifier.fillMaxSize()
@@ -202,7 +202,7 @@ private fun UpdateAvailableDialog(state: UpdateUiState.Available, controller: Up
                                 val thumbTravel = (maxHeight - thumbHeight).coerceAtLeast(0.dp)
                                 Box(
                                     Modifier.align(Alignment.TopCenter).width(3.dp).fillMaxHeight()
-                                        .background(Color(0xFF292E36), RoundedCornerShape(99.dp)),
+                                        .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(99.dp)),
                                 )
                                 Box(
                                     Modifier.align(Alignment.TopCenter).graphicsLayer {
@@ -210,7 +210,7 @@ private fun UpdateAvailableDialog(state: UpdateUiState.Available, controller: Up
                                             notesScroll.value.toFloat() / notesScroll.maxValue.toFloat()
                                     }
                                         .width(3.dp).height(thumbHeight)
-                                        .background(Color(0xFF7A8491), RoundedCornerShape(99.dp)),
+                                        .background(Color.White.copy(alpha = 0.45f), RoundedCornerShape(99.dp)),
                                 )
                             }
                         }
@@ -264,7 +264,7 @@ private fun UpdateAvailableDialog(state: UpdateUiState.Available, controller: Up
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 Text(
                                     "忽略 ${state.manifest.versionName}",
-                                    fontSize = 13.sp,
+                                    fontSize = 12.sp,
                                     lineHeight = 17.sp,
                                     fontWeight = FontWeight.SemiBold,
                                 )
@@ -274,25 +274,25 @@ private fun UpdateAvailableDialog(state: UpdateUiState.Available, controller: Up
                     Spacer(Modifier.height(8.dp))
                     Row(
                         Modifier.fillMaxWidth().height(34.dp)
-                            .background(Color(0xFF28211C), RoundedCornerShape(10.dp))
-                            .border(1.dp, Color(0xFF49372E), RoundedCornerShape(10.dp))
+                            .background(FnColors.Coral.copy(alpha = 0.12f), RoundedCornerShape(FnRadius.md))
+                            .border(1.dp, FnColors.Coral.copy(alpha = 0.30f), RoundedCornerShape(FnRadius.md))
                             .padding(horizontal = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(9.dp),
                     ) {
                         Box(
-                            Modifier.size(16.dp).background(Color(0xFF4A382E), CircleShape),
+                            Modifier.size(16.dp).background(FnColors.Coral.copy(alpha = 0.35f), CircleShape),
                             contentAlignment = Alignment.Center,
-                        ) { Text("i", color = Color(0xFFE8B184), fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                        ) { Text("i", color = FnColors.Amber, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
                         Text(
                             "忽略后，此版本不再自动提示；发布更高版本时仍会正常提醒",
-                            color = Color(0xFFD0B297),
-                            fontSize = 10.5.sp,
+                            color = FnColors.Amber,
+                            fontSize = 10.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
                         )
-                        Text("返回键关闭", color = Color(0xFF887568), fontSize = 9.5.sp)
+                        Text("返回键关闭", color = FnColors.Muted, fontSize = 10.sp)
                     }
                 }
             }
@@ -309,17 +309,17 @@ private fun UpdateDialogHeader(state: UpdateUiState.Available) {
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Box(
-            Modifier.size(40.dp).background(Color(0xFF392D2C), CircleShape)
-                .border(1.dp, Color(0xFF604039), CircleShape),
+            Modifier.size(40.dp).background(FnColors.Coral.copy(alpha = 0.18f), CircleShape)
+                .border(1.dp, FnColors.Coral.copy(alpha = 0.45f), CircleShape),
             contentAlignment = Alignment.Center,
         ) { Text("↓", color = FnColors.Coral, fontSize = 24.sp, fontWeight = FontWeight.Bold) }
-        Text("发现新版本", fontSize = 22.sp, lineHeight = 26.sp, fontWeight = FontWeight.Bold)
+        Text("发现新版本", fontSize = 21.sp, lineHeight = 26.sp, fontWeight = FontWeight.Bold)
         if (state.ignored) {
             Text(
                 "此版本已忽略",
                 color = FnColors.Warning,
                 fontSize = 10.sp,
-                modifier = Modifier.background(Color(0xFF352F20), RoundedCornerShape(99.dp))
+                modifier = Modifier.background(FnColors.Warning.copy(alpha = 0.16f), RoundedCornerShape(99.dp))
                     .padding(horizontal = 8.dp, vertical = 3.dp),
             )
         }
@@ -333,7 +333,7 @@ private fun UpdateNoteContent(blocks: List<UpdateNoteBlock>) {
         when (block) {
             is UpdateNoteBlock.Heading -> {
                 if (index > 0) Spacer(Modifier.height(9.dp))
-                Text(block.text, color = Color(0xFFDDE2E8), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(block.text, color = FnColors.Text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
             }
             is UpdateNoteBlock.Item -> {
@@ -354,37 +354,37 @@ private fun UpdateNoteContent(blocks: List<UpdateNoteBlock>) {
 @Composable
 private fun VersionComparison(manifest: UpdateManifest) {
     Row(
-        Modifier.fillMaxWidth().height(56.dp).background(Color(0xFF14171A), RoundedCornerShape(14.dp))
-            .border(1.dp, Color(0xFF32363C), RoundedCornerShape(14.dp)).padding(horizontal = 20.dp, vertical = 9.dp),
+        Modifier.fillMaxWidth().height(56.dp).background(FnColors.Surface, RoundedCornerShape(FnRadius.lg))
+            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(FnRadius.lg)).padding(horizontal = 20.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
             Column {
                 Text("当前版本", color = FnColors.Muted, fontSize = 10.sp)
-                Text(BuildConfig.VERSION_NAME, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                Text(BuildConfig.VERSION_NAME, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             }
         }
         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-            Text("⟶", color = Color(0xFF7D8692), fontSize = 23.sp)
+            Text("⟶", color = FnColors.Muted, fontSize = 23.sp)
         }
         Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
             Row(
-                Modifier.width(172.dp).fillMaxHeight().background(Color(0xFF17312E), RoundedCornerShape(11.dp))
-                    .border(1.dp, Color(0xFF28574F), RoundedCornerShape(11.dp)).padding(horizontal = 12.dp),
+                Modifier.width(172.dp).fillMaxHeight().background(FnColors.Teal.copy(alpha = 0.12f), RoundedCornerShape(FnRadius.md))
+                    .border(1.dp, FnColors.Teal.copy(alpha = 0.30f), RoundedCornerShape(FnRadius.md)).padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column {
-                    Text("最新版本", color = Color(0xFF87A39D), fontSize = 9.5.sp)
-                    Text(manifest.versionName, color = FnColors.Teal, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                    Text("最新版本", color = FnColors.Teal, fontSize = 10.sp)
+                    Text(manifest.versionName, color = FnColors.Teal, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 }
                 Spacer(Modifier.weight(1f))
                 Text(
                     "推荐",
-                    color = Color(0xFF83E1CD),
-                    fontSize = 9.5.sp,
+                    color = FnColors.Teal,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.background(Color(0xFF23433D), RoundedCornerShape(99.dp))
+                    modifier = Modifier.background(FnColors.Teal.copy(alpha = 0.22f), RoundedCornerShape(99.dp))
                         .padding(horizontal = 9.dp, vertical = 4.dp),
                 )
             }
@@ -437,14 +437,14 @@ private fun UpdateProgressDialog(
     BackHandler(onBack = onCancel)
     Dialog(onDismissRequest = onCancel) {
         Column(
-            Modifier.width(620.dp).background(Color(0xFF1B1C22), RoundedCornerShape(22.dp))
-                .border(1.dp, Color(0xFF464A53), RoundedCornerShape(22.dp)).padding(38.dp),
+            Modifier.width(620.dp).background(FnColors.SurfaceAlt, RoundedCornerShape(FnRadius.xl))
+                .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(FnRadius.xl)).padding(38.dp),
         ) {
-            Text(title, fontSize = 31.sp, fontWeight = FontWeight.Bold)
+            Text(title, fontSize = 30.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(10.dp))
             Text(message, color = FnColors.Muted, fontSize = 18.sp)
             Spacer(Modifier.height(26.dp))
-            Box(Modifier.fillMaxWidth().height(10.dp).background(Color(0xFF30343B), RoundedCornerShape(99.dp))) {
+            Box(Modifier.fillMaxWidth().height(10.dp).background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(99.dp))) {
                 Box(
                     Modifier.fillMaxWidth(progress?.coerceIn(0f, 1f) ?: 0.18f).height(10.dp)
                         .background(FnColors.Coral, RoundedCornerShape(99.dp)),
@@ -473,10 +473,10 @@ private fun UpdateStatusDialog(
     if (dismiss != null) BackHandler(onBack = dismiss)
     Dialog(onDismissRequest = { dismiss?.invoke() }) {
         Column(
-            Modifier.width(590.dp).background(Color(0xFF1B1C22), RoundedCornerShape(22.dp))
-                .border(1.dp, Color(0xFF464A53), RoundedCornerShape(22.dp)).padding(38.dp),
+            Modifier.width(590.dp).background(FnColors.SurfaceAlt, RoundedCornerShape(FnRadius.xl))
+                .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(FnRadius.xl)).padding(38.dp),
         ) {
-            Text(title, fontSize = 31.sp, fontWeight = FontWeight.Bold)
+            Text(title, fontSize = 30.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(12.dp))
             Text(message, color = FnColors.Muted, fontSize = 18.sp)
             if (primaryLabel != null && onPrimary != null) {
@@ -503,8 +503,8 @@ private fun UpdateStatusDialog(
 
 @Composable
 private fun updateButtonColors() = ButtonDefaults.colors(
-    containerColor = Color(0xFF343740),
-    contentColor = Color(0xFFD7DBE1),
+    containerColor = FnColors.SurfaceAlt,
+    contentColor = FnColors.Text,
     focusedContainerColor = FnColors.Coral,
     focusedContentColor = Color.White,
 )

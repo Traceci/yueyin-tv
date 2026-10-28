@@ -16,7 +16,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.drawWithContent
@@ -205,19 +210,37 @@ object FnGrid {
     /** 卡片最小宽度：低于它不再增列。 */
     val MinCardWidth = 150.dp
 
-    /** 网格水平间距。 */
-    val Gutter = 18.dp
+    /**
+     * 「全部专辑」海报卡的目标宽度。
+     *
+     * 960 画布 − 48×2 边距 − 8 内边距 = 856dp，(856+14)/(128+14) = 6.1 → 6 列，
+     * 实际每列宽 (856−5×14)/6 = 131dp。
+     *
+     * 这里取 128 而不是实际的 131：131 时 (856+14)/(131+14) 正好等于 6.00，
+     * 电视上报的可用宽度差 1dp 就会掉成 5 列。留 3dp 余量，列数才稳定。
+     *
+     * 卡片宽度由网格决定（`fillMaxWidth`），所以列数与卡片设计必须共用这一组数：
+     * 之前列数按 150dp 算（5 列 → 每格 160dp）、卡片却写死 232dp，
+     * 压缩后留给专辑名的只有 26dp，一个汉字都放不下。
+     */
+    val PosterCardWidth = 128.dp
+
+    /** 网格水平间距：与 GridPage / MediaBand 实际绘制使用的间距保持一致。 */
+    val Gutter = 14.dp
 
     /** 网格自身 contentPadding 左右合计（各 4dp）。 */
     const val ContentInsetDp = 8f
 
     /**
      * 可用宽度（dp）→ 列数。取 3~6 列兜底，避免极端宽高比下退化成 1~2 列或无限增列。
-     * 例：960dp 画布、左右各 48dp 边距、8dp 内边距 → 可用 856dp → (856+18)/(150+18)=5.2 → 5 列。
+     * 例：960dp 画布、左右各 48dp 边距、8dp 内边距 → 可用 856dp → (856+14)/(150+14)=5.3 → 5 列。
+     *
+     * [targetCardWidth] 传该网格卡片的设计宽度，列数与卡片宽度才不会各自为政。
      */
-    fun columnsFor(availableWidthDp: Float): Int {
+    fun columnsFor(availableWidthDp: Float, targetCardWidth: Dp = MinCardWidth): Int {
         if (availableWidthDp <= 0f) return 4
-        val count = ((availableWidthDp + Gutter.value) / (MinCardWidth.value + Gutter.value)).toInt()
+        val cardWidth = targetCardWidth.value.coerceAtLeast(1f)
+        val count = ((availableWidthDp + Gutter.value) / (cardWidth + Gutter.value)).toInt()
         return count.coerceIn(3, 6)
     }
 }
@@ -234,11 +257,23 @@ fun rememberCanvasWidthDp(): Float {
     return configuration.screenWidthDp / scale
 }
 
-/** 全局圆角阶梯。 */
+/**
+ * 全局圆角阶梯：**只用这 4 档**。
+ * 之前全项目散落 17 种圆角（1.25 / 2 / 3 / 4 / 5 / 7 / 8 / 9 / 11 / 18 / 22 …），
+ * 同一屏里就能看到 4/8/10/14/22 并存，这是"看起来不协调"的主要来源之一。
+ * 圆形与胶囊用 `CircleShape` / `RoundedCornerShape(50)`，不要写 99/999 这类魔数。
+ */
 object FnRadius {
+    /** 6dp：缩略图、复选框、小标签。 */
     val sm = 6.dp
-    val md = 10.dp
-    val lg = 14.dp
+
+    /** 12dp：卡片、列表行、搜索框。 */
+    val md = 12.dp
+
+    /** 16dp：面板、弹窗、大按钮。 */
+    val lg = 16.dp
+
+    /** 20dp：全屏弹层、详情页头图区。 */
     val xl = 20.dp
 }
 
@@ -337,28 +372,50 @@ fun Modifier.fnFocusScale(focused: Boolean, scale: Float = FnFocus.focusedScale)
 }
 
 /**
+ * 慢速循环相位（0~1）：按固定低帧率推进，而不是每帧都给新值。
+ *
+ * 为什么不用 `rememberInfiniteTransition`：无限动画**每帧**都会写入新值，
+ * 订阅它的绘制节点就会每帧重绘。对于 20s 以上才走完一圈的缓慢漂移，
+ * 24fps 与 60fps 肉眼完全看不出差别，但整屏绘制次数直接降到 40%。
+ *
+ * 相位值只在绘制阶段被读取（`.value`），所以写入它只会让绘制失效，不会触发重组。
+ */
+@Composable
+fun rememberSlowPhase(periodMillis: Int, fps: Int = 24): State<Float> {
+    val phase = remember(periodMillis, fps) { mutableFloatStateOf(0f) }
+    LaunchedEffect(periodMillis, fps) {
+        val periodNanos = periodMillis * 1_000_000L
+        val stepNanos = 1_000_000_000L / fps.coerceAtLeast(1)
+        var startNanos = 0L
+        var lastEmit = Long.MIN_VALUE
+        while (true) {
+            withFrameNanos { now ->
+                if (startNanos == 0L) startNanos = now
+                if (lastEmit == Long.MIN_VALUE || now - lastEmit >= stepNanos) {
+                    lastEmit = now
+                    phase.floatValue = ((now - startNanos) % periodNanos).toFloat() / periodNanos
+                }
+            }
+        }
+    }
+    return phase
+}
+
+/**
  * 全局氛围背景：纯黑蓝基底上叠加两团低透明度大型光斑，并让它们极缓慢地反向漂移，
  * 避免大面积纯色显得沉闷。光斑透明度压在 10% 以内，不影响任何文字对比度。
- * 漂移值只在 draw 阶段读取，不触发重组。
+ * 漂移值只在 draw 阶段读取，且按 24fps 推进（见 [rememberSlowPhase]），不触发重组。
  */
 @Composable
 fun FnAmbientBackdrop(modifier: Modifier = Modifier) {
-    val transition = rememberInfiniteTransition(label = "ambient")
-    val drift by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 26_000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "ambientDrift",
-    )
+    val drift = rememberSlowPhase(periodMillis = 26_000)
     Canvas(modifier) {
         drawRect(FnColors.Background)
         val w = size.width
         val h = size.height
+        val t = drift.value
         // 光斑一：左上珊瑚（主色）
-        val c1 = Offset(w * (0.18f + 0.05f * drift), h * (0.10f + 0.04f * drift))
+        val c1 = Offset(w * (0.18f + 0.05f * t), h * (0.10f + 0.04f * t))
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(FnColors.Coral.copy(alpha = 0.10f), Color.Transparent),
@@ -369,7 +426,7 @@ fun FnAmbientBackdrop(modifier: Modifier = Modifier) {
             radius = w * 0.55f,
         )
         // 光斑二：右下湖蓝，与光斑一反相漂移，形成错位“呼吸”
-        val c2 = Offset(w * (0.86f - 0.05f * drift), h * (0.88f - 0.04f * drift))
+        val c2 = Offset(w * (0.86f - 0.05f * t), h * (0.88f - 0.04f * t))
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(FnColors.Cyan.copy(alpha = 0.07f), Color.Transparent),
@@ -392,7 +449,8 @@ fun FnSkeleton(
     shape: Shape = RoundedCornerShape(FnRadius.md),
 ) {
     val transition = rememberInfiniteTransition(label = "skeleton")
-    val sweep by transition.animateFloat(
+    // 持有 State、在绘制阶段取值：高光每帧移动，但不产生重组（首屏 8 个骨架同时存在，这点很关键）
+    val sweep = transition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
@@ -411,7 +469,7 @@ fun FnSkeleton(
                 // 若在缓存块里算 startX，高光位置会被冻在第一次的值上不再移动。
                 val bandWidth = size.width * 0.45f
                 onDrawBehind {
-                    val startX = -bandWidth + (size.width + bandWidth * 2) * sweep
+                    val startX = -bandWidth + (size.width + bandWidth * 2) * sweep.value
                     drawRect(
                         brush = Brush.linearGradient(
                             colors = listOf(
