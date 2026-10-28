@@ -1925,7 +1925,11 @@ internal fun HomePlaylistLockup(
 ) {
     val metrics = rememberPlaylistMetrics()
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(FnRadius.lg)
+    // 圆角只挂在封面上，卡片容器本身**不裁剪**。
+    // 原来整个 Button 按 16dp 圆角裁剪，左下角的裁剪弧正好压在文字块上：
+    // 「100 首」的字形左边距卡片左边缘只有 1dp，1 就坐在弧线上，看起来像被啃掉一块。
+    // 容器改成矩形没有任何视觉代价（卡片背景本来就是透明的），文字从此不受形状裁剪。
+    val coverShape = RoundedCornerShape(FnRadius.lg)
     Button(
         onClick = onClick,
         modifier = modifier
@@ -1933,7 +1937,13 @@ internal fun HomePlaylistLockup(
             .height(PlaylistTileHeight)
             .focusGlow(focused = focused, cornerRadius = 16.dp)
             .onFocusChanged { focused = it.isFocused },
-        shape = ButtonDefaults.shape(shape, shape, shape, shape, shape),
+        shape = ButtonDefaults.shape(
+            RectangleShape,
+            RectangleShape,
+            RectangleShape,
+            RectangleShape,
+            RectangleShape,
+        ),
         scale = ButtonDefaults.scale(focusedScale = 1f),
         colors = ButtonDefaults.colors(
             containerColor = Color.Transparent,
@@ -1951,8 +1961,8 @@ internal fun HomePlaylistLockup(
                     .fillMaxWidth()
                     .height(metrics.cover)
                     // 封面区焦点外观统一走 FnFocus：聚焦主色描边 + 光晕，未聚焦一道淡描边
-                    .fnFocusRing(focused = focused, shape = shape, cornerRadius = 14.dp)
-                    .clip(shape),
+                    .fnFocusRing(focused = focused, shape = coverShape, cornerRadius = 14.dp)
+                    .clip(coverShape),
             ) {
                 PlaylistTileArtwork(
                     title = title,
