@@ -218,12 +218,15 @@ internal data class NavFocusController(
     /** 新页面已消费该标记。 */
     val onConsumed: () -> Unit,
     /**
-     * Tab「获得焦点」是否算作"用户想切页"。
-     * 路由刚变化的一小段时间内为 false——那期间 Tab 拿到的焦点来自系统自动恢复
-     * （新页面渲染后默认焦点会落到第一个可聚焦元素，也就是「首页」Tab），
-     * 若当成用户意图就会把刚打开的页面立刻弹回首页（表现为"点全部歌单退回首页"）。
+     * Tab「获得焦点」此刻是否**不应该**被当成"用户想切页"。
+     *
+     * 必须是函数、不能是 Boolean：页面切换时的焦点事件发生在**组合之后的布局相位**，
+     * 而闭包里的布尔值是组合那一刻拷进去的。路由刚变的那一帧组合时标志还是 false，
+     * 等焦点事件真正到达，闭包里读到的仍是这个旧值 —— 抑制永远不生效，
+     * 于是"从内容区点『全部歌单 / 全部专辑』被弹回首页"始终修不掉。
+     * 改成函数，在事件发生的这一刻才去读当前值。
      */
-    val autoSwitchAllowed: Boolean = true,
+    val isTabSwitchBlocked: () -> Boolean = { false },
 ) {
     companion object {
         val None = NavFocusController(null, {}, {})
@@ -282,12 +285,6 @@ private fun Modifier.focusGlow(
 
 private const val FULL_CATALOG_PAGE_SIZE = 12
 
-/**
- * 路由变化后多久内，导航条 Tab 的"获得焦点"不算用户想切页。
- * 太短会漏掉系统自动恢复焦点的那一帧，太长会让用户在切页后马上按左右键时"没反应"。
- */
-private const val TAB_SWITCH_SUPPRESS_MS = 700L
-
 /** 顶栏一级导航的三个入口（注意与导航胶囊单个按钮的 LibraryTab 组件区分）。 */
 internal enum class LibraryNavTab { Home, Albums, Playlists, My }
 
@@ -318,10 +315,25 @@ internal fun AuthenticatedApp(
     val navDensity = LocalDensity.current
     val navInOffsetPx = with(navDensity) { 24.dp.toPx() }.toInt()
     val navOutOffsetPx = with(navDensity) { 12.dp.toPx() }.toInt()
-    val open: (LibraryRoute) -> Unit = { stack = stack + it; navDirection = 1 }
-    val root: (LibraryRoute) -> Unit = { stack = listOf(it); navDirection = 0 }
+    // 页面切换的瞬间，系统会把默认焦点恢复到"第一个可聚焦节点"——也就是导航条上的「首页」Tab。
+    // 这个焦点不是用户意图，但"焦点落到 Tab 即切页"会把它当成用户想切页，
+    // 结果是刚从内容区点「全部歌单 / 全部专辑」进来的页面被立刻弹回首页。
+    // 这里在**导航动作发生的同一时刻**置位（若放到 LaunchedEffect 里会晚一帧，
+    // 等焦点事件到达时标志还是 false，抑制形同虚设），直到用户真的按过方向键才解除。
+    val tabSwitchBlocked = remember { mutableStateOf(false) }
+    val open: (LibraryRoute) -> Unit = {
+        tabSwitchBlocked.value = true
+        stack = stack + it
+        navDirection = 1
+    }
+    val root: (LibraryRoute) -> Unit = {
+        tabSwitchBlocked.value = true
+        stack = listOf(it)
+        navDirection = 0
+    }
     val back: () -> Unit = {
         if (stack.size > 1) {
+            tabSwitchBlocked.value = true
             stack = stack.dropLast(1)
             navDirection = -1
         }
@@ -386,6 +398,7 @@ internal fun AuthenticatedApp(
     BackHandler {
         when {
             stack.size > 1 -> {
+                tabSwitchBlocked.value = true
                 stack = stack.dropLast(1)
                 navDirection = -1
             }
@@ -412,21 +425,13 @@ internal fun AuthenticatedApp(
 
     // 导航条「焦点即切换」：记录切换后焦点应回到哪个导航项
     var navFocusTarget by remember { mutableStateOf<String?>(null) }
-    // 路由刚变的一小段时间里，Tab「获得焦点」不算用户想切页。
-    // 原因：进入新页面时系统会把默认焦点落到第一个可聚焦元素（也就是「首页」Tab），
-    // 若照常按"焦点即切页"处理，用户从首页点「全部歌单」就会被瞬间弹回首页。
-    var suppressTabSwitch by remember { mutableStateOf(false) }
-    LaunchedEffect(route) {
-        suppressTabSwitch = true
-        delay(TAB_SWITCH_SUPPRESS_MS)
-        suppressTabSwitch = false
-    }
-    val navFocusController = remember(navFocusTarget, suppressTabSwitch) {
+    val navFocusController = remember(navFocusTarget) {
         NavFocusController(
             pending = navFocusTarget,
             requestNavSwitch = { navFocusTarget = it },
             onConsumed = { navFocusTarget = null },
-            autoSwitchAllowed = !suppressTabSwitch,
+            // 传函数而不是布尔值：焦点事件发生时才取当前值，避免组合期快照晚一帧。
+            isTabSwitchBlocked = { tabSwitchBlocked.value },
         )
     }
     // 常驻导航条的焦点锚点：全 App 唯一，随 AuthenticatedApp 生命周期存活。
@@ -469,7 +474,21 @@ internal fun AuthenticatedApp(
         LocalNavRequesters provides navRequesters,
         LocalPlayerRouteOpen provides (route is LibraryRoute.Player),
     ) {
-        Box(Modifier.fillMaxSize()) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                // 用户真的按过方向键 → 之后再落到 Tab 上的焦点就是真实意图，解除切页抑制。
+                // 用 preview（父节点先收到，早于焦点移动）才能保证"先解除、后判断"。
+                .onPreviewKeyEvent { event ->
+                    val key = event.key
+                    val isDirection = key == Key.DirectionUp || key == Key.DirectionDown ||
+                        key == Key.DirectionLeft || key == Key.DirectionRight
+                    if (isDirection && event.type == KeyEventType.KeyDown) {
+                        tabSwitchBlocked.value = false
+                    }
+                    false
+                },
+        ) {
             // 全局氛围背景：所有路由共用一层缓慢漂移的光斑，避免大面积纯黑显得沉闷。
             // 播放页自带整屏沉浸背景（不透明，会把这层完全盖住），因此直接不画——
             // 省掉一整屏 24fps 的径向渐变填充，是这轮最划算的一处优化。
@@ -922,10 +941,10 @@ private fun SegmentedLibraryTabs(
     // Tab 拿到焦点时的统一处理。
     fun onTabFocused(tab: LibraryNavTab) {
         if (selectedTab == tab) return
-        if (!navFocus.autoSwitchAllowed) {
-            // 路由刚变化：这次焦点来自系统自动恢复（新页面渲染后默认焦点落在
-            // 第一个可聚焦元素，也就是「首页」Tab），不是用户想切页。
-            // 把焦点纠正回当前选中项，否则会出现"从首页点「全部歌单」立刻被弹回首页"。
+        if (navFocus.isTabSwitchBlocked()) {
+            // 这次焦点来自"页面刚切换时系统自动恢复默认焦点"（落点是导航条第一个可聚焦项
+            // ——「首页」Tab），不是用户按方向键移过来的。把焦点纠正回当前选中项，
+            // 否则会出现"从内容区点『全部歌单 / 全部专辑』立刻被弹回首页"。
             runCatching {
                 navRequesters.forTab(selectedTab.name.lowercase())?.requestFocus()
             }
@@ -1858,19 +1877,25 @@ private fun FeatureGlyph(kind: HomeArtworkKind, modifier: Modifier = Modifier) {
  * 所以文字块高度改成按字号换算（`sp.toDp()`，内部已乘系统字体缩放），封面吃掉剩下的空间。
  * 之前文字块写死 44dp / 15dp：电视把系统字体放大到 1.17 倍时，两行歌单名需要 51dp 却只有 44dp、
  * 12sp 汉字自然行高 17.4sp 却只给了 15dp，于是长名字被压成一行省略号、曲目数下缘被卡片底边裁掉。
- * 现在字体放大多少文字块就长多少，封面相应变矮，一个字都不会被切；
- * 字体 1.0 倍的设备上封面为 104dp（原 111dp），肉眼几乎无差。
+ * 现在字体放大多少文字块就长多少，封面相应变矮，一个字都不会被切。
+ *
+ * 标题只占一行（原先按两行预留）：
+ * 卡片宽 182dp、标题 19sp，一行约放得下 9.5 个汉字，首页实际歌单名基本都能放下；
+ * 而按两行预留时，第二行的高度在固定 height 下与 24sp×2 的像素高度正好相等，
+ * 浮点舍入让第二行永远分不到空间——长名字照样被省略号截断，却白白多留了一整行 24dp 的空白，
+ * 标题字底到「N 首」字顶实测 33dp（约两个汉字高），看着就是「行间距太宽」。
+ * 改成一行后这 24dp 回到封面（104dp → 128dp），卡片总高、行数、一屏排布全部不变。
  */
 private val PlaylistTileHeight = 182.dp
 private val PlaylistCoverGap = 9.dp
 private val PlaylistCaptionGap = 3.dp
 
-/** 19sp 标题的行高。24sp（1.26em）给汉字下缘留出余量，22sp 时第二行底部会被压掉。 */
+/** 19sp 标题的行高。24sp（1.26em）给汉字下缘留出余量，22sp 时汉字下缘会被压掉。 */
 private val PlaylistTitleLineHeight = 24.sp
 
 /** 12sp 副标题的行高。汉字自然行高约 1.45em = 17.4sp，给到 18sp 才不切字。 */
 private val PlaylistCaptionLineHeight = 18.sp
-private const val PlaylistTitleLines = 2
+private const val PlaylistTitleLines = 1
 
 /** 歌单卡三块尺寸：文字块由字号换算，封面吃掉 182dp 里剩下的部分。 */
 private data class PlaylistMetrics(val cover: Dp, val titleBlock: Dp, val captionBlock: Dp)
@@ -1938,9 +1963,10 @@ internal fun HomePlaylistLockup(
                 )
             }
             Spacer(Modifier.height(PlaylistCoverGap))
-            // 歌单名允许两行：一列只有 187dp 左右，19sp 一行只放得下 9 个字，
-            // 「我喜欢的音乐（每周更新）」这类名字会被截成半截。与专辑卡同一套规则：
-            // 标题固定占两行的高度，行内卡片才对得齐；曲目数跟在后面。
+            // 歌单名单行显示：一格只有 182dp 左右，19sp 一行放得下约 9.5 个汉字，
+            // 放不下的用省略号收尾（全名在歌单详情页顶栏仍完整显示）。
+            // 这里不放两行——固定 height 下第二行拿不到像素高度，看不到第 2 行，
+            // 只会白白在标题和曲目数之间留下一整行 24dp 的空白。
             Text(
                 title,
                 fontSize = FnType.Body,
@@ -3866,7 +3892,7 @@ private fun DetailTrackCollection(
                     // 骨架屏：与真实歌曲行同高同结构，加载过程不再只有一行灰字
                     items(8) {
                         Row(
-                            Modifier.fillMaxWidth().height(56.dp),
+                            Modifier.fillMaxWidth().height(TrackRowHeight),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Spacer(Modifier.width(TrackRowHorizontalPadding))
@@ -4063,14 +4089,30 @@ private val TrackColDuration = 80.dp
 private val TrackRowHorizontalPadding = 20.dp
 
 /**
- * 歌曲行：**单行 56dp**。
+ * 歌曲行高。56dp 时框里装 21dp 的字，上下空白合计 36dp、且分配不均（上 11 / 下 25）——
+ * 看着就是"框套得太大、字悬在上面"。收到 48dp 后上下各留 13dp 左右，一屏还能多显示一行。
+ */
+private val TrackRowHeight = 48.dp
+
+/** 行内三档字号的显式行高（约 1.22~1.24em）：钉死行盒，字形才会落在框的正中。 */
+private val TrackRowIndexLineHeight = 20.sp
+private val TrackRowTitleLineHeight = 26.sp
+private val TrackRowMetaLineHeight = 22.sp
+
+/**
+ * 歌曲行：**单行 48dp**。
  *
  * 旧实现把「标题 + 专辑」当一个两行的块整体居中，而序号、歌手、时长各自居中，
  * 于是一行里出现两条文字中线，标题看起来比框的中心高约 9dp——就是"字不在框中央"。
  *
  * 现在整行只有一行文字：序号 / 标题 / 歌手 / 时长，全部垂直居中，
- * 结构上就不可能出现"某列比别的列高一点"。专辑名不再单独占一行（歌手列里用 · 接在后面），
- * 行高因此从 66dp 收到 56dp，一屏能多显示一行。
+ * 结构上就不可能出现"某列比别的列高一点"。专辑名不再单独占一行（歌手列里用 · 接在后面）。
+ *
+ * 每段文字都显式给了 `lineHeight`：
+ * 不设时走字体默认行高，中文字形在行盒里天然偏上，四列还会因为字号不同（16 / 21 / 18sp）
+ * 各自居中而错开基线。实测电视上 56dp 的框里，文字墨迹上留白 11dp、下留白 25dp，
+ * 墨迹中心比框中心高 7dp——就是"框太大、字悬在上面"的来源。
+ * 显式行高把行盒钉死（1.22~1.24em），字形回到行盒中间，四列基线也随之对齐。
  */
 @Composable
 private fun DetailTrackRow(
@@ -4086,7 +4128,7 @@ private fun DetailTrackRow(
         onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .height(56.dp)
+            .height(TrackRowHeight)
             .semantics {
                 contentDescription = "${index + 1}. ${track.title} ${track.artistName.orEmpty()}"
             },
@@ -4110,6 +4152,7 @@ private fun DetailTrackRow(
                 (index + 1).toString().padStart(2, '0'),
                 color = contentColor.copy(alpha = 0.66f),
                 fontSize = FnType.Label,
+                lineHeight = TrackRowIndexLineHeight,
                 maxLines = 1,
                 modifier = Modifier.width(TrackColIndex),
             )
@@ -4117,6 +4160,7 @@ private fun DetailTrackRow(
                 track.title,
                 color = contentColor,
                 fontSize = FnType.CardTitle,
+                lineHeight = TrackRowTitleLineHeight,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -4126,6 +4170,7 @@ private fun DetailTrackRow(
                 track.artistName.orEmpty(),
                 color = contentColor.copy(alpha = 0.72f),
                 fontSize = FnType.Row,
+                lineHeight = TrackRowMetaLineHeight,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.width(TrackColArtist),
@@ -4134,6 +4179,7 @@ private fun DetailTrackRow(
                 if (track.isCue) "需兼容" else formatDuration(track.durationMs ?: 0),
                 color = contentColor.copy(alpha = 0.72f),
                 fontSize = FnType.Row,
+                lineHeight = TrackRowMetaLineHeight,
                 textAlign = TextAlign.End,
                 maxLines = 1,
                 modifier = Modifier.width(TrackColDuration),
