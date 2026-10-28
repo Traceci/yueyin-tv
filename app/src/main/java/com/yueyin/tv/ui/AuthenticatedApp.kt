@@ -120,6 +120,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -216,6 +217,13 @@ internal data class NavFocusController(
     val requestNavSwitch: (String) -> Unit,
     /** 新页面已消费该标记。 */
     val onConsumed: () -> Unit,
+    /**
+     * Tab「获得焦点」是否算作"用户想切页"。
+     * 路由刚变化的一小段时间内为 false——那期间 Tab 拿到的焦点来自系统自动恢复
+     * （新页面渲染后默认焦点会落到第一个可聚焦元素，也就是「首页」Tab），
+     * 若当成用户意图就会把刚打开的页面立刻弹回首页（表现为"点全部歌单退回首页"）。
+     */
+    val autoSwitchAllowed: Boolean = true,
 ) {
     companion object {
         val None = NavFocusController(null, {}, {})
@@ -274,6 +282,12 @@ private fun Modifier.focusGlow(
 
 private const val FULL_CATALOG_PAGE_SIZE = 12
 
+/**
+ * 路由变化后多久内，导航条 Tab 的"获得焦点"不算用户想切页。
+ * 太短会漏掉系统自动恢复焦点的那一帧，太长会让用户在切页后马上按左右键时"没反应"。
+ */
+private const val TAB_SWITCH_SUPPRESS_MS = 700L
+
 /** 顶栏一级导航的三个入口（注意与导航胶囊单个按钮的 LibraryTab 组件区分）。 */
 internal enum class LibraryNavTab { Home, Albums, Playlists, My }
 
@@ -319,9 +333,10 @@ internal fun AuthenticatedApp(
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         if (playlistResumeSynced) {
             val playlistState = retainedState.list<Playlist>("playlists")
-            retainedState.syncList(playlistState) {
-                container.musicRepository.playlists(forceRefresh = true)
-            }
+            retainedState.syncList(
+                state = playlistState,
+                loader = { container.musicRepository.playlists(forceRefresh = true) },
+            )
         } else {
             playlistResumeSynced = true
         }
@@ -397,11 +412,21 @@ internal fun AuthenticatedApp(
 
     // 导航条「焦点即切换」：记录切换后焦点应回到哪个导航项
     var navFocusTarget by remember { mutableStateOf<String?>(null) }
-    val navFocusController = remember(navFocusTarget) {
+    // 路由刚变的一小段时间里，Tab「获得焦点」不算用户想切页。
+    // 原因：进入新页面时系统会把默认焦点落到第一个可聚焦元素（也就是「首页」Tab），
+    // 若照常按"焦点即切页"处理，用户从首页点「全部歌单」就会被瞬间弹回首页。
+    var suppressTabSwitch by remember { mutableStateOf(false) }
+    LaunchedEffect(route) {
+        suppressTabSwitch = true
+        delay(TAB_SWITCH_SUPPRESS_MS)
+        suppressTabSwitch = false
+    }
+    val navFocusController = remember(navFocusTarget, suppressTabSwitch) {
         NavFocusController(
             pending = navFocusTarget,
             requestNavSwitch = { navFocusTarget = it },
             onConsumed = { navFocusTarget = null },
+            autoSwitchAllowed = !suppressTabSwitch,
         )
     }
     // 常驻导航条的焦点锚点：全 App 唯一，随 AuthenticatedApp 生命周期存活。
@@ -413,6 +438,29 @@ internal fun AuthenticatedApp(
         LibraryRoute.AllPlaylists -> LibraryNavTab.Playlists
         LibraryRoute.My -> LibraryNavTab.My
         else -> null
+    }
+    // 焦点保底：切页会销毁旧内容里的焦点节点。若新页面还在加载、迟迟没人接焦点，
+    // Compose 焦点树就会处于「无焦点」状态；此时按方向键，系统会执行 restoreDefaultFocus，
+    // 在 Compose 内部命中一个已 detach 的节点并抛
+    // "visitAncestors called on an unattached node"，直接崩掉整个进程
+    // （用户看到的就是"闪退 + 声音立刻停"）。
+    // 这里在切页后等几帧，若内容区仍然没有焦点，就先把焦点交给常驻的导航条 Tab，
+    // 让焦点树里始终有一个 attached 的节点。
+    // 用 AtomicBoolean 而不是 Compose State：焦点每次移动都写 State 会让整个
+    // AuthenticatedApp 重组，代价太大，这里只需要读一个瞬时值。
+    val contentFocused = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    val firstRouteSeen = remember { mutableStateOf(true) }
+    LaunchedEffect(route, navTab) {
+        // 首次组合不干预：刚启动时不存在"被销毁的焦点节点"，让首页按原逻辑抢焦点。
+        if (firstRouteSeen.value) {
+            firstRouteSeen.value = false
+            return@LaunchedEffect
+        }
+        repeat(3) { withFrameNanos { } }
+        if (contentFocused.get()) return@LaunchedEffect
+        // 详情页/播放页/设置页不显示导航条，没有常驻锚点可用，只能靠进程级兜底。
+        val anchor = navTab?.let { navRequesters.forTab(it.name.lowercase()) } ?: return@LaunchedEffect
+        runCatching { anchor.requestFocus() }
     }
     CompositionLocalProvider(
         LocalAuthenticatedDependencies provides container,
@@ -451,7 +499,13 @@ internal fun AuthenticatedApp(
                         )
                     }
                 }
-                Box(Modifier.fillMaxWidth().weight(1f)) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        // 只观察、不参与：记录内容区（含子节点）当前是否有焦点，供上面的焦点保底判断。
+                        .onFocusChanged { contentFocused.set(it.hasFocus) },
+                ) {
                     if (!hasDataSource && !isPlatformRoute) {
                         // 首次安装 / 平台全被删掉时的空态：一张大卡引导去连接平台。
                         // 连上任意平台后它就永久消失，正常情况下只会看到一次。
@@ -830,6 +884,56 @@ private fun SegmentedLibraryTabs(
     onMy: () -> Unit,
 ) {
     val navFocus = LocalNavFocusController.current
+    val view = LocalView.current
+    // 焦点落到 Tab 即切页——但**不能在这一刻同步切**。
+    // onFocusChanged 仍处在按键事件派发过程中，同步切页会当场销毁旧内容里的焦点节点，
+    // 让 Compose 焦点图与组合树短暂不同步；此时若再有一次方向键，系统会执行
+    // restoreDefaultFocus → 命中已 detach 的节点 → 抛
+    // "visitAncestors called on an unattached node" 直接崩掉进程。
+    // 所以这里只登记目标，真正的切页用 View.post 放到当前消息（按键派发）之后执行。
+    fun applySwitch(target: LibraryNavTab) {
+        when (target) {
+            LibraryNavTab.Home -> onHome()
+            LibraryNavTab.Albums -> onAlbums()
+            LibraryNavTab.Playlists -> onPlaylists()
+            LibraryNavTab.My -> onMy()
+        }
+    }
+    var queuedTab by remember { mutableStateOf<LibraryNavTab?>(null) }
+    var postScheduled by remember { mutableStateOf(false) }
+    val scheduleSwitch: (LibraryNavTab) -> Unit = { target ->
+        queuedTab = target
+        if (!postScheduled) {
+            postScheduled = true
+            val posted = view.post {
+                postScheduled = false
+                val pending = queuedTab
+                queuedTab = null
+                if (pending != null) applySwitch(pending)
+            }
+            if (!posted) {
+                // 视图已 detach（理论上不会走到），退回同步切换，至少功能可用。
+                postScheduled = false
+                queuedTab = null
+                applySwitch(target)
+            }
+        }
+    }
+    // Tab 拿到焦点时的统一处理。
+    fun onTabFocused(tab: LibraryNavTab) {
+        if (selectedTab == tab) return
+        if (!navFocus.autoSwitchAllowed) {
+            // 路由刚变化：这次焦点来自系统自动恢复（新页面渲染后默认焦点落在
+            // 第一个可聚焦元素，也就是「首页」Tab），不是用户想切页。
+            // 把焦点纠正回当前选中项，否则会出现"从首页点「全部歌单」立刻被弹回首页"。
+            runCatching {
+                navRequesters.forTab(selectedTab.name.lowercase())?.requestFocus()
+            }
+            return
+        }
+        navFocus.requestNavSwitch(tab.name.lowercase())
+        scheduleSwitch(tab)
+    }
     val containerShape = CircleShape
     val tabWidth = 78.dp
     val pillInset = 3.dp
@@ -863,10 +967,7 @@ private fun SegmentedLibraryTabs(
                     .focusRequester(navRequesters.home)
                     // 焦点落到该项即刻切换，不必再按确定键
                     .onFocusChanged {
-                        if (it.isFocused && selectedTab != LibraryNavTab.Home) {
-                            navFocus.requestNavSwitch("home")
-                            onHome()
-                        }
+                        if (it.isFocused) onTabFocused(LibraryNavTab.Home)
                     },
                 onClick = { if (selectedTab != LibraryNavTab.Home) onHome() },
             )
@@ -880,10 +981,7 @@ private fun SegmentedLibraryTabs(
                     }
                     .focusRequester(navRequesters.albums)
                     .onFocusChanged {
-                        if (it.isFocused && selectedTab != LibraryNavTab.Albums) {
-                            navFocus.requestNavSwitch("albums")
-                            onAlbums()
-                        }
+                        if (it.isFocused) onTabFocused(LibraryNavTab.Albums)
                     },
                 onClick = { if (selectedTab != LibraryNavTab.Albums) onAlbums() },
             )
@@ -897,10 +995,7 @@ private fun SegmentedLibraryTabs(
                     }
                     .focusRequester(navRequesters.playlists)
                     .onFocusChanged {
-                        if (it.isFocused && selectedTab != LibraryNavTab.Playlists) {
-                            navFocus.requestNavSwitch("playlists")
-                            onPlaylists()
-                        }
+                        if (it.isFocused) onTabFocused(LibraryNavTab.Playlists)
                     },
                 onClick = { if (selectedTab != LibraryNavTab.Playlists) onPlaylists() },
             )
@@ -914,10 +1009,7 @@ private fun SegmentedLibraryTabs(
                     }
                     .focusRequester(navRequesters.my)
                     .onFocusChanged {
-                        if (it.isFocused && selectedTab != LibraryNavTab.My) {
-                            navFocus.requestNavSwitch("my")
-                            onMy()
-                        }
+                        if (it.isFocused) onTabFocused(LibraryNavTab.My)
                     },
                 onClick = { if (selectedTab != LibraryNavTab.My) onMy() },
             )
@@ -1921,6 +2013,7 @@ private fun BrowseMy(
     val libraryRowFocus = remember { FocusRequester() }
     val listState = rememberLazyListState()
     val scope = retainedStore.scope
+    val uiContext = LocalContext.current
     LaunchedEffect(Unit) {
         retainedStore.loadFirstPageOnce(
             artistState,
@@ -2066,11 +2159,22 @@ private fun BrowseMy(
                     },
                     BandEntry("同步歌单", "刷新最新自建歌单", null, BandKind.Playlist, "sync-playlists", glyph = PlaylistGlyph.Sync) {
                         focusedKey = "sync-playlists"
-                        scope.launch {
-                            retainedStore.syncList(playlistState) {
-                                container.musicRepository.playlists(forceRefresh = true)
-                            }
-                        }
+                        // 之前这里只发起刷新、不给任何反馈：数据没变化时（进入页面时
+                        // ON_RESUME 已经同步过一次）用户完全看不出点了有没有生效，
+                        // 失败时错误也被吞掉。这里补一条结果提示。
+                        retainedStore.syncList(
+                            state = playlistState,
+                            loader = { container.musicRepository.playlists(forceRefresh = true) },
+                            onFinished = { result ->
+                                val message = result.fold(
+                                    onSuccess = { count -> "歌单已同步：共 $count 个" },
+                                    onFailure = { cause ->
+                                        "同步失败：" + (cause.message?.takeIf(String::isNotBlank) ?: "请稍后重试")
+                                    },
+                                )
+                                Toast.makeText(uiContext, message, Toast.LENGTH_SHORT).show()
+                            },
+                        )
                     },
                     focusedKey,
                     contentFocus,

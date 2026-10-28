@@ -3,6 +3,7 @@ package com.yueyin.tv
 import android.app.ActivityManager
 import android.app.ApplicationExitInfo
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import java.io.File
 import java.text.SimpleDateFormat
@@ -18,6 +19,10 @@ import java.util.Locale
 object CrashLogStore {
     private const val FILE_NAME = "crash_log.txt"
     private const val MAX_BYTES = 512 * 1024
+    /** 自我恢复（静默重载）的频率限制存储，避免崩溃死循环导致无限重启。 */
+    private const val RECOVERY_PREFS = "crash_recovery"
+    private const val RECOVERY_LAST_AT = "last_recovery_at"
+    private const val RECOVERY_MIN_INTERVAL_MS = 15_000L
 
     @Volatile
     private var installed = false
@@ -29,7 +34,9 @@ object CrashLogStore {
         val originalHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             append(context, thread, throwable)
-            // 仍交给系统默认处理器，保持原有崩溃行为（应用退出）
+            // Compose 焦点系统的内部缺陷：不让它变成"已停止运行"，静默重载（见下）。
+            if (recoverFromComposeFocusCrash(context, throwable)) return@setDefaultUncaughtExceptionHandler
+            // 其余异常仍交给系统默认处理器，保持原有崩溃行为（应用退出）
             if (originalHandler != null) {
                 originalHandler.uncaughtException(thread, throwable)
             } else {
@@ -37,6 +44,65 @@ object CrashLogStore {
             }
         }
     }
+
+    /**
+     * 兜底：Compose 焦点系统的已知内部缺陷
+     * `IllegalStateException: visitAncestors called on an unattached node`。
+     *
+     * 它是在系统 `ViewRootImpl.restoreDefaultFocus` 调进 Compose 的栈里抛出的，
+     * 业务层的 `runCatching` 完全拦不到，一旦触发就是整进程死亡
+     * （表现为"闪退 + 音乐立即停"）。这类异常只影响焦点管理本身，
+     * 不代表播放/数据状态已损坏，所以这里不让它演变成"已停止运行"弹窗：
+     * 先把首页重新拉起来，再安静地从干净进程重启。
+     *
+     * 同时做 15 秒一次的频率限制：如果重启后立刻又崩（说明陷入了死循环），
+     * 就不再自我恢复，交回系统默认处理，避免无限重启。
+     */
+    private fun recoverFromComposeFocusCrash(context: Context, throwable: Throwable): Boolean {
+        if (!isComposeFocusCrash(throwable)) return false
+        if (!markRecovery(context)) return false
+        runCatching {
+            val intent = Intent(context, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            }
+            context.startActivity(intent)
+        }
+        // 主线程的 Looper 已经退出，本进程无法再承载新界面：
+        // 留一点时间让 startActivity 落到 ActivityManager，再杀掉自己，
+        // 由系统在干净的新进程里重建 MainActivity。
+        runCatching {
+            Thread {
+                runCatching { Thread.sleep(500) }
+                android.os.Process.killProcess(android.os.Process.myPid())
+            }.start()
+        }
+        return true
+    }
+
+    private fun isComposeFocusCrash(throwable: Throwable): Boolean {
+        var current: Throwable? = throwable
+        while (current != null) {
+            if (current is IllegalStateException &&
+                current.message?.contains("visitAncestors called on an unattached node") == true
+            ) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
+    }
+
+    private fun markRecovery(context: Context): Boolean = runCatching {
+        val prefs = context.getSharedPreferences(RECOVERY_PREFS, Context.MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        val last = prefs.getLong(RECOVERY_LAST_AT, 0L)
+        if (now - last < RECOVERY_MIN_INTERVAL_MS) {
+            false
+        } else {
+            prefs.edit().putLong(RECOVERY_LAST_AT, now).commit()
+            true
+        }
+    }.getOrDefault(false)
 
     private fun file(context: Context): File = File(context.filesDir, FILE_NAME)
 

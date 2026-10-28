@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
   "packageName": "com.yueyin.tv",
-  "versionName": "1.0.2",
-  "versionCode": 3,
-  "title": "悦音 1.0.2",
-  "notes": "## 修复与优化\n- 修复连续听歌时电视进入屏保：播放期间保持屏幕常亮，暂停或退出即自动恢复，不影响息屏省电\n- 修复设置页抖动：从「界面缩放」移动到「清除图片和资料缓存」等区域时界面持续抖动。重写焦点跟随滚动逻辑，去掉“每次聚焦都强制滚到视口顶端 + 向上扩展余量”以及会触发额外重测的状态，抖动消除、焦点跟随仍有效\n- 内部标识符 FnMusic* 全面更名为 YueYin*（补全类名 YueYinApp / YueYinTheme、主题名 Theme.YueYinTV、工程名 YueYinTV、User-Agent 等）；包名 com.yueyin.tv 与应用名“悦音”此前已是，本次仅补全历史遗留的内部代号。Room 本地库名与令牌别名涉及已登录用户的数据安全，保持不变\n## 沿用 1.0.0/1.0.1 的修复\n- 搜索：飞牛等无服务端搜索平台下的软超时 + 流式扫描 + 诊断提示\n- 收藏：Emby / Jellyfin / Subsonic / Plex 协议收藏，本地收藏兜底\n- 应用显示名“悦音”，包名 com.yueyin.tv，应用内更新自动检查 + SHA-256/签名校验",
+  "versionName": "1.0.3",
+  "versionCode": 4,
+  "title": "悦音 1.0.3",
+  "notes": "## 修复\n- 修复低频闪退：定位到 Compose 焦点系统的 `visitAncestors called on an unattached node` 崩溃（浏览内容、切换账号/平台时偶发，界面消失且音乐立即停）。三层修复：①导航条切页不再发生在按键派发过程中；②切页后若内容区迟迟无人接焦点，自动把焦点交给常驻导航条，消除“无焦点窗口”；③进程级兜底，万一仍触发则静默重载而非弹“已停止运行”\n- 根治“检查更新搜不到新版本”：镜像地址返回的清单比本机还旧时（CDN 陈旧缓存），自动再去备用地址取一次并取较高版本\n- 修复首页「全部歌单」点进去立刻被弹回首页（进入新页面时系统默认焦点落在「首页」Tab，被“焦点即切页”误判为用户想切页）\n- 修复「我的 → 歌单 → 同步歌单」点击无任何反应：现在会提示同步结果（成功显示歌单数量，失败显示原因）\n- 修复「我的 → 专辑 → 全部专辑」占位图标文字溢出到方框外（字号改为跟容器等比）\n## 沿用 1.0.0~1.0.2 的修复\n- 播放期间保持屏幕常亮，不再中途进屏保\n- 设置页焦点跟随滚动不再抖动\n- 搜索：无服务端搜索平台下的软超时 + 流式扫描；收藏：多协议 + 本地兜底\n- 包名 com.yueyin.tv，应用名“悦音”，内部标识符统一为 YueYin*",
   "apk": {
-    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v1.0.2/yueyin-tv-1.0.2.apk",
-    "size": 7142629,
-    "sha256": "b3ab40c2f02e7bb6442ee3cd330973522f44ddef5fad55b9d069025c896bc9bb"
+    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v1.0.3/yueyin-tv-1.0.3.apk",
+    "size": 7142643,
+    "sha256": "76b251f253d8b9d161e685f4c1eee9ef0ea876566b1fce7db45de0cbe38c2ea8"
   },
-  "publishedAt": "2026-10-28T14:30:00Z",
-  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v1.0.2"
+  "publishedAt": "2026-10-28T15:40:00Z",
+  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v1.0.3"
 }

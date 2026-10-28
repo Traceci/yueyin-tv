@@ -237,12 +237,24 @@ internal class LibraryRetainedStateStore(val scope: CoroutineScope) {
      * 强制从 [loader] 重新拉取列表并覆盖已保留的列表数据（用于“打开 App 时同步歌单”）。
      * 与 [loadListOnce] 共用同一个 loading 标志，避免并发重复加载；同步成功时整体替换
      * 快照，失败时若已有数据则保留原样（后台同步不应清空已展示内容）。
+     *
+     * [onFinished] 会带回本次同步的结果（成功时是条目数量），供"同步歌单"这类
+     * 用户主动触发的入口给出可见反馈——否则同步成功但数据没变化时，
+     * 用户完全看不出点了有没有生效。
      */
-    fun <T> syncList(state: RetainedListState<T>, loader: suspend () -> List<T>) {
-        if (state.loading) return
+    fun <T> syncList(
+        state: RetainedListState<T>,
+        loader: suspend () -> List<T>,
+        onFinished: ((Result<Int>) -> Unit)? = null,
+    ) {
+        if (state.loading) {
+            onFinished?.invoke(Result.failure(IllegalStateException("正在同步中，请稍候")))
+            return
+        }
         state.loading = true
         scope.launch {
-            runCatching { loader() }
+            val outcome = runCatching { loader() }
+            outcome
                 .onSuccess { state.snapshot = RetainedListSnapshot(entries = it, initialLoadCompleted = true) }
                 .onFailure { cause ->
                     if (state.snapshot.entries.isEmpty()) {
@@ -253,6 +265,7 @@ internal class LibraryRetainedStateStore(val scope: CoroutineScope) {
                     }
                 }
             state.loading = false
+            onFinished?.invoke(outcome.map { it.size })
         }
     }
 

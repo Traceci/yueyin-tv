@@ -110,6 +110,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -1426,11 +1427,13 @@ internal fun InitialArtworkPlaceholder(
         modifier = modifier.clip(shape).background(background),
         contentAlignment = Alignment.Center,
     ) {
-        val glyphSize = when {
-            maxWidth <= 60.dp -> 18.sp
-            maxWidth <= 96.dp -> 25.sp
-            maxWidth <= 220.dp -> 52.sp
-            else -> 72.sp
+        // 字号跟容器尺寸等比走，别再按固定档位判断：
+        // 旧档位是「<=96dp → 25sp，<=220dp → 52sp」，而"全部专辑"这类列表卡的封面是
+        // 100dp，正好落进 52sp 那一档——内圈只有 58dp，汉字会撑破圆框、跑到方块外面。
+        // 按容器宽度的 26% 计算，"全部专辑"的"全"约为 26sp，稳稳落在圈内；
+        // 播放页的大封面同样按比例放大（上限 72sp）。
+        val glyphSize = with(LocalDensity.current) {
+            (maxWidth * 0.26f).toSp().value.coerceIn(12f, 72f).sp
         }
         Box(
             Modifier

@@ -25,23 +25,36 @@ internal fun interface UpdateManifestSource {
 
 /**
  * 依次尝试多个清单地址：jsDelivr 镜像在国内更稳，raw.githubusercontent.com 兜底。
- * 任何一个成功即返回，全部失败才把最后一个错误抛出。
+ *
+ * 不能"第一个成功就返回"：jsDelivr 的 `@branch` 缓存并不可靠，发新版后可能长期返回
+ * 陈旧清单（表现为用户点"检查更新"永远搜不到新版本），而它是"HTTP 200 内容旧"，
+ * 并不会走到 catch 分支。所以这里以 [installedVersionCode] 为界：
+ * 某个地址返回的 versionCode 不高于本机版本时，视为疑似陈旧，继续问下一个地址，
+ * 全部问完取 versionCode 最大的那份；只有都比本机旧，才当作"确实没有更新"。
  */
 internal class FallbackManifestSource(
     private val sources: List<UpdateManifestSource>,
+    /** 本机已安装的 versionCode；<= 0 表示不做陈旧判定（纯按顺序取第一个成功的）。 */
+    private val installedVersionCode: Long = 0L,
 ) : UpdateManifestSource {
     override suspend fun fetchManifest(): UpdateManifest {
+        var best: UpdateManifest? = null
         var lastFailure: Throwable? = null
         for (source in sources) {
-            try {
-                return source.fetchManifest()
+            val manifest = try {
+                source.fetchManifest()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
                 lastFailure = error
+                continue
             }
+            if (best == null || manifest.versionCode > best.versionCode) best = manifest
+            // 已经拿到比本机新的清单，没必要再问后面的地址。
+            if (installedVersionCode <= 0 || manifest.versionCode > installedVersionCode) return manifest
         }
-        throw lastFailure ?: UpdateFailure("没有可用的更新地址")
+        // 所有地址要么失败、要么都比本机旧：返回其中最新的那份（若一份都没拿到则抛错）。
+        return best ?: throw lastFailure ?: UpdateFailure("没有可用的更新地址")
     }
 }
 

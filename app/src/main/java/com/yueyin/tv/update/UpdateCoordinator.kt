@@ -368,6 +368,10 @@ private fun defaultUpdateSource(): UpdateManifestSource? {
     return when (endpoints.size) {
         0 -> null
         1 -> UpdateClient(endpoints.first())
-        else -> FallbackManifestSource(endpoints.map(::UpdateClient))
+        // 传入本机版本：镜像返回的清单若比本机还旧，说明是 CDN 陈旧缓存，需要继续问 raw 兜底。
+        else -> FallbackManifestSource(
+            sources = endpoints.map(::UpdateClient),
+            installedVersionCode = BuildConfig.VERSION_CODE.toLong(),
+        )
     }
 }
