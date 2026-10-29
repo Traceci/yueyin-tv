@@ -455,31 +455,41 @@ internal fun AuthenticatedApp(
     // "visitAncestors called on an unattached node"，直接崩掉整个进程
     // （用户看到的就是"闪退 + 声音立刻停"）。
     //
-    // 旧实现有两个漏洞，导致「播放页 → 返回 → 我的页 → 按方向键」必崩：
-    //  ① 判断「内容区有没有焦点」用的 AtomicBoolean 只在 onFocusChanged 里更新，
-    //     而节点 detach 时这个回调并不保证触发，值会陈旧成 true，保底于是永远被跳过；
-    //  ② 判断对象是「内容区」，可导航条本身也可能持有焦点，反过来又不准。
-    // 现在改成：换页先把标记清零（旧页面的焦点节点已经销毁，"曾经有焦点"不再代表现在），
-    // 再盯几帧看**整棵树**（根布局 onFocusChanged，含导航条与内容区）有没有焦点；
-    // 没有就先交给导航条当前 Tab，仍没有就交给常驻的 rescueAnchor ——
-    // 只要树里有一个 attached 的焦点节点，系统就不会走 restoreDefaultFocus，也就不会崩。
-    val treeHasFocus = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
+    // 判据必须直接问「整棵 View 树此刻有没有焦点节点」——这正是系统 restoreDefaultFocus
+    // 自己的前提条件，不能用 Compose 侧缓存的任何状态去推断：
+    // 焦点方位没变化时 onFocusChanged 不会再回调，所以「先把标记清零、再等回调置回 true」
+    // 这类写法一定会误判成「没有焦点」，然后去抢焦——1.0.5 的
+    // 「在『专辑』Tab 按右键跳回首页」就是这么来的：换页瞬间清零后焦点仍停在
+    // 「专辑」Tab 上（没有变化就没有回调），保底读到 false，8 帧后把焦点扔到屏幕外的
+    // 救援锚点上；用户再按右键，就是从锚点(左上角之外)搜最近的节点，命中「首页」Tab。
+    // 现在只做三件事：等几帧 → 有焦点就立刻退出、绝不干预 → 真没焦点才挂到导航条当前 Tab。
+    val view = LocalView.current
     val rescueAnchor = remember { FocusRequester() }
+    // 救援锚点自己是否正持有焦点。它在屏幕外，一旦被选中，用户看到的就是
+    // 「画面上一个焦点框都没有、方向键到处乱跳」，所以换页时要主动把它交还出去。
+    val anchorFocused = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
     var firstComposition by remember { mutableStateOf(true) }
     LaunchedEffect(route.storageKey()) {
-        treeHasFocus.set(false)
         val first = firstComposition
         firstComposition = false
-        // 冷启动首屏不把焦点塞给导航条：首页要自己把焦点放到第一张卡上。
-        // 但仍留一个更长的兜底窗口——万一首页迟迟没接焦点，至少挂到锚点上，不至于崩溃。
-        repeat(if (first) 24 else 4) { withFrameNanos { } }
-        if (!first && !treeHasFocus.get()) {
+        // 冷启动首屏给内容更长的自取焦窗口（4K 首页封面多），普通换页 3 帧足够。
+        repeat(if (first) 45 else 3) { withFrameNanos { } }
+        // 焦点若还挂在屏幕外的救援锚点上（上一次救急留下的），先交还给导航条当前 Tab，
+        // 让用户重新看见焦点。必须在「有焦点就退出」之前处理，否则会一直卡在锚点上。
+        if (anchorFocused.get()) {
             navTab?.let { tab -> navRequesters.forTab(tab.name.lowercase()) }
                 ?.let { requester -> runCatching { requester.requestFocus() } }
-            // 给页面自己的首次取焦留出余量：内容区后取到焦会自然把焦点从锚点上接走。
-            repeat(4) { withFrameNanos { } }
+            repeat(2) { withFrameNanos { } }
         }
-        if (!treeHasFocus.get()) runCatching { rescueAnchor.requestFocus() }
+        // 有焦点就什么都不做。焦点停在导航条上同样是合法状态，用户按方向键自然能继续走。
+        if (view.findFocus() != null) return@LaunchedEffect
+        // 真·空焦点树：先交给常驻导航条当前 Tab。
+        navTab?.let { tab -> navRequesters.forTab(tab.name.lowercase()) }
+            ?.let { requester -> runCatching { requester.requestFocus() } }
+        repeat(3) { withFrameNanos { } }
+        // 仍为空（详情页 / 播放页 / 设置页没有导航条）：交给常驻救援锚点，
+        // 保证 View 树里永远有一个 attached 的焦点节点，系统就不会走 restoreDefaultFocus。
+        if (view.findFocus() == null) runCatching { rescueAnchor.requestFocus() }
     }
     CompositionLocalProvider(
         LocalAuthenticatedDependencies provides container,
@@ -501,9 +511,7 @@ internal fun AuthenticatedApp(
                         tabSwitchBlocked.value = false
                     }
                     false
-                }
-                // 只观察、不参与：记录整棵树（导航条 + 内容区）当前有没有焦点，供上面的焦点保底判断。
-                .onFocusChanged { treeHasFocus.set(it.hasFocus) },
+                },
         ) {
             // 常驻焦点锚点：1dp、透明、被移到布局边界之外（方向键永远搜不到它），
             // 只在「整棵树都没有焦点」时被程序夺焦。它的唯一职责是让 View 树里
@@ -513,6 +521,7 @@ internal fun AuthenticatedApp(
                     .offset(x = (-200).dp, y = (-200).dp)
                     .size(1.dp)
                     .focusRequester(rescueAnchor)
+                    .onFocusChanged { anchorFocused.set(it.isFocused) }
                     .focusable(),
             )
             // 全局氛围背景：所有路由共用一层缓慢漂移的光斑，避免大面积纯黑显得沉闷。
