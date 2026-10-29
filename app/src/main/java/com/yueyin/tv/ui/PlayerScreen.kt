@@ -456,10 +456,6 @@ internal fun ImmersivePlayer(
             }
             else -> PlayerBackdrop(ambienceColor, Modifier.fillMaxSize())
         }
-        // 呼吸光晕只在 CD 唱片模式开启：光打在背板上、内容之下，跟着唱片一起呼吸。
-        if (!poster && !lyrics) {
-            AmbientGlowOverlay(ambienceColor, Modifier.fillMaxSize())
-        }
         PlayerMainContent(
             poster = poster,
             lyrics = lyrics,
@@ -642,9 +638,34 @@ internal fun Modifier.revealPlayerChromeOnKey(
     }
 }
 
+/** 纯黑/近纯黑封面补底用的暗青灰：0 乘任何放大系数仍是 0，必须单独兜一层。 */
+private val LiftFloor = Color(0xFF252E34)
+
+/**
+ * 亮度下限：深色封面（或关闭动态取色时的兜底底色）会让 CD 模式背板糊成一片纯黑，
+ * 在亮度层次好的大屏和差一些的小屏上观感差异会非常明显。
+ * 这里按比例放大 RGB（保持色相）把亮度抬到 [minLuminance]，已够亮的颜色原样返回，
+ * 不会把浅色封面洗白；近纯黑则额外补一层中性灰，保证至少能看出渐变走向。
+ */
+private fun Color.liftLuminance(minLuminance: Float): Color {
+    val luma = 0.2126f * red + 0.7152f * green + 0.0722f * blue
+    if (luma >= minLuminance) return this
+    val scale = (minLuminance / luma.coerceAtLeast(0.001f)).coerceAtMost(3.5f)
+    val boosted = Color(
+        red = (red * scale).coerceAtMost(1f),
+        green = (green * scale).coerceAtMost(1f),
+        blue = (blue * scale).coerceAtMost(1f),
+        alpha = alpha,
+    )
+    return if (luma <= 0.01f) {
+        androidx.compose.ui.graphics.lerp(boosted, LiftFloor, 0.62f)
+    } else {
+        boosted
+    }
+}
+
 @Composable
-private fun PlayerBackdrop(targetColor: Color, modifier: Modifier = Modifier) {
-    var fromColor by remember { mutableStateOf(targetColor) }
+private fun PlayerBackdrop(targetColor: Color, modifier: Modifier = Modifier) {    var fromColor by remember { mutableStateOf(targetColor) }
     var toColor by remember { mutableStateOf(targetColor) }
     val progress = remember { Animatable(1f) }
     LaunchedEffect(targetColor) {
@@ -653,7 +674,7 @@ private fun PlayerBackdrop(targetColor: Color, modifier: Modifier = Modifier) {
         progress.snapTo(0f)
         progress.animateTo(1f, tween(durationMillis = 650, easing = LinearEasing))
     }
-    val animatedColor = androidx.compose.ui.graphics.lerp(fromColor, toColor, progress.value)
+    val animatedColor = androidx.compose.ui.graphics.lerp(fromColor, toColor, progress.value).liftLuminance(0.20f)
     val glowColor = androidx.compose.ui.graphics.lerp(animatedColor, FnColors.Background, 0.30f)
     Canvas(modifier) {
         val w = size.width
@@ -728,60 +749,6 @@ private fun PlayerPosterBackdrop(targetColor: Color, modifier: Modifier = Modifi
 }
 
 /**
- * CD 唱片模式的呼吸光晕：两盏灯围着黑胶"打架"——
- * 左下暖光（跟随封面主色）从唱片背后溢出，右上冷光（主色向紫偏移）反向游动，
- * 8s 一个来回、用 Screen 混合叠在背板上。只画在「背板之上、内容之下」，
- * 所以光落在背景上，不会糊住封面、歌名和歌词。
- */
-@Composable
-private fun AmbientGlowOverlay(color: Color, modifier: Modifier = Modifier) {
-    // 8s 去 + 8s 回（共 16s 一个来回）：用 24fps 的慢速相位驱动，三角波还原原来的
-    // RepeatMode.Reverse 行为。相位只在绘制阶段读取，既不会每帧重组，
-    // 也不会每帧都重画两层整屏径向渐变。
-    val phaseState = rememberSlowPhase(periodMillis = 16_000)
-    val coolColor = androidx.compose.ui.graphics.lerp(color, FnColors.Violet, 0.62f)
-    Canvas(modifier) {
-        val raw = phaseState.value
-        val phase = if (raw < 0.5f) raw * 2f else 2f - raw * 2f
-        val w = size.width
-        val h = size.height
-        // 暖光：唱片正后方，随呼吸放大并轻微上浮
-        val warmRadius = w * (0.52f + 0.16f * phase)
-        val warmCenter = androidx.compose.ui.geometry.Offset(w * (0.28f + 0.04f * phase), h * (0.54f - 0.03f * phase))
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    color.copy(alpha = 0.32f + 0.24f * phase),
-                    color.copy(alpha = 0.10f + 0.10f * phase),
-                    Color.Transparent,
-                ),
-                center = warmCenter,
-                radius = warmRadius,
-            ),
-            center = warmCenter,
-            radius = warmRadius,
-            blendMode = BlendMode.Screen,
-        )
-        // 冷光：右上角反向摆动，和暖光错开相位，形成"灯在动"的呼吸感
-        val coolRadius = w * (0.40f + 0.12f * (1f - phase))
-        val coolCenter = androidx.compose.ui.geometry.Offset(w * (0.74f - 0.03f * phase), h * (0.30f + 0.05f * phase))
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    coolColor.copy(alpha = 0.26f + 0.14f * (1f - phase)),
-                    Color.Transparent,
-                ),
-                center = coolCenter,
-                radius = coolRadius,
-            ),
-            center = coolCenter,
-            radius = coolRadius,
-            blendMode = BlendMode.Screen,
-        )
-    }
-}
-
-/**
  * 大海报模式下的毛玻璃背板：把封面放大虚化铺满全屏，右侧叠一层主题色渐变，
  * 让海报与信息面板之间有一层"雾面"过渡（Android 12 以下 blur 自动降级为虚化前的暗化底）。
  */
@@ -810,8 +777,12 @@ private fun PosterBlurredBackdrop(bitmap: Bitmap, panelColor: Color, modifier: M
 }
 
 /**
- * 迷你歌词模式的悬浮光效——回到最初版的形态（4 个跨色轮的光球 + Screen 叠加 + 色相整体旋转），
- * 只把峰值亮度从 0.55/0.50/0.45/0.45 下调到 0.50/0.45/0.41/0.41（约 −9%）。
+ * 迷你歌词模式的悬浮光效——4 个跨色轮的光球 + Screen 叠加 + 色相整体旋转。
+ *
+ * 亮度经过两轮调整：早先为了压住躁动把峰值降到 0.50/0.45/0.41/0.41，
+ * 结果在亮度层次较差的电视上整屏看起来"没有光效"，现在回到 0.58/0.52/0.48/0.48，
+ * 并把盖在光斑上的两层压暗从 0.55/0.25 收到 0.42/0.18。
+ * 关键点：光斑 alpha 与压暗层要一起看，只提 alpha 不降压暗等于白提。
  *
  * 关于"跳"：圆心、纵向偏移、半径呼吸必须由**同一个相位角**派生
  * （`sin(angle)` / `cos(angle + 1.7)` / `sin(angle + 0.5)`），
@@ -856,20 +827,22 @@ private fun LiquidBackdrop(modifier: Modifier = Modifier) {
                 blendMode = BlendMode.Screen,
             )
         }
-        blob(t1.value, 14f, 0.62f, 0.50f)
-        blob(t2.value, 190f, 0.62f, 0.45f)
-        blob(t3.value, 265f, 0.60f, 0.41f)
-        blob(t4.value, 35f, 0.65f, 0.41f)
+        blob(t1.value, 14f, 0.62f, 0.58f)
+        blob(t2.value, 190f, 0.62f, 0.52f)
+        blob(t3.value, 265f, 0.60f, 0.48f)
+        blob(t4.value, 35f, 0.65f, 0.48f)
+        // 压暗层只用来托住歌词文字，不能把刚画好的光斑又压回黑色：
+        // 原值 0.55 / 0.25 在亮度层次差的电视上会让整屏看起来"没有光效"。
         drawRect(
             Brush.verticalGradient(
-                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f)),
+                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.42f)),
                 startY = size.height * 0.5f,
                 endY = size.height,
             ),
         )
         drawRect(
             Brush.verticalGradient(
-                colors = listOf(Color.Black.copy(alpha = 0.25f), Color.Transparent),
+                colors = listOf(Color.Black.copy(alpha = 0.18f), Color.Transparent),
                 startY = 0f,
                 endY = size.height * 0.25f,
             ),
