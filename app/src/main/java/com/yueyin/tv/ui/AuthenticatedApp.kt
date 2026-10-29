@@ -293,7 +293,10 @@ internal enum class LibraryNavTab { Home, Albums, Playlists, My }
 
 @Composable
 internal fun AuthenticatedApp(
-    container: AuthenticatedAppDependencies,
+    // 用 AppUiDependencies（它是 AuthenticatedAppDependencies 的子接口）而不是基接口：
+    // 应用内的飞牛登录页要直接调 sessionRepository 登录，
+    // 不能再走「先 logout 再弹顶层登录页」那条路。
+    container: com.yueyin.tv.AppUiDependencies,
     session: SessionState.SignedIn,
     playback: PlaybackUiState,
     onExitApplication: () -> Unit,
@@ -374,6 +377,7 @@ internal fun AuthenticatedApp(
     // 平台相关页面在"没有数据源"时也必须能进（否则用户无处添加平台）
     val isPlatformRoute = route is LibraryRoute.PlatformManage ||
         route == LibraryRoute.PlatformPicker ||
+        route == LibraryRoute.PlatformFnLogin ||
         route is LibraryRoute.PlatformForm ||
         route is LibraryRoute.PlatformLibrary
     var boundPlatformId by remember(session.user.guid) { mutableStateOf<String?>(null) }
@@ -444,28 +448,38 @@ internal fun AuthenticatedApp(
         LibraryRoute.My -> LibraryNavTab.My
         else -> null
     }
-    // 焦点保底：切页会销毁旧内容里的焦点节点。若新页面还在加载、迟迟没人接焦点，
-    // Compose 焦点树就会处于「无焦点」状态；此时按方向键，系统会执行 restoreDefaultFocus，
+    // 焦点保底（闪退根治）：
+    // 切页会销毁旧内容里的焦点节点。若新页面还在加载、迟迟没人接焦点，
+    // Compose 焦点树就处于「无焦点」状态；此时按方向键，系统会执行 restoreDefaultFocus，
     // 在 Compose 内部命中一个已 detach 的节点并抛
     // "visitAncestors called on an unattached node"，直接崩掉整个进程
     // （用户看到的就是"闪退 + 声音立刻停"）。
-    // 这里在切页后等几帧，若内容区仍然没有焦点，就先把焦点交给常驻的导航条 Tab，
-    // 让焦点树里始终有一个 attached 的节点。
-    // 用 AtomicBoolean 而不是 Compose State：焦点每次移动都写 State 会让整个
-    // AuthenticatedApp 重组，代价太大，这里只需要读一个瞬时值。
-    val contentFocused = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
-    val firstRouteSeen = remember { mutableStateOf(true) }
-    LaunchedEffect(route, navTab) {
-        // 首次组合不干预：刚启动时不存在"被销毁的焦点节点"，让首页按原逻辑抢焦点。
-        if (firstRouteSeen.value) {
-            firstRouteSeen.value = false
-            return@LaunchedEffect
+    //
+    // 旧实现有两个漏洞，导致「播放页 → 返回 → 我的页 → 按方向键」必崩：
+    //  ① 判断「内容区有没有焦点」用的 AtomicBoolean 只在 onFocusChanged 里更新，
+    //     而节点 detach 时这个回调并不保证触发，值会陈旧成 true，保底于是永远被跳过；
+    //  ② 判断对象是「内容区」，可导航条本身也可能持有焦点，反过来又不准。
+    // 现在改成：换页先把标记清零（旧页面的焦点节点已经销毁，"曾经有焦点"不再代表现在），
+    // 再盯几帧看**整棵树**（根布局 onFocusChanged，含导航条与内容区）有没有焦点；
+    // 没有就先交给导航条当前 Tab，仍没有就交给常驻的 rescueAnchor ——
+    // 只要树里有一个 attached 的焦点节点，系统就不会走 restoreDefaultFocus，也就不会崩。
+    val treeHasFocus = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
+    val rescueAnchor = remember { FocusRequester() }
+    var firstComposition by remember { mutableStateOf(true) }
+    LaunchedEffect(route.storageKey()) {
+        treeHasFocus.set(false)
+        val first = firstComposition
+        firstComposition = false
+        // 冷启动首屏不把焦点塞给导航条：首页要自己把焦点放到第一张卡上。
+        // 但仍留一个更长的兜底窗口——万一首页迟迟没接焦点，至少挂到锚点上，不至于崩溃。
+        repeat(if (first) 24 else 4) { withFrameNanos { } }
+        if (!first && !treeHasFocus.get()) {
+            navTab?.let { tab -> navRequesters.forTab(tab.name.lowercase()) }
+                ?.let { requester -> runCatching { requester.requestFocus() } }
+            // 给页面自己的首次取焦留出余量：内容区后取到焦会自然把焦点从锚点上接走。
+            repeat(4) { withFrameNanos { } }
         }
-        repeat(3) { withFrameNanos { } }
-        if (contentFocused.get()) return@LaunchedEffect
-        // 详情页/播放页/设置页不显示导航条，没有常驻锚点可用，只能靠进程级兜底。
-        val anchor = navTab?.let { navRequesters.forTab(it.name.lowercase()) } ?: return@LaunchedEffect
-        runCatching { anchor.requestFocus() }
+        if (!treeHasFocus.get()) runCatching { rescueAnchor.requestFocus() }
     }
     CompositionLocalProvider(
         LocalAuthenticatedDependencies provides container,
@@ -487,8 +501,20 @@ internal fun AuthenticatedApp(
                         tabSwitchBlocked.value = false
                     }
                     false
-                },
+                }
+                // 只观察、不参与：记录整棵树（导航条 + 内容区）当前有没有焦点，供上面的焦点保底判断。
+                .onFocusChanged { treeHasFocus.set(it.hasFocus) },
         ) {
+            // 常驻焦点锚点：1dp、透明、被移到布局边界之外（方向键永远搜不到它），
+            // 只在「整棵树都没有焦点」时被程序夺焦。它的唯一职责是让 View 树里
+            // 始终存在一个 attached 的焦点节点——这是不触发 restoreDefaultFocus 的硬条件。
+            Box(
+                Modifier
+                    .offset(x = (-200).dp, y = (-200).dp)
+                    .size(1.dp)
+                    .focusRequester(rescueAnchor)
+                    .focusable(),
+            )
             // 全局氛围背景：所有路由共用一层缓慢漂移的光斑，避免大面积纯黑显得沉闷。
             // 播放页自带整屏沉浸背景（不透明，会把这层完全盖住），因此直接不画——
             // 省掉一整屏 24fps 的径向渐变填充，是这轮最划算的一处优化。
@@ -521,9 +547,7 @@ internal fun AuthenticatedApp(
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .weight(1f)
-                        // 只观察、不参与：记录内容区（含子节点）当前是否有焦点，供上面的焦点保底判断。
-                        .onFocusChanged { contentFocused.set(it.hasFocus) },
+                        .weight(1f),
                 ) {
                     if (!hasDataSource && !isPlatformRoute) {
                         // 首次安装 / 平台全被删掉时的空态：一张大卡引导去连接平台。
@@ -601,9 +625,10 @@ internal fun AuthenticatedApp(
                 onAdd = { open(LibraryRoute.PlatformPicker) },
                 onBrowse = { open(LibraryRoute.PlatformLibrary(it)) },
                 onRelogin = {
-                    // 换飞牛账号（或首次登录飞牛）：先把数据源指回飞牛，再走登录
-                    com.yueyin.tv.ui.connect.ConnectRuntime.activate(null)
-                    retainedScope.launch { container.authenticatedActions.switchAccount() }
+                    // 换飞牛账号：走应用内登录页，不 logout。
+                    // 以前这里是 switchAccount()（先注销再弹顶层登录页），
+                    // 用户点错了就只能杀掉 App 才能回来。
+                    open(LibraryRoute.PlatformFnLogin)
                 },
                 onEdit = { open(LibraryRoute.PlatformForm(it.type, it.id)) },
                 onSignOutFn = {
@@ -624,16 +649,79 @@ internal fun AuthenticatedApp(
             LibraryRoute.PlatformPicker -> PlatformPickerScreen(
                 onPick = { type ->
                     if (type == ConnectType.FEINIU) {
-                        // 飞牛音乐走账号登录：先把数据源指回飞牛，再退回平台页并拉起登录
-                        com.yueyin.tv.ui.connect.ConnectRuntime.activate(null)
-                        back()
-                        retainedScope.launch { container.authenticatedActions.switchAccount() }
+                        // 飞牛音乐 = 账号登录。这里**绝不能**直接 switchAccount()：
+                        // 那会立刻 logout，整屏被顶层登录页替换，用户改主意时无路可退。
+                        // 已经登录过就直接切过去；没登录就进应用内的登录页（普通路由，返回键可用）。
+                        if (hasFnSession) {
+                            com.yueyin.tv.ui.connect.ConnectRuntime.activate(null)
+                            back()
+                        } else {
+                            open(LibraryRoute.PlatformFnLogin)
+                        }
                     } else {
                         open(LibraryRoute.PlatformForm(type))
                     }
                 },
                 onBack = back,
             )
+            LibraryRoute.PlatformFnLogin -> {
+                // 登录页跑在应用内的一条普通路由上：出错只写在自己页面里，
+                // 不会把整个会话踢成 SignedOut，返回键也天然可用。
+                val snapshot = remember { container.sessionRepository.signedOutSnapshot() }
+                // 登录成功由回调自己上报，不用「会话里出现飞牛」来判断——
+                // 那样已登录用户点「重新登录」时会刚打开就被弹回去。
+                var fnLoginOk by remember { mutableStateOf(false) }
+                LaunchedEffect(fnLoginOk) {
+                    if (fnLoginOk) {
+                        fnLoginOk = false
+                        // 成功那一刻会话已经换成真飞牛账号，路由栈会随 session.user.guid 重置回首页，
+                        // 这里只是兜住「栈还没重置」的那一帧，避免登录页多留一帧。
+                        if (stack.lastOrNull() == LibraryRoute.PlatformFnLogin) {
+                            stack = stack.dropLast(1)
+                            navDirection = -1
+                        }
+                    }
+                }
+                Box(Modifier.fillMaxSize()) {
+                    LoginScreen(
+                        savedServer = snapshot.savedServer,
+                        recentServers = snapshot.recentServers,
+                        loginHistory = snapshot.loginHistory,
+                        initialSelectedProfileId = snapshot.selectedProfileId,
+                        initialError = snapshot.error,
+                        onLogin = { server, https, user, password, remember, accessCode ->
+                            container.sessionRepository.login(
+                                server,
+                                https,
+                                user,
+                                password,
+                                remember,
+                                accessCode,
+                            )
+                            // login() 失败会抛异常、由 LoginScreen 自己兜住；走得到这一行就是真登进来了。
+                            // 数据源指回飞牛要放在这里：登录成功后路由栈会随 guid 变化重置，外层 LaunchedEffect 可能来不及跑。
+                            com.yueyin.tv.ui.connect.ConnectRuntime.activate(null)
+                            fnLoginOk = true
+                        },
+                        onHistoryLogin = container.sessionRepository::loginWithHistory,
+                        onHistoryDelete = container.sessionRepository::deleteLoginHistory,
+                        onHistoryClear = container.sessionRepository::clearLoginHistory,
+                        historyDraft = container.sessionRepository::loginDraft,
+                    )
+                    // 只做提示，不加可聚焦控件：焦点必须全部让给登录表单，
+                    // 否则遥控器在输入框和提示条之间来回跳。
+                    Text(
+                        "登录飞牛音乐　·　按返回键可退回平台列表",
+                        color = FnColors.Muted,
+                        fontSize = FnType.Caption,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 10.dp)
+                            .background(FnColors.SurfaceAlt, RoundedCornerShape(50))
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                    )
+                }
+            }
             is LibraryRoute.PlatformForm -> ConnectFormScreen(
                 type = targetRoute.type,
                 existing = targetRoute.editProfileId?.let { id ->

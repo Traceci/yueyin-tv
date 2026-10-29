@@ -34,6 +34,10 @@ internal sealed interface LibraryRoute {
     // 因此天然获得返回键、转场动画与焦点所有权隔离。
     data object PlatformManage : LibraryRoute
     data object PlatformPicker : LibraryRoute
+    // 飞牛音乐登录页：跑在应用内、占用一条普通路由。
+    // 以前选飞牛是直接 logout()（整屏换成顶层登录页），用户一旦不想登就再也回不来，
+    // 只能杀进程；放在路由栈里之后，返回键天然可用，登录失败也不会踢掉现有会话。
+    data object PlatformFnLogin : LibraryRoute
     data class PlatformForm(val type: ConnectType, val editProfileId: String? = null) : LibraryRoute
     data class PlatformLibrary(val profile: ConnectProfile) : LibraryRoute
 }
@@ -355,6 +359,7 @@ internal fun LibraryRoute.storageKey(): String = when (this) {
     LibraryRoute.Search -> "search"
     LibraryRoute.PlatformManage -> "platform:manage"
     LibraryRoute.PlatformPicker -> "platform:picker"
+    LibraryRoute.PlatformFnLogin -> "platform:fnlogin"
     is LibraryRoute.PlatformForm -> "platform:form:${type.name}:${editProfileId ?: "new"}"
     is LibraryRoute.PlatformLibrary -> "platform:library:${profile.id}"
 }
