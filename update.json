@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
   "packageName": "com.yueyin.tv",
-  "versionName": "2.0.1",
-  "versionCode": 23,
-  "title": "悦音 2.0.1",
-  "notes": "2.0.0 之后的补丁版本，集中收口设置页的焦点衔接。\n\n## 导航条到设置页的焦点衔接\n- 焦点停在导航条「设置」上时留在导航条，按方向键下才进入设置页\n- 设置页左栏第一项按方向键上，回到导航条「设置」\n- 修掉左栏上下键在五个分组间循环绕圈、回不到顶部导航条的问题\n\n## 版本信息\n- 2.0.1，签名与 2.0.0 一致，可直接覆盖安装，配置保留",
+  "versionName": "2.0.2",
+  "versionCode": 24,
+  "title": "悦音 2.0.2",
+  "notes": "2.0.0 之后的补丁版本，集中收口焦点相关的两个问题。\n\n## 退出播放页后按键闪退\n- 播完歌退出播放页，回到列表或进设置按方向键会闪退，已修复\n- 焦点交接改为逐帧重试，并把「无焦点时按键」拦在崩溃之前\n\n## 导航条到设置页的焦点衔接\n- 焦点停在导航条「设置」上时留在导航条，按方向键下才进入设置页\n- 设置页左栏第一项按方向键上，回到导航条「设置」\n\n## 版本信息\n- 2.0.2，签名与 2.0.0 一致，可直接覆盖安装，配置保留",
   "apk": {
-    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v2.0.1/yueyin-tv-2.0.1.apk",
-    "size": 7251468,
-    "sha256": "fac58a33bfc7aee67c63c8009a366bf691a2a7668976348a42d3997040fbf703"
+    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v2.0.2/yueyin-tv-2.0.2.apk",
+    "size": 7251460,
+    "sha256": "887dfcb4d62cd089c4d0a93cadedc7c4f3892df1cfe27305a2097c8f1b7e514f"
   },
-  "publishedAt": "2026-11-01T08:10:00Z",
-  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v2.0.1"
+  "publishedAt": "2026-11-01T08:55:00Z",
+  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v2.0.2"
 }
