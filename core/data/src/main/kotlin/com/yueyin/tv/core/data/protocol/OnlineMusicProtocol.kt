@@ -14,7 +14,9 @@ import com.yueyin.tv.core.model.connect.ConnectType
 import com.yueyin.tv.core.model.connect.ServerCapabilities
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
@@ -60,6 +62,10 @@ class OnlineMusicProtocol(
     // 后台预取作用域：列表先返回（UI 立即出骨架→内容），取链在后台慢慢补，
     // 绝不阻塞列表加载。SupervisorJob 保证单条取链失败不影响其它。
     private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // 当前这一轮后台预取。音源运行时是单个隐藏 WebView，取链严格串行：
+    // 用户主动点播时必须先把预取停掉，否则点播要排在预取的那二十首后面干等。
+    private var prefetchJob: Job? = null
 
     // ---------------------------------------------------------------- 连接
 
@@ -210,6 +216,12 @@ class OnlineMusicProtocol(
      */
     override suspend fun resolveStreamUrl(profile: ConnectProfile, songId: String): String {
         streamCache[songId]?.let { return it }
+        // 用户真的要点播了：先把后台预取停掉，别让这一首要排在二十首之后。
+        if (prefetchJob != null) {
+            prefetchJob?.cancel()
+            prefetchJob = null
+            android.util.Log.d("YueyinOnline", "resolve $songId: 预取已取消，优先取这一首")
+        }
         val song = songIndex[songId] ?: return ""
         val url = runCatching { resolveUrl(song) }.getOrNull()
         if (!url.isNullOrBlank()) streamCache[songId] = url
@@ -253,10 +265,13 @@ class OnlineMusicProtocol(
     /** 后台预取播放链：fire-and-forget，不阻塞列表返回。失败只留空。 */
     private fun prefetch(songs: List<OnlineSong>) {
         if (songs.isEmpty()) return
-        prefetchScope.launch {
+        prefetchJob?.cancel()
+        prefetchJob = prefetchScope.launch {
             // 串行取链：音源运行时是单个隐藏 WebView，并发 resolve 会在 JS 侧排队，
             // 串行反而更稳、更容易命中已加载的脚本。首屏只取前 20 条，避免拖太久。
             for (song in songs.take(20)) {
+                // 被用户点播取消后要立刻收手（runCatching 会把取消异常吞掉，这里显式判活）
+                if (!isActive) return@launch
                 val key = songIdOf(song.platform, song.id)
                 if (streamCache.containsKey(key)) continue
                 val url = runCatching { resolveUrl(song) }.getOrNull()

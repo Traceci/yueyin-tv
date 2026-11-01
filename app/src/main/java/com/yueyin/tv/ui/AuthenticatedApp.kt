@@ -1601,6 +1601,7 @@ private fun BrowseHome(
             } else {
             roamActionRunning = true
             scope.launch {
+                val startedAt = System.currentTimeMillis()
                 try {
                     // 取曲目列表要真走一次网络（在线平台还要拉榜单/曲库索引），放 IO 上。
                     val picked = withContext(Dispatchers.IO) {
@@ -1608,6 +1609,10 @@ private fun BrowseHome(
                             container.musicRepository.allTracks(1).items.shuffled().take(50)
                         }.getOrDefault(emptyList())
                     }
+                    android.util.Log.d(
+                        "YueyinRoam",
+                        "tracks=${picked.size} after ${System.currentTimeMillis() - startedAt}ms",
+                    )
                     val fallback = if (picked.isEmpty()) {
                         // 有些平台（或权限受限的账号）拿不到全量曲目，退一步用第一个歌单
                         withContext(Dispatchers.IO) {
@@ -1631,12 +1636,20 @@ private fun BrowseHome(
                             2,
                         )
                     }
+                    android.util.Log.d(
+                        "YueyinRoam",
+                        "queue=${queued.size} ready after ${System.currentTimeMillis() - startedAt}ms",
+                    )
                     if (queued.isEmpty()) {
                         actionError = AppError.Empty
                     } else {
                         actionError = null
                         container.playbackController.playQueue(queued, 0)
                         onPlayer()
+                        android.util.Log.d(
+                            "YueyinRoam",
+                            "player opened after ${System.currentTimeMillis() - startedAt}ms",
+                        )
                         // 剩下的直链在后台按顺序补齐，不挡播放页弹出。
                         // 用 retainedStore.scope：跳播放页后本页 scope 会被取消。
                         retainedStore.scope.launch {
@@ -1758,7 +1771,8 @@ internal fun HomeScreenLayout(
             item(span = { GridItemSpan(maxLineSpan) }, key = "home:features") {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                     HomeFeatureCard(
-                        title = "随心听",
+                        // 取曲 + 取首链大概要一两秒，期间标题给出反馈，别让用户以为没点着
+                        title = if (roamBusy) "随心听 · 准备中…" else "随心听",
                         kind = HomeArtworkKind.Roam,
                         artwork = roamArtwork,
                         modifier = Modifier
@@ -4594,17 +4608,18 @@ private suspend fun fillQueueUrlsInBackground(
         for (i in (playIndex + 1) until queue.size) if (queue[i].streamUrl.isBlank()) add(i)
         for (i in 0 until playIndex) if (queue[i].streamUrl.isBlank()) add(i)
     }
-    // 取链里既有同步 OkHttp 探活、也有 WebView 脚本调用，必须离开主线程，
-    // 否则补链期间遥控器会"按了没反应"。
-    withContext(Dispatchers.IO) {
-        for (i in order) {
-            val item = queue.getOrNull(i) ?: continue
-            val prepared = runCatching {
+    for (i in order) {
+        val item = queue.getOrNull(i) ?: continue
+        // 只把「取链」扔到 IO：里面有同步 OkHttp 探活和 WebView 脚本，占主线程会让遥控器发木。
+        // patchStreamUrl 动的是 MediaController，必须在主线程调用——放 IO 里会直接崩
+        // "MediaController method is called from a wrong thread"。
+        val prepared = withContext(Dispatchers.IO) {
+            runCatching {
                 container.musicRepository.prepareQueue(listOf(item.track), 0, 1).firstOrNull()
-            }.getOrNull() ?: continue
-            if (prepared.streamUrl.isNotBlank()) {
-                container.playbackController.patchStreamUrl(item.track.guid.value, prepared.streamUrl)
-            }
+            }.getOrNull()
+        } ?: continue
+        if (prepared.streamUrl.isNotBlank()) {
+            container.playbackController.patchStreamUrl(item.track.guid.value, prepared.streamUrl)
         }
     }
 }
