@@ -9,6 +9,7 @@ import androidx.lifecycle.lifecycleScope
 import com.yueyin.tv.core.audiofx.FxPreset
 import com.yueyin.tv.core.audiofx.FxSettings
 import com.yueyin.tv.core.playback.AudioFxController
+import com.yueyin.tv.ui.FocusRescue
 import com.yueyin.tv.ui.YueYinApp
 import com.yueyin.tv.update.UpdateEffect
 import kotlinx.coroutines.flow.collectLatest
@@ -16,6 +17,7 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private var isExiting = false
+    private var focusRescueMisses = 0
     private val appContainer: AppContainer get() = (application as TvMusicApplication).container
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -64,6 +66,25 @@ class MainActivity : ComponentActivity() {
      * 不依赖当前焦点停在哪个控件上。
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // 「整棵视图树没有任何 View 持有焦点」时按方向/确定键，ViewRootImpl 会执行
+        // restoreDefaultFocus；此时 Compose 焦点树里若残留已 detach 的节点（播放页退出、
+        // 切页过渡、导航条重新挂载都会造成），就会抛
+        // IllegalStateException: visitAncestors called on an unattached node，直接闪退。
+        // 所以派发前先把焦点抢救回一个存活节点；抢救不回来就丢掉这一次按键（并排一次重试），
+        // 连续几次都救不回来才放行——那说明当前页面本来就没有导航条可落。
+        if (event.action == KeyEvent.ACTION_DOWN &&
+            currentFocus == null &&
+            event.isFocusNavigationKey()
+        ) {
+            if (FocusRescue.request()) {
+                focusRescueMisses = 0
+            } else if (++focusRescueMisses <= MAX_FOCUS_RESCUE_MISSES) {
+                window.decorView.post { FocusRescue.request() }
+                return true
+            } else {
+                focusRescueMisses = 0
+            }
+        }
         val handled = when (event.keyCode) {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
             KeyEvent.KEYCODE_HEADSETHOOK,
@@ -128,3 +149,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+/** 连续多少次抢救不回来就放行：超过说明当前页面本来就没有可落的焦点锚点（如播放页）。 */
+private const val MAX_FOCUS_RESCUE_MISSES = 3
+
+/** 会触发 View 系统焦点导航的按键：只有这些键才会让 ViewRootImpl 走 restoreDefaultFocus。 */
+private fun KeyEvent.isFocusNavigationKey(): Boolean = keyCode in setOf(
+    KeyEvent.KEYCODE_DPAD_UP,
+    KeyEvent.KEYCODE_DPAD_DOWN,
+    KeyEvent.KEYCODE_DPAD_LEFT,
+    KeyEvent.KEYCODE_DPAD_RIGHT,
+    KeyEvent.KEYCODE_DPAD_CENTER,
+    KeyEvent.KEYCODE_ENTER,
+    KeyEvent.KEYCODE_NUMPAD_ENTER,
+)

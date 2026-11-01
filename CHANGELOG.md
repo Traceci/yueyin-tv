@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.0.2 - 2026-11-01
+
+### 退出播放页后按方向键闪退
+
+**现象**：播一首歌 → 退出播放页 → 回到列表或进设置，随便按一下方向键就闪退回桌面，播放也跟着断。
+
+**根因**：播放页不显示顶部导航条，退出时导航条是重新挂载的。原来的焦点保底在切页后只试一次 `requestFocus`，而那一帧 requester 还没 attach，异常被 `runCatching` 吞掉，焦点就永久空着。之后用户按方向键，Android 的 `ViewRootImpl` 会执行 `restoreDefaultFocus`，命中 Compose 焦点树里已 detach 的节点，抛 `IllegalStateException: visitAncestors called on an unattached node`，整个进程直接崩掉。
+
+**修复**：
+
+- 焦点保底改成逐帧重试（最多 20 帧），直到焦点真正交出去为止，不再「试一次失败就放弃」。
+- 新增焦点急救出口：按键派发前若整棵视图树都没有焦点，先把焦点交给常驻导航条；交不出去就吞掉这一次按键。宁可少一次响应，也不让进程崩掉。
+
+### 构建产物命名
+
+- release 产物统一为 `yueyin-tv-<版本>.apk`，不再带 flavor / buildType 尾缀，发布时无需手工改名。
+
 ## 2.0.1 - 2026-11-01
 
 ### 导航条到设置页的焦点衔接

@@ -119,6 +119,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
@@ -501,6 +502,7 @@ internal fun AuthenticatedApp(
     // AuthenticatedApp 重组，代价太大，这里只需要读一个瞬时值。
     val contentFocused = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
     val firstRouteSeen = remember { mutableStateOf(true) }
+    val focusManager = LocalFocusManager.current
     LaunchedEffect(route, navTab) {
         // 首次组合不干预：刚启动时不存在"被销毁的焦点节点"，让首页按原逻辑抢焦点。
         if (firstRouteSeen.value) {
@@ -511,7 +513,30 @@ internal fun AuthenticatedApp(
         if (contentFocused.get()) return@LaunchedEffect
         // 详情页/播放页/设置页不显示导航条，没有常驻锚点可用，只能靠进程级兜底。
         val anchor = navTab?.let { navRequesters.forTab(it.name.lowercase()) } ?: return@LaunchedEffect
-        runCatching { anchor.requestFocus() }
+        // 只试一次远远不够：从播放页出来时导航条是「重新挂载」的，这一帧 requester 还没 attach，
+        // requestFocus 抛 FocusRequester is not initialized 被 runCatching 吞掉，焦点就永久空着。
+        // 之后用户随便按一下方向键，ViewRootImpl 走 restoreDefaultFocus 命中已 detach 的节点，
+        // 抛 "visitAncestors called on an unattached node" 直接闪退。所以这里逐帧重试到成功为止。
+        repeat(20) {
+            if (contentFocused.get()) return@LaunchedEffect
+            if (runCatching { anchor.requestFocus() }.isSuccess) return@LaunchedEffect
+            withFrameNanos { }
+        }
+    }
+    // 焦点急救出口：MainActivity 在「整棵树都没有焦点」时、派发按键之前调用这里，
+    // 抢不回来就把这一次按键吞掉，绝不交给 ViewRootImpl 去 restoreDefaultFocus。
+    DisposableEffect(navTab) {
+        FocusRescue.handler = {
+            val anchor = navTab?.let { navRequesters.forTab(it.name.lowercase()) }
+            var rescued = anchor != null && runCatching { anchor.requestFocus() }.isSuccess
+            if (!rescued) {
+                // 焦点树可能卡在一个已 detach 的节点上，先强制清空再重新给一次。
+                runCatching { focusManager.clearFocus(force = true) }
+                rescued = anchor != null && runCatching { anchor.requestFocus() }.isSuccess
+            }
+            rescued
+        }
+        onDispose { FocusRescue.handler = null }
     }
     CompositionLocalProvider(
         LocalAuthenticatedDependencies provides container,

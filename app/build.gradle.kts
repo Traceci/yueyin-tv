@@ -120,6 +120,16 @@ android {
         }
     }
 
+    // 发布产物统一命名 yueyin-tv-<versionName>.apk，不带 flavor / buildType 尾缀。
+    applicationVariants.all {
+        if (buildType.name == "release") {
+            outputs.all {
+                (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
+                    .outputFileName = "yueyin-tv-${managedVersionName}.apk"
+            }
+        }
+    }
+
     buildFeatures {
         buildConfig = true
         compose = true
