@@ -10,10 +10,12 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -152,7 +154,17 @@ class OnlineSourceRuntime(context: Context) {
             return false
         }
         val hasRequest = (obj["hasRequest"]?.jsonPrimitive?.contentOrNull ?: obj["hasRequest"]?.toString()) == "true"
-        if (hasRequest) loadedKey = key
+        if (hasRequest) {
+            loadedKey = key
+            // 有些音源是「异步初始化」：脚本先发一次版本检查请求，拿到结果后才 send(inited)。
+            // 加载完立刻问 declaredPlatforms() 会拿到空集，平台页就会显示成「这个音源没有可用平台」。
+            // 这里最多等 2.5 秒，等它把 inited 发出来。
+            if (declaredPlatforms().isEmpty()) {
+                withTimeoutOrNull(2_500) {
+                    while (declaredPlatforms().isEmpty()) delay(120)
+                }
+            }
+        }
         return hasRequest
     }
 
@@ -174,7 +186,11 @@ class OnlineSourceRuntime(context: Context) {
         calls[callId] = deferred
         val payload = json.encodeToString(JsonObject.serializer(), info)
         val result = try {
-            withTimeout(35_000) {
+            // 12 秒是一条合理上界：正常取链 0.2~2 秒（实测酷我 0.25s、网易 0.3s、酷狗 0.4s、QQ 0.9s）。
+            // 超过这个时间的多半是「版权受限的 VIP 曲目」——音源脚本会把五组 API 全部试一遍才放弃，
+            // 实测能跑到 18 秒。原来给 35 秒，等于让一首取不到的歌把整个取链队列（单个 WebView，串行）
+            // 堵住半分钟，用户看到的就是「点歌没反应」。
+            withTimeout(12_000) {
                 evalOnMain(
                     "__lxCall(${quote(callId)}, ${quote(source)}, ${quote(action)}, ${quote(payload)})",
                 )

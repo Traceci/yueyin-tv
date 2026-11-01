@@ -220,10 +220,15 @@ class OnlineMusicProtocol(
         if (prefetchJob != null) {
             prefetchJob?.cancel()
             prefetchJob = null
-            android.util.Log.d("YueyinOnline", "resolve $songId: 预取已取消，优先取这一首")
+            android.util.Log.i("YueyinOnline", "resolve $songId: 预取已取消，优先取这一首")
         }
         val song = songIndex[songId] ?: return ""
+        val startedAt = System.currentTimeMillis()
         val url = runCatching { resolveUrl(song) }.getOrNull()
+        android.util.Log.i(
+            "YueyinOnline",
+            "resolve $songId ${System.currentTimeMillis() - startedAt}ms ${if (url.isNullOrBlank()) "fail" else "ok"}",
+        )
         if (!url.isNullOrBlank()) streamCache[songId] = url
         return url.orEmpty()
     }

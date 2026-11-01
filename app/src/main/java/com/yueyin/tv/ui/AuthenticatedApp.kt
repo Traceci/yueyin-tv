@@ -183,6 +183,8 @@ import com.yueyin.tv.core.playback.PlaybackUiState
 import com.yueyin.tv.core.playback.PlaybackProgressState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
@@ -890,7 +892,9 @@ internal fun AuthenticatedApp(
                                         open(LibraryRoute.Player(null))
                                         // 其余直链后台补齐，保证播放页里按「下一首」不会落在空地址上。
                                         if (prepared.any { it.streamUrl.isBlank() }) {
-                                            retainedScope.launch { fillQueueUrlsInBackground(container, prepared, playIndex) }
+                                            QueueUrlFiller.start(retainedScope) {
+                                                fillQueueUrlsInBackground(container, prepared, playIndex)
+                                            }
                                         }
                                         runCatching { transition.awaitCommitted() }
                                     }
@@ -1561,6 +1565,26 @@ private fun BrowseHome(
             { page -> container.musicRepository.albums(page, FULL_CATALOG_PAGE_SIZE) },
         ) { it.guid.value }
     }
+    // 随心听要拿「全部曲目」当随机池。首屏稳定后先在后台把这本索引拉好：
+    // 在线音源首次拉它要跑一遍隐藏 WebView 的榜单脚本（电视上 8~10 秒），
+    // 不预热的话第一次点随心听就会出现「点了没反应」。
+    LaunchedEffect(playlistSnapshot.initialLoadCompleted) {
+        if (!playlistSnapshot.initialLoadCompleted) return@LaunchedEffect
+        delay(1_200)
+        val sourceKey = roamSourceKeyOf(container)
+        val warmStart = System.currentTimeMillis()
+        withContext(Dispatchers.IO) { runCatching { container.musicRepository.allTracks(1) } }
+        android.util.Log.i(
+            "YueyinRoam",
+            "warm allTracks ${System.currentTimeMillis() - warmStart}ms",
+        )
+        // 在线音源取链慢，索引到手后顺手把第一包也备好，第一次点也不用等。
+        if (container.musicRepository.activeProtocolSource?.type == ConnectType.ONLINE) {
+            RoamPrewarm.prepare(sourceKey, retainedStore.scope) {
+                buildRoamPacket(container, sourceKey)
+            }
+        }
+    }
     LaunchedEffect(favoriteLibraryState.revision) {
         retainedStore.loadFirstPageForRevision(
             state = favoritePreviewState,
@@ -1596,12 +1620,42 @@ private fun BrowseHome(
         onRoam = {
             // 随心听：不再依赖飞牛的漫游接口，改为「当前平台的全部曲目里随机取 50 首」直接起播。
             // 这样飞牛、Navidrome、Jellyfin/Emby 都能用同一套逻辑（也修掉了 Emby 下漫游不能播的问题）。
+            //
+            // 在线音源取一条链要过一次隐藏 WebView 的脚本（1~3 秒），点下去才取就一定会有
+            // 「每次点都在准备中」的等待。所以首页空闲时已经备好一包（随机 50 首 + 第一首直链），
+            // 这里直接拿来播；播起来再让后台接着备下一包。
+            val roamSourceKey = roamSourceKeyOf(container)
+            val ready = RoamPrewarm.take(roamSourceKey)
             if (roamActionRunning) {
                 // 正在准备，忽略重复点击
+            } else if (ready != null) {
+                roamActionRunning = true
+                QueueUrlFiller.cancel()
+                scope.launch {
+                    try {
+                        actionError = null
+                        container.playbackController.playQueue(ready.queue, 0)
+                        onPlayer()
+                        android.util.Log.i("YueyinRoam", "player opened from prewarm")
+                        QueueUrlFiller.start(retainedStore.scope) {
+                            fillQueueUrlsInBackground(container, ready.queue, 0)
+                        }
+                        RoamPrewarm.prepare(roamSourceKey, retainedStore.scope) {
+                            buildRoamPacket(container, roamSourceKey, settleMs = 1_500)
+                        }
+                    } finally {
+                        roamActionRunning = false
+                    }
+                }
             } else {
             roamActionRunning = true
+            // 上一次留下的补链还在占用隐藏 WebView 的串行队列，先把它们掐掉，
+            // 否则这次点播的取链要排在几十首之后，用户感觉「每次点都要等」。
+            QueueUrlFiller.cancel()
             scope.launch {
                 val startedAt = System.currentTimeMillis()
+                // release 包会裁掉 Log.d，这里统一用 Log.i，装机后能从 logcat 读到阶段耗时。
+                android.util.Log.i("YueyinRoam", "clicked")
                 try {
                     // 取曲目列表要真走一次网络（在线平台还要拉榜单/曲库索引），放 IO 上。
                     val picked = withContext(Dispatchers.IO) {
@@ -1609,7 +1663,7 @@ private fun BrowseHome(
                             container.musicRepository.allTracks(1).items.shuffled().take(50)
                         }.getOrDefault(emptyList())
                     }
-                    android.util.Log.d(
+                    android.util.Log.i(
                         "YueyinRoam",
                         "tracks=${picked.size} after ${System.currentTimeMillis() - startedAt}ms",
                     )
@@ -1626,17 +1680,17 @@ private fun BrowseHome(
                     } else {
                         emptyList()
                     }
-                    // 只同步取「第一首 + 下一首」的直链。在线音源每首都要过一次 WebView 脚本
-                    // 加一次 1KB 探活（约 300ms），50 首全取要 15 秒以上——用户点完毫无反应，
-                    // 过一会儿按别的键时播放页才突然弹出来，根因就是这里取了全队列。
+                    // 取前 2 首的直链（不是 1 首）：在线取链会失败，只备一首时首曲取不到就会被
+                    // 播放器当坏源跳过，用户看到的是「点了随心听，歌自己跳走了」。多备一首做冗余，
+                    // 但也不多备——每多一首就是一次串行取链，直接变成「点了要等」。
                     val queued = withContext(Dispatchers.IO) {
                         container.musicRepository.prepareQueue(
                             if (picked.isEmpty()) fallback else picked,
                             0,
                             2,
-                        )
+                        ).hoistReadyTrack()
                     }
-                    android.util.Log.d(
+                    android.util.Log.i(
                         "YueyinRoam",
                         "queue=${queued.size} ready after ${System.currentTimeMillis() - startedAt}ms",
                     )
@@ -1646,14 +1700,18 @@ private fun BrowseHome(
                         actionError = null
                         container.playbackController.playQueue(queued, 0)
                         onPlayer()
-                        android.util.Log.d(
+                        android.util.Log.i(
                             "YueyinRoam",
                             "player opened after ${System.currentTimeMillis() - startedAt}ms",
                         )
                         // 剩下的直链在后台按顺序补齐，不挡播放页弹出。
                         // 用 retainedStore.scope：跳播放页后本页 scope 会被取消。
-                        retainedStore.scope.launch {
+                        QueueUrlFiller.start(retainedStore.scope) {
                             fillQueueUrlsInBackground(container, queued, 0)
+                        }
+                        // 这一次是现场取的链，顺手把下一包备好，下次点击就不用再等。
+                        RoamPrewarm.prepare(roamSourceKey, retainedStore.scope) {
+                            buildRoamPacket(container, roamSourceKey, settleMs = 1_500)
                         }
                     }
                 } finally {
@@ -4599,6 +4657,57 @@ private fun isTrackPlayable(track: Track): Boolean =
  * 30 首一次性取完要 9 秒以上——用户点完歌就得干等。所以先保证能立刻出声，
  * 剩下的补进已提交的队列（patchStreamUrl），播放页里连续切歌不会落在空地址上。
  */
+/** 当前曲库的标识：换了曲库，之前备好的随心听包就作废，免得播到别的源上。 */
+private fun roamSourceKeyOf(container: AuthenticatedAppDependencies): String {
+    val source = container.musicRepository.activeProtocolSource ?: return "local"
+    return "${source.type}:${source.displayName}"
+}
+
+/**
+ * 备一包随心听：随机 50 首 + 只取第一首直链。
+ *
+ * 在线音源这一首要过一次隐藏 WebView 的取链脚本（1~3 秒），提前做好，
+ * 点的时候直接拿去播，播起来再备下一包。
+ */
+/**
+ * 把队列里第一个「已经有直链」的项提到队首。
+ *
+ * 取链会失败（版权受限、接口抖动、脚本某组 API 挂了），失败项的地址是空的。
+ * 空地址的 mediaItem 会被播放器当成坏源直接跳过，用户看到的就是「点了随心听，
+ * 歌自己跳到下一首去了」。所以起播前先把有地址的项顶到最前面。
+ */
+private fun List<PlaybackTrack>.hoistReadyTrack(): List<PlaybackTrack> {
+    val ready = indexOfFirst { it.streamUrl.isNotBlank() }
+    if (ready <= 0) return this
+    val list = toMutableList()
+    val head = list.removeAt(ready)
+    list.add(0, head)
+    return list
+}
+
+private suspend fun buildRoamPacket(
+    container: AuthenticatedAppDependencies,
+    sourceKey: String,
+    settleMs: Long = 0,
+): RoamPrewarm.Packet? {
+    if (settleMs > 0) delay(settleMs)
+    return withContext(Dispatchers.IO) {
+        val picked = runCatching {
+            container.musicRepository.allTracks(1).items.shuffled().take(50)
+        }.getOrDefault(emptyList())
+        if (picked.isEmpty()) {
+            null
+        } else {
+            // 多备一首：在线取链偶有失败，只备一首时第一首取不到就会被播放器当坏源跳过，
+            // 用户看到的是「点了随心听，歌莫名其妙变了」。备两首 + 把有地址的顶到队首。
+            // 不备更多：每多一首就多一次串行取链，直接反映成「点了要等」。
+            val queue = container.musicRepository.prepareQueue(picked, 0, 2)
+                .hoistReadyTrack()
+            if (queue.isEmpty()) null else RoamPrewarm.Packet(queue, sourceKey, System.currentTimeMillis())
+        }
+    }
+}
+
 private suspend fun fillQueueUrlsInBackground(
     container: AuthenticatedAppDependencies,
     queue: List<PlaybackTrack>,
@@ -4608,7 +4717,14 @@ private suspend fun fillQueueUrlsInBackground(
         for (i in (playIndex + 1) until queue.size) if (queue[i].streamUrl.isBlank()) add(i)
         for (i in 0 until playIndex) if (queue[i].streamUrl.isBlank()) add(i)
     }
+    val startedAt = System.currentTimeMillis()
+    if (order.isNotEmpty()) {
+        android.util.Log.i("YueyinRoam", "fill start ${order.size} tracks")
+    }
     for (i in order) {
+        // runCatching 会把 CancellationException 一起吞掉，所以每轮显式检查一次，
+        // 让「新的起播掐掉旧补链」能立刻生效，而不是把剩下的几十首补完。
+        currentCoroutineContext().ensureActive()
         val item = queue.getOrNull(i) ?: continue
         // 只把「取链」扔到 IO：里面有同步 OkHttp 探活和 WebView 脚本，占主线程会让遥控器发木。
         // patchStreamUrl 动的是 MediaController，必须在主线程调用——放 IO 里会直接崩
@@ -4621,6 +4737,12 @@ private suspend fun fillQueueUrlsInBackground(
         if (prepared.streamUrl.isNotBlank()) {
             container.playbackController.patchStreamUrl(item.track.guid.value, prepared.streamUrl)
         }
+    }
+    if (order.isNotEmpty()) {
+        android.util.Log.i(
+            "YueyinRoam",
+            "fill done ${order.size} in ${System.currentTimeMillis() - startedAt}ms",
+        )
     }
 }
 

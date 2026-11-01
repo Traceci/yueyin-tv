@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -78,6 +79,12 @@ import kotlinx.coroutines.withContext
 internal fun SourceReceiveScreen(onDone: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // 列表以「已保存的音源」为准，不再只靠本次会话的记录。
+    //
+    // 踩过的坑：上传成功后会立刻调用 ensureOnlineMusicActive() 切到在线音乐，
+    // 平台一切换整棵页面会重组，本页的 remember 状态（received）跟着被清空，
+    // 于是「上传成功却还显示『还没有添加任何文件』」，用户以为没传上去。
+    val storedSources by MusicSourceRuntime.store.state.collectAsState()
     val received = remember { mutableStateListOf<String>() }
     var address by remember { mutableStateOf<String?>(null) }
     var failed by remember { mutableStateOf(false) }
@@ -223,8 +230,9 @@ internal fun SourceReceiveScreen(onDone: () -> Unit) {
                     Text(
                         when {
                             address == null -> "请确认设备已连上 Wi-Fi，或有线网络已插好"
-                            received.isEmpty() -> "等待连接… 页面关掉就停止接收"
-                            else -> "已添加 ${received.size} 个脚本"
+                            storedSources.sources.isEmpty() -> "等待连接… 页面关掉就停止接收"
+                            received.isNotEmpty() -> "本次添加 ${received.size} 个，共 ${storedSources.sources.size} 个脚本"
+                            else -> "已有 ${storedSources.sources.size} 个脚本"
                         },
                         color = FnColors.Muted,
                         fontSize = FnType.Sub,
@@ -241,7 +249,7 @@ internal fun SourceReceiveScreen(onDone: () -> Unit) {
         }
 
         Spacer(Modifier.height(16.dp))
-        if (received.isEmpty()) {
+        if (storedSources.sources.isEmpty()) {
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -262,7 +270,8 @@ internal fun SourceReceiveScreen(onDone: () -> Unit) {
             }
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                received.forEach { name ->
+                storedSources.sources.forEach { source ->
+                    val name = source.fileName
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -290,9 +299,9 @@ internal fun SourceReceiveScreen(onDone: () -> Unit) {
         Spacer(Modifier.height(18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             PrimaryAction(label = "完成", focusRequester = doneFocus, onClick = onDone)
-            if (received.isNotEmpty()) {
+            if (storedSources.sources.isNotEmpty()) {
                 Text(
-                    "共 ${received.size} 个，已保存并自动启用，可以直接搜索播放了",
+                    "共 ${storedSources.sources.size} 个，已保存并自动启用，可以直接搜索播放了",
                     color = FnColors.Muted,
                     fontSize = 13.sp,
                     modifier = Modifier.align(Alignment.CenterVertically),
