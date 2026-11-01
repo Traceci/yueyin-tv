@@ -18,6 +18,7 @@ class TvMusicApplication : Application() {
         super.onCreate()
         CrashLogStore.install(this)
         com.yueyin.tv.ui.connect.ConnectRuntime.init(this)
+        com.yueyin.tv.ui.source.MusicSourceRuntime.init(this)
         container.startPlaybackRuntime()
     }
 }

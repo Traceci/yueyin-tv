@@ -36,7 +36,7 @@ internal class RepositoryPlaybackContentSource(
 
     override suspend fun prepare(track: Track): PlaybackTrack = repository.prepare(track)
 
-    override fun prepareQueue(tracks: List<Track>): List<PlaybackTrack> = repository.prepareQueue(tracks)
+    override suspend fun prepareQueue(tracks: List<Track>): List<PlaybackTrack> = repository.prepareQueue(tracks)
 
     override suspend fun startRoam(): RoamWindow? = repository.startRoam()
 

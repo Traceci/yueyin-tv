@@ -6,6 +6,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.lifecycleScope
+import com.yueyin.tv.core.audiofx.FxPreset
+import com.yueyin.tv.core.audiofx.FxSettings
+import com.yueyin.tv.core.playback.AudioFxController
 import com.yueyin.tv.ui.YueYinApp
 import com.yueyin.tv.update.UpdateEffect
 import kotlinx.coroutines.flow.collectLatest
@@ -18,6 +21,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        bindAudioFxPreferences()
         val container = appContainer
         setContent {
             YueYinApp(container) { exitApplication(container) }
@@ -29,6 +33,29 @@ class MainActivity : ComponentActivity() {
                         .onFailure { container.updateCoordinator.handleIntentLaunchFailure() }
                 }
             }
+        }
+    }
+
+    /**
+     * 音效设置持久化。
+     *
+     * 音效状态由 `AudioFxController` 统一持有（播放条与设置页共用一份），
+     * 但它活在 core:playback 里、拿不到 Context。这里在 Activity 启动时把
+     * 「读」和「写」两头接上：启动时恢复上次选的档位，之后每次切换自动落盘。
+     * 不接的话用户选了「低音」，杀掉进程再进来又变回「无」。
+     */
+    private fun bindAudioFxPreferences() {
+        val store = getSharedPreferences("audio_fx", MODE_PRIVATE)
+        val presetId = store.getString("preset", FxPreset.NONE.id) ?: FxPreset.NONE.id
+        val enabled = store.getBoolean("enabled", false)
+        AudioFxController.restore(
+            FxPreset.fromId(presetId).toSettings(FxSettings()).copy(enabled = enabled),
+        )
+        AudioFxController.bindPersistence { settings ->
+            store.edit()
+                .putString("preset", settings.presetId)
+                .putBoolean("enabled", settings.enabled)
+                .apply()
         }
     }
 

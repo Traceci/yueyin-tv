@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.cache.CacheDataSource
@@ -12,6 +14,9 @@ import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder
 import androidx.media3.session.MediaSession
@@ -60,10 +65,39 @@ internal fun createPlaybackLoadControl(): DefaultLoadControl = DefaultLoadContro
     .setBackBuffer(BACK_BUFFER_DURATION_MS, false)
     .build()
 
+/**
+ * 构建 RenderersFactory。传入 `fxProcessor` 时，音频链路会多一段自定义 DSP。
+ *
+ * 关键在于**保留默认链里的两个处理器**：SilenceSkippingAudioProcessor 负责"跳过静音"，
+ * SonicAudioProcessor 负责"变速不变调"。直接用 `setAudioProcessors(arrayOf(fx))` 会把这俩
+ * 一起换掉——表现就是倍速播放破音、静音跳过失效。所以这里走 `setAudioProcessorChain`。
+ */
 @androidx.annotation.OptIn(UnstableApi::class)
-internal fun createPlaybackRenderersFactory(context: Context): DefaultRenderersFactory =
-    DefaultRenderersFactory(context)
-        .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+internal fun createPlaybackRenderersFactory(
+    context: Context,
+    fxProcessor: FxAudioProcessor? = null,
+): DefaultRenderersFactory {
+    if (fxProcessor == null) {
+        return DefaultRenderersFactory(context)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+    }
+    return object : DefaultRenderersFactory(context) {
+        override fun buildAudioSink(
+            context: Context,
+            enableFloatOutput: Boolean,
+            enableAudioTrackPlaybackParams: Boolean,
+        ): AudioSink = DefaultAudioSink.Builder(context)
+            .setEnableFloatOutput(enableFloatOutput)
+            .setAudioProcessorChain(
+                DefaultAudioSink.DefaultAudioProcessorChain(
+                    arrayOf<AudioProcessor>(fxProcessor),
+                    SilenceSkippingAudioProcessor(),
+                    SonicAudioProcessor(),
+                ),
+            )
+            .build()
+    }.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+}
 
 @androidx.annotation.OptIn(UnstableApi::class)
 internal fun createPlaybackHttpDataSourceFactory(): DefaultHttpDataSource.Factory =
@@ -99,6 +133,7 @@ class PlaybackService : MediaSessionService() {
     private var player: ExoPlayer? = null
     private var mediaSession: MediaSession? = null
     private var songCache: SimpleCache? = null
+    private var fxProcessor: FxAudioProcessor? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -119,9 +154,14 @@ class PlaybackService : MediaSessionService() {
         val cachingSourceFactory = CacheDataSource.Factory()
             .setCache(cache)
             .setUpstreamDataSourceFactory(httpFactory)
+        // 音效处理器跟着服务生命周期走：服务在，链路在；服务销毁时从全局注册表摘掉。
+        // 处理器恒在音频链上（FxAudioProcessor.isActive 恒 true），参数改动即时生效，
+        // 不再需要「切开关时 seek 一次触发 flush」——那既会顿一下，又因为 flush 不会补
+        // configure，导致处理器始终没被初始化、滤波全 bypass。
+        val fx = AudioFxController.createProcessor().also { fxProcessor = it }
         val exoPlayer = ExoPlayer.Builder(
             this,
-            createPlaybackRenderersFactory(this),
+            createPlaybackRenderersFactory(this, fx),
         )
             .setMediaSourceFactory(DefaultMediaSourceFactory(cachingSourceFactory))
             .setLoadControl(createPlaybackLoadControl())
@@ -201,6 +241,8 @@ class PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
     override fun onDestroy() {
+        fxProcessor?.let(AudioFxController::release)
+        fxProcessor = null
         mediaSession?.release()
         mediaSession = null
         player?.release()

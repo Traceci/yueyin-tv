@@ -33,13 +33,15 @@ internal sealed interface LibraryRoute {
     // 平台管理流程（多平台接入）：四个正式路由，与其它页面共用同一套路由栈，
     // 因此天然获得返回键、转场动画与焦点所有权隔离。
     data object PlatformManage : LibraryRoute
+    // 音乐源（用户自己导入的 LX 脚本）与它的接收页，同样是正式路由，天然获得返回键与焦点隔离。
+    data object MusicSources : LibraryRoute
+    data object MusicSourceReceive : LibraryRoute
     data object PlatformPicker : LibraryRoute
     // 飞牛音乐登录页：跑在应用内、占用一条普通路由。
-    // 以前选飞牛是直接 logout()（整屏换成顶层登录页），用户一旦不想登就再也回不来，
-    // 只能杀进程；放在路由栈里之后，返回键天然可用，登录失败也不会踢掉现有会话。
+    // 之前选飞牛是直接 logout()（整屏换成顶层登录页），用户一旦不想登就再也回不来，
+    // 只能杀进程；放在路由栈里之后，返回键天然可用。
     data object PlatformFnLogin : LibraryRoute
     data class PlatformForm(val type: ConnectType, val editProfileId: String? = null) : LibraryRoute
-    data class PlatformLibrary(val profile: ConnectProfile) : LibraryRoute
 }
 
 internal data class RetainedPageSnapshot<T>(
@@ -358,10 +360,11 @@ internal fun LibraryRoute.storageKey(): String = when (this) {
     LibraryRoute.Settings -> "settings"
     LibraryRoute.Search -> "search"
     LibraryRoute.PlatformManage -> "platform:manage"
+    LibraryRoute.MusicSources -> "source:manage"
+    LibraryRoute.MusicSourceReceive -> "source:receive"
     LibraryRoute.PlatformPicker -> "platform:picker"
     LibraryRoute.PlatformFnLogin -> "platform:fnlogin"
     is LibraryRoute.PlatformForm -> "platform:form:${type.name}:${editProfileId ?: "new"}"
-    is LibraryRoute.PlatformLibrary -> "platform:library:${profile.id}"
 }
 
 internal fun LibraryRoute.retainedStateKeys(): Set<String> = when (this) {

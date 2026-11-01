@@ -21,6 +21,10 @@ enum class ConnectType(
     WEBDAV("WebDAV / Alist", "文件协议", true),
     SMB("SMB 共享", "局域网共享", true),
     AUDIO_STATION("群晖 AudioStation", "NAS", true),
+
+    // 在线音乐不是一台"服务器"，而是一组平台官方接口的聚合（酷我/网易/QQ/酷狗/咪咕）。
+    // 它和飞牛、Navidrome 平级地出现在平台列表里，激活后首页/歌单/专辑/搜索整体切成在线内容。
+    ONLINE("在线音乐", "五平台官方接口 · 聚合", true),
     ;
 
     companion object {

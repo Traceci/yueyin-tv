@@ -11,13 +11,26 @@ data class LyricsMatchPolicy(
     val minimumScore: Double = 80.0,
     val minimumTitleScore: Double = 50.0,
     val maximumDurationDeltaMs: Long = 5_000L,
+    /** 相对容差：长曲子在不同平台上差几十秒很常见（母带/前奏编辑不同），光看绝对秒数会误杀。 */
+    val durationToleranceRatio: Double = 0.10,
     val maximumWordTimingDeltaMs: Long = 2_000L,
     val sourceOrder: List<LyricsSourceId> = listOf(
         LyricsSourceId.Netease,
         LyricsSourceId.QqMusic,
         LyricsSourceId.Kugou,
     ),
-)
+) {
+    /**
+     * 时长容差：取「绝对 5 秒」和「时长 10%」里更大的那个。
+     *
+     * 背景：酷我《黄昏》标 5:26，网易云同一首歌标 5:44，差 18 秒；
+     * 以前一律按 ±5 秒硬卡，全网口碑歌也判成"查无此歌"，用户看到的就是"酷我没有歌词"。
+     */
+    fun durationTolerance(durationMs: Long?): Long {
+        val relative = ((durationMs ?: 0L).coerceAtLeast(0L) * durationToleranceRatio).toLong()
+        return maximumDurationDeltaMs.coerceAtLeast(relative)
+    }
+}
 
 data class ScoredLyricsCandidate(
     val candidate: LyricsCandidate,
@@ -56,7 +69,8 @@ class LyricsCandidateScorer(
     private fun scoreOne(request: LyricsMatchRequest, candidate: LyricsCandidate): ScoredLyricsCandidate? {
         if (candidate.title.isBlank() || request.title.isBlank()) return null
         val durationDelta = knownDurationDelta(request.durationMs, candidate.durationMs)
-        if (durationDelta != null && durationDelta > policy.maximumDurationDeltaMs) return null
+        val tolerance = policy.durationTolerance(request.durationMs ?: candidate.durationMs)
+        if (durationDelta != null && durationDelta > tolerance) return null
         if (hasHardVersionConflict(request.title, candidate.title, candidate.instrumental)) return null
 
         val titleScore = titleScore(request.title, candidate.title)
@@ -79,7 +93,10 @@ class LyricsCandidateScorer(
     private fun sameRecording(left: LyricsCandidate, right: LyricsCandidate): Boolean {
         if (titleScore(left.title, right.title) < 92.0) return false
         if (artistScore(left.artists, right.artists) < 85.0) return false
-        return knownDurationDelta(left.durationMs, right.durationMs)?.let { it <= policy.maximumDurationDeltaMs } ?: true
+        val tolerance = policy.durationTolerance(
+            max(left.durationMs ?: 0L, right.durationMs ?: 0L).takeIf { it > 0 },
+        )
+        return knownDurationDelta(left.durationMs, right.durationMs)?.let { it <= tolerance } ?: true
     }
 
     private fun titleScore(left: String, right: String): Double {

@@ -146,6 +146,22 @@ base {
     archivesName.set("yueyin-tv-$managedVersionName")
 }
 
+/**
+ * 把侧载 release APK 导出到项目外层 `dist/`，文件名去掉渠道后缀：
+ * `yueyin-tv-<versionName>-release.apk`。对外分发统一用这个名字，
+ * 避免用户看到 `-sideload-` 这类内部渠道标记。
+ */
+val exportReleaseApk by tasks.registering(Copy::class) {
+    group = "distribution"
+    description = "Exports the sideload release APK as yueyin-tv-<version>-release.apk."
+    dependsOn("assembleSideloadRelease")
+    from(layout.buildDirectory.dir("outputs/apk/sideload/release")) {
+        include("*.apk")
+    }
+    into(rootProject.layout.projectDirectory.dir("../dist"))
+    rename { "yueyin-tv-$managedVersionName-release.apk" }
+}
+
 val verifyReleaseSigning by tasks.registering {
     group = "verification"
     description = "Verifies the local YueYin TV release signing identity."
@@ -236,6 +252,7 @@ dependencies {
     implementation(project(":core:lyrics"))
     implementation(project(":core:data"))
     implementation(project(":core:playback"))
+    implementation(project(":core:audiofx"))
     implementation(files(flacDecoderAar))
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.core.ktx)
@@ -249,6 +266,7 @@ dependencies {
     implementation(project(":third_party:accompanist-lyrics-ui"))
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
+    implementation(libs.androidx.media3.exoplayer)
     implementation(libs.zxing.core)
     "sideloadImplementation"(libs.appupdate)
     "storeImplementation"(libs.appupdate.noop)

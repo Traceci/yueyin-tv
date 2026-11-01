@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -101,63 +102,69 @@ internal fun RemoteControlGuide(onDismiss: () -> Unit) {
     ) {
         Column(
             Modifier
-                .width(760.dp)
-                .heightIn(max = 520.dp)
-                .verticalScroll(rememberScrollState())
+                // 宽度自适应：TV 上停在 760dp，手机/窄屏按 94% 铺开。原来写死 760dp，
+                // 手机横屏只有 640dp 左右，卡片右侧连同「开始使用」按钮一起被推到屏幕外，
+                // 触屏根本点不到。
+                .widthIn(max = 760.dp)
+                .fillMaxWidth(0.94f)
+                .heightIn(max = 560.dp)
                 .background(FnColors.Surface, RoundedCornerShape(20.dp))
                 .border(1.dp, FnColors.Coral.copy(alpha = 0.35f), RoundedCornerShape(20.dp))
                 .padding(horizontal = 36.dp, vertical = 28.dp),
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Image(
-                    painter = painterResource(R.drawable.ic_logo_mark),
-                    contentDescription = null,
-                    modifier = Modifier.size(56.dp),
-                )
-                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(
-                        "欢迎使用悦音",
-                        color = FnColors.Text,
-                        fontSize = 30.sp,
-                        lineHeight = 34.sp,
-                        fontWeight = FontWeight.Bold,
+            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Image(
+                        painter = painterResource(R.drawable.ic_logo_mark),
+                        contentDescription = null,
+                        modifier = Modifier.size(56.dp),
                     )
-                    Text(
-                        "Android TV 自建音乐库播放器",
-                        color = FnColors.Muted,
-                        fontSize = 15.sp,
-                        lineHeight = 18.sp,
-                    )
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-            Text(
-                "播放页遥控器按键",
-                color = FnColors.Coral,
-                fontSize = 18.sp,
-                lineHeight = 22.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.height(10.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                REMOTE_KEY_HINTS.chunked(2).forEach { pair ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        pair.forEach { hint ->
-                            GuideHintCell(hint, Modifier.weight(1f))
-                        }
-                        if (pair.size < 2) Spacer(Modifier.weight(1f))
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(
+                            "欢迎使用悦音",
+                            color = FnColors.Text,
+                            fontSize = 30.sp,
+                            lineHeight = 34.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            "Android TV 自建音乐库播放器",
+                            color = FnColors.Muted,
+                            fontSize = 15.sp,
+                            lineHeight = 18.sp,
+                        )
                     }
                 }
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "播放页遥控器按键",
+                    color = FnColors.Coral,
+                    fontSize = 18.sp,
+                    lineHeight = 22.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(10.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    REMOTE_KEY_HINTS.chunked(2).forEach { pair ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            pair.forEach { hint ->
+                                GuideHintCell(hint, Modifier.weight(1f))
+                            }
+                            if (pair.size < 2) Spacer(Modifier.weight(1f))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(18.dp))
             }
-            Spacer(Modifier.height(18.dp))
+            // 按钮放在滚动区之外：无论屏幕多矮，它都固定在卡片底部可见、可点。
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 GuideActionButton(
                     label = "开始使用",
                     onClick = onDismiss,
-                    modifier = Modifier.width(200.dp).focusRequester(confirmFocus),
+                    modifier = Modifier.widthIn(min = 200.dp).focusRequester(confirmFocus),
                 )
             }
         }
@@ -221,23 +228,29 @@ private fun GuideActionButton(
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(12.dp)
-    Button(
-        onClick = onClick,
-        modifier = modifier.focusBringIntoView().height(48.dp),
-        shape = ButtonDefaults.shape(shape, shape, shape, shape, shape),
-        scale = ButtonDefaults.scale(focusedScale = 1.03f),
-        colors = ButtonDefaults.colors(
-            containerColor = FnColors.SurfaceAlt,
-            contentColor = FnColors.Text,
-            focusedContainerColor = FnColors.Coral,
-            focusedContentColor = Color(0xFF0B0F16),
-            pressedContainerColor = FnColors.Coral,
-            pressedContentColor = Color(0xFF0B0F16),
-        ),
-        contentPadding = PaddingValues(0.dp),
-    ) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(label, fontSize = 20.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold)
+    // 触摸走外层 Box，遥控器走里层 Button：
+    // tv-material3 的 Button 在部分机型上只吃焦点/确定键，指针事件进不去它内部的 clickable，
+    // 表现就是「按钮明明在屏幕里、手指按上去毫无反应」。外层 Box 自带一层指针处理兜底，
+    // 尺寸随 Button 撑开，手指落在按钮范围内就一定命中，两条输入路径互不干扰。
+    Box(Modifier.playerTouchTarget(onClick = onClick)) {
+        Button(
+            onClick = onClick,
+            modifier = modifier.focusBringIntoView().height(48.dp),
+            shape = ButtonDefaults.shape(shape, shape, shape, shape, shape),
+            scale = ButtonDefaults.scale(focusedScale = 1.03f),
+            colors = ButtonDefaults.colors(
+                containerColor = FnColors.SurfaceAlt,
+                contentColor = FnColors.Text,
+                focusedContainerColor = FnColors.Coral,
+                focusedContentColor = Color(0xFF0B0F16),
+                pressedContainerColor = FnColors.Coral,
+                pressedContentColor = Color(0xFF0B0F16),
+            ),
+            contentPadding = PaddingValues(0.dp),
+        ) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(label, fontSize = 20.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold)
+            }
         }
     }
 }

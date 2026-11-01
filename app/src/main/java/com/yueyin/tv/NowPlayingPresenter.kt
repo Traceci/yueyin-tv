@@ -231,8 +231,10 @@ class NowPlayingPresenter private constructor(
             applyMetadata(token, result)
         }
         launch {
-            val coverId = token.identity.coverId
-                ?: metadataResult.await().matchingTrack(token.identity)?.coverId
+            val identityCover = token.identity.coverId
+            val matchedCover = metadataResult.await().matchingTrack(token.identity)?.coverId
+            val coverId = identityCover ?: matchedCover
+            android.util.Log.d("YueyinCover", "loadNonLyrics identityCover=$identityCover matchedCover=$matchedCover mediaId=${token.identity.mediaId}")
             val result = if (coverId.isNullOrBlank()) {
                 CurrentResourceResult.Absent
             } else {

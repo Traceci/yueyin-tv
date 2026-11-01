@@ -73,21 +73,30 @@ internal class OnlineLyricsResolver(
                 ?.takeIf { it.accepts(fingerprint, currentTime) }
                 ?.let(ApiDecoder.json::encodeToString)
                 ?: when (val result = matcher(track.toLyricsMatchRequest())) {
-                    is LyricsMatchResult.Found -> MatchedLyricsEnvelope(
-                        schemaVersion = MATCHED_LYRICS_SCHEMA_VERSION,
-                        fingerprint = fingerprint,
-                        matched = result.lyrics.toCache(),
-                        expiresAtMs = Long.MAX_VALUE,
-                    )
-                    LyricsMatchResult.NotFound -> MatchedLyricsEnvelope(
-                        schemaVersion = MATCHED_LYRICS_SCHEMA_VERSION,
-                        fingerprint = fingerprint,
-                        matched = null,
-                        expiresAtMs = currentTime + NEGATIVE_CACHE_TTL_MS,
-                    )
+                    is LyricsMatchResult.Found -> {
+                        android.util.Log.d("YueyinLyrics", "matcher Found title=${track.title} source=${result.lyrics.source} score=${result.lyrics.score}")
+                        MatchedLyricsEnvelope(
+                            schemaVersion = MATCHED_LYRICS_SCHEMA_VERSION,
+                            fingerprint = fingerprint,
+                            matched = result.lyrics.toCache(),
+                            expiresAtMs = Long.MAX_VALUE,
+                        )
+                    }
+                    LyricsMatchResult.NotFound -> {
+                        android.util.Log.d("YueyinLyrics", "matcher NotFound title=${track.title}")
+                        MatchedLyricsEnvelope(
+                            schemaVersion = MATCHED_LYRICS_SCHEMA_VERSION,
+                            fingerprint = fingerprint,
+                            matched = null,
+                            expiresAtMs = currentTime + NEGATIVE_CACHE_TTL_MS,
+                        )
+                    }
                     LyricsMatchResult.NetworkFailure,
                     LyricsMatchResult.InvalidResponse,
-                    -> throw OnlineLyricsUnavailableException()
+                    -> {
+                        android.util.Log.d("YueyinLyrics", "matcher Failure title=${track.title} result=$result")
+                        throw OnlineLyricsUnavailableException()
+                    }
                 }.also { shouldPersist = true }.let(ApiDecoder.json::encodeToString)
         }
         return payload.decodeEnvelope()
@@ -108,7 +117,7 @@ internal class OnlineLyricsResolver(
             expiresAtMs > timeMs
 
     private companion object {
-        const val MATCHED_LYRICS_SCHEMA_VERSION = 4
+        const val MATCHED_LYRICS_SCHEMA_VERSION = 5
         const val NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1_000L
     }
 

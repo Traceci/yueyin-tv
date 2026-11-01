@@ -34,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
@@ -59,7 +60,6 @@ import com.yueyin.tv.ui.FnColors
 import com.yueyin.tv.ui.FnFocus
 import com.yueyin.tv.ui.FnRadius
 import com.yueyin.tv.ui.FnType
-import com.yueyin.tv.ui.fnFocusRing
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -76,6 +76,8 @@ object ConnectRuntime {
     fun init(context: Context) {
         if (storeRef == null) storeRef = ConnectProfileStore(context.applicationContext)
         if (registryRef == null) {
+            // 取链器只建一次：probeClient 内部有连接池，反复 new 会不断建连接。
+            val playbackResolver = com.yueyin.tv.source.OnlinePlaybackResolver(context.applicationContext)
             registryRef = MusicProtocolRegistry(
                 listOf(
                     com.yueyin.tv.core.data.protocol.SubsonicProtocol(ConnectType.NAVIDROME),
@@ -86,6 +88,16 @@ object ConnectRuntime {
                     com.yueyin.tv.core.data.protocol.AudioStationProtocol(),
                     com.yueyin.tv.core.data.protocol.WebDavProtocol(),
                     com.yueyin.tv.core.data.protocol.SmbProtocol(),
+                    com.yueyin.tv.core.data.protocol.OnlineMusicProtocol(
+                        resolveUrl = { song ->
+                            // 失败返回 null（协议侧只缓存成功的直链，失败留给下次取）。
+                            val outcome = playbackResolver.resolve(song)
+                            (outcome as? com.yueyin.tv.source.PlaybackResolution.Success)?.url
+                        },
+                        lyricProvider = { song ->
+                            playbackResolver.resolveLyric(song)
+                        },
+                    ),
                 ),
             )
             // 本地流代理提前起好：SMB/WebDAV 的播放地址要用它，
@@ -124,10 +136,25 @@ private fun PlatformCard(
 ) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(FnRadius.lg)
+    val active = focused && enabled
     Box(
         modifier = modifier
             .focusBringIntoView()
-            .background(if (enabled) FnColors.SurfaceAlt else FnColors.SurfaceAlt.copy(alpha = 0.5f), shape)
+            // 大卡片不用实心：卡片里有图标和两行文字，实心会把它压掉。
+            // 焦点用「珊瑚 22% 底 + 2dp 珊瑚边」，与按钮的珊瑚实心同源、同色系。
+            .background(
+                when {
+                    active -> FnColors.Coral.copy(alpha = 0.22f)
+                    enabled -> FnColors.SurfaceAlt
+                    else -> FnColors.SurfaceAlt.copy(alpha = 0.5f)
+                },
+                shape,
+            )
+            .border(
+                if (active) 2.dp else 1.dp,
+                if (active) FnColors.Coral else Color.White.copy(alpha = 0.10f),
+                shape,
+            )
             .onFocusChanged { focused = it.isFocused }
             .focusable(enabled)
             .onKeyEvent { event ->
@@ -139,8 +166,7 @@ private fun PlatformCard(
                     false
                 }
             }
-            .clickable(enabled = enabled, onClick = onClick)
-            .fnFocusRing(focused = focused && enabled, shape = shape, cornerRadius = FnRadius.lg),
+            .clickable(enabled = enabled, onClick = onClick),
     ) { content() }
 }
 
@@ -235,6 +261,7 @@ private val ConnectType.brandColor: Color
         ConnectType.WEBDAV -> Color(0xFF7B8794)
         ConnectType.SMB -> Color(0xFF8B95A5)
         ConnectType.AUDIO_STATION -> Color(0xFF2FA8A0)
+        ConnectType.ONLINE -> Color(0xFFFF6B4A)
     }
 
 /**
@@ -279,6 +306,7 @@ private fun ConnectType.iconRes(): Int = when (this) {
     ConnectType.WEBDAV -> R.drawable.ic_platform_webdav
     ConnectType.SMB -> R.drawable.ic_platform_smb
     ConnectType.AUDIO_STATION -> R.drawable.ic_platform_audio_station
+    ConnectType.ONLINE -> 0
 }
 
 @Composable
@@ -307,6 +335,21 @@ fun PlatformGlyph(type: ConnectType, size: androidx.compose.ui.unit.Dp, modifier
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(side * 0.24f),
                 )
             }
+            ConnectType.ONLINE -> {
+                // 在线音乐：三个并排的音符柱（高低错落），一眼区别于「服务器/文件」类平台
+                val barW = radius * 0.16f
+                val heights = listOf(0.28f, 0.52f, 0.36f)
+                heights.forEachIndexed { i, h ->
+                    val x = center.x + (i - 1) * radius * 0.34f
+                    val half = radius * h
+                    drawRoundRect(
+                        color = color,
+                        topLeft = androidx.compose.ui.geometry.Offset(x - barW / 2f, center.y - half),
+                        size = androidx.compose.ui.geometry.Size(barW, half * 2f),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(barW / 2f),
+                    )
+                }
+            }
             else -> drawCircle(color = color, radius = radius * 0.26f)
         }
     }
@@ -317,18 +360,82 @@ fun PlatformGlyph(type: ConnectType, size: androidx.compose.ui.unit.Dp, modifier
 @Composable
 fun PlatformManageScreen(
     onAdd: () -> Unit,
-    onBrowse: (ConnectProfile) -> Unit,
     onRelogin: () -> Unit,
     onEdit: (ConnectProfile) -> Unit,
     onDelete: (ConnectProfile) -> Unit,
     onSignOutFn: () -> Unit,
     fnSessionActive: Boolean,
+    onAddSource: () -> Unit,
     onBack: () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 48.dp, vertical = 28.dp),
+    ) {
+        Text("平台", fontSize = 30.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "可添加多个音乐服务，随时切换；当前生效的平台在资料条显示",
+            color = FnColors.Muted,
+            fontSize = 14.sp,
+        )
+        Spacer(Modifier.height(20.dp))
+        PlatformManageContent(
+            onAdd = onAdd,
+            onRelogin = onRelogin,
+            onEdit = onEdit,
+            onDelete = onDelete,
+            onSignOutFn = onSignOutFn,
+            fnSessionActive = fnSessionActive,
+            onAddSource = onAddSource,
+            autoRequestFocus = true,
+        )
+        Spacer(Modifier.height(24.dp))
+        Text(
+            "按返回键退出",
+            color = FnColors.Muted,
+            fontSize = 13.sp,
+            modifier = Modifier.align(Alignment.CenterHorizontally),
+        )
+    }
+}
+
+/**
+ * 平台管理核心内容：平台列表 + 在线音源区块，不带头部标题与返回提示。
+ *
+ * 既被独立路由页 [PlatformManageScreen] 使用，也被设置页「平台」分组直接内联，
+ * 避免「设置 → 平台 → 管理平台与音源」再多一层二级页面。
+ */
+@Composable
+fun PlatformManageContent(
+    onAdd: () -> Unit,
+    onRelogin: () -> Unit,
+    onEdit: (ConnectProfile) -> Unit,
+    onDelete: (ConnectProfile) -> Unit,
+    onSignOutFn: () -> Unit,
+    fnSessionActive: Boolean,
+    onAddSource: () -> Unit,
+    autoRequestFocus: Boolean,
+    // 设置页把「右键进右栏」的焦点请求交给它：挂到第一张平台卡上，
+    // 这样设置页的 enterContent() 能直接命中，不必依赖几何搜索。
+    externalFirstFocus: FocusRequester? = null,
+    // 同理，这是「左键回左栏本分组」的出口：挂在每行行首控件上。
+    // 不挂的话按左会走几何搜索，按垂直距离猜一个左栏项——
+    // 实测「＋ 再添加一个音源」在最底部，左边最近的是「关于」，于是整页被切到关于分组。
+    navExitFocus: FocusRequester? = null,
 ) {
     val store = ConnectRuntime.store
     val state by store.state.collectAsState()
     val firstFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { firstFocus.requestFocusWhenReady() }
+    // 每行行首控件共用的「左键回左栏」出口。行内右侧的小按钮（编辑/删除/检测）不挂，
+    // 让它们按左回到同一行左边那颗卡，而不是直接跳栏。
+    val navExit = navExitFocus
+    val leftExit = if (navExit != null) Modifier.focusProperties { left = navExit } else Modifier
+    LaunchedEffect(autoRequestFocus) {
+        if (autoRequestFocus) firstFocus.requestFocusWhenReady()
+    }
     // activeId == null 表示当前走的是内置飞牛主账号链路（而不是某个已保存的协议平台）
     val fnOsActive = fnSessionActive && state.activeId == null
     var pendingDeleteFn by remember { mutableStateOf(false) }
@@ -346,18 +453,25 @@ fun PlatformManageScreen(
             pendingDeleteId = null
         }
     }
+    // —— 音源脚本识别 ——
+    val musicSourcesState by com.yueyin.tv.ui.source.MusicSourceRuntime.state.collectAsState()
+    val sourceContext = androidx.compose.ui.platform.LocalContext.current
+    val sourceScope = rememberCoroutineScope()
+    var checkingSourceId by remember { mutableStateOf<String?>(null) }
+    fun triggerSourceCheck() {
+        // 进页面时自动识别一次（见下方 LaunchedEffect），这里的按钮只用于「再确认一次」。
+        if (checkingSourceId != null) return
+        checkingSourceId = "__all__"
+        sourceScope.launch {
+            com.yueyin.tv.ui.source.MusicSourceRuntime.store.state.value.sources.forEach { source ->
+                com.yueyin.tv.ui.source.checkMusicSource(sourceContext, source)
+            }
+            checkingSourceId = null
+        }
+    }
 
-    Column(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 28.dp)) {
-        Text("平台", fontSize = 30.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "可添加多个音乐服务，随时切换；当前生效的平台在资料条显示",
-            color = FnColors.Muted,
-            fontSize = 14.sp,
-        )
-        Spacer(Modifier.height(20.dp))
-        val profiles = state.profiles
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    val profiles = state.profiles
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             // 飞牛音乐：登录过才出现，和协议平台一样可以编辑（重新登录）/删除（断开账号）。
             // 它不是 ConnectProfile，所以走单独的"会话"语义，但界面上与其它平台平权。
             if (fnSessionActive) {
@@ -371,7 +485,15 @@ fun PlatformManageScreen(
                         modifier = Modifier
                             .weight(1f)
                             .height(76.dp)
-                            .then(if (fnSessionActive) Modifier.focusRequester(firstFocus) else Modifier),
+                            .then(if (fnSessionActive) Modifier.focusRequester(firstFocus) else Modifier)
+                            .then(
+                                if (fnSessionActive && externalFirstFocus != null) {
+                                    Modifier.focusRequester(externalFirstFocus)
+                                } else {
+                                    Modifier
+                                },
+                            )
+                            .then(leftExit),
                     ) {
                         Row(
                             Modifier.fillMaxSize().padding(horizontal = 18.dp),
@@ -430,7 +552,15 @@ fun PlatformManageScreen(
                             .then(
                                 if (!fnSessionActive && index == 0) Modifier.focusRequester(firstFocus)
                                 else Modifier,
-                            ),
+                            )
+                            .then(
+                                if (!fnSessionActive && index == 0 && externalFirstFocus != null) {
+                                    Modifier.focusRequester(externalFirstFocus)
+                                } else {
+                                    Modifier
+                                },
+                            )
+                            .then(leftExit),
                     ) {
                         Row(
                             Modifier.fillMaxSize().padding(horizontal = 18.dp),
@@ -455,11 +585,19 @@ fun PlatformManageScreen(
                             }
                         }
                     }
-                    PlatformRowAction(
-                        kind = PlatformRowActionKind.Edit,
-                        danger = false,
-                        onClick = { onEdit(profile) },
-                    )
+                    if (profile.type == ConnectType.ONLINE) {
+                        // 在线音乐没有地址/账号可编辑，右侧按钮改为「检测」音源脚本
+                        SourceCheckAction(
+                            checking = checkingSourceId != null,
+                            onClick = { triggerSourceCheck() },
+                        )
+                    } else {
+                        PlatformRowAction(
+                            kind = PlatformRowActionKind.Edit,
+                            danger = false,
+                            onClick = { onEdit(profile) },
+                        )
+                    }
                     PlatformRowAction(
                         kind = PlatformRowActionKind.Delete,
                         danger = deleting,
@@ -483,7 +621,8 @@ fun PlatformManageScreen(
                     .then(
                         if (!fnSessionActive && profiles.isEmpty()) Modifier.focusRequester(firstFocus)
                         else Modifier,
-                    ),
+                    )
+                    .then(leftExit),
             ) {
                 Row(
                     Modifier.fillMaxSize().padding(horizontal = 18.dp),
@@ -495,16 +634,148 @@ fun PlatformManageScreen(
             if (profiles.isEmpty() && !fnSessionActive) {
                 Text("还没有连接任何平台", color = FnColors.Muted, fontSize = 15.sp)
             }
+
+            // —— 在线音源脚本区块：平铺在平台列表下方，不再单独占一个设置分组 ——
+            Spacer(Modifier.height(14.dp))
+            Text(
+                "在线音源",
+                color = FnColors.Muted,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                "添加 LX 音源脚本即可用；导入后自动识别支持哪几家平台，不需要手动检测",
+                color = FnColors.Muted,
+                fontSize = 12.sp,
+            )
+            // 就绪状态一句话：用户不用去别处确认「到底配好了没有」
+            val onlineMusicActive = state.ofType(ConnectType.ONLINE)?.id?.let { it == state.activeId } == true
+            if (musicSourcesState.sources.isNotEmpty()) {
+                Text(
+                    if (onlineMusicActive) {
+                        "已就绪：搜索里能直接播放"
+                    } else {
+                        "音源已就绪 · 需要把上面的「在线音乐」设为当前平台才能用"
+                    },
+                    color = if (onlineMusicActive) FnColors.Teal else FnColors.Coral.copy(alpha = 0.85f),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            val sources = musicSourcesState.sources
+            sources.forEach { source ->
+                val deleting = pendingDeleteId == source.id
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .height(64.dp)
+                            .background(FnColors.SurfaceAlt.copy(alpha = 0.6f), RoundedCornerShape(FnRadius.lg))
+                            .padding(horizontal = 18.dp),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                Modifier
+                                    .size(34.dp)
+                                    .background(
+                                        if (source.usable) FnColors.Teal.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.06f),
+                                        RoundedCornerShape(11.dp),
+                                    ),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    "JS",
+                                    color = if (source.usable) FnColors.Teal else FnColors.Muted,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    source.fileName,
+                                    color = FnColors.Text,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                )
+                                Text(
+                                    if (deleting) "再按一次右侧「删除」即移除" else source.summary(),
+                                    color = if (deleting) FnColors.Coral else FnColors.Muted,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                    }
+                    SourceCheckAction(
+                        checking = checkingSourceId == source.id,
+                        onClick = {
+                            if (checkingSourceId != null) return@SourceCheckAction
+                            checkingSourceId = source.id
+                            sourceScope.launch {
+                                com.yueyin.tv.ui.source.checkMusicSource(sourceContext, source)
+                                checkingSourceId = null
+                            }
+                        },
+                    )
+                    PlatformRowAction(
+                        kind = PlatformRowActionKind.Delete,
+                        danger = deleting,
+                        onClick = {
+                            if (deleting) {
+                                pendingDeleteId = null
+                                com.yueyin.tv.ui.source.MusicSourceRuntime.store.remove(source.id)
+                            } else {
+                                pendingDeleteId = source.id
+                            }
+                        },
+                    )
+                }
+            }
+            PlatformCard(
+                enabled = true,
+                onClick = onAddSource,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    // 一个平台都没有时，这张卡才是本分组的第一个可聚焦项，
+                    // 设置页的「右键进右栏」得靠它落到这里。
+                    .then(
+                        if (!fnSessionActive && profiles.isEmpty() && externalFirstFocus != null) {
+                            Modifier.focusRequester(externalFirstFocus)
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .then(leftExit),
+            ) {
+                Row(
+                    Modifier.fillMaxSize().padding(horizontal = 18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (sources.isEmpty()) "＋ 添加音源脚本" else "＋ 再添加一个音源",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = FnColors.Text,
+                    )
+                }
+            }
+            if (sources.isEmpty()) {
+                Text(
+                    "App 不内置任何音源。脚本由你自己提供，导入后只保存在这台设备上。",
+                    color = FnColors.Muted.copy(alpha = 0.8f),
+                    fontSize = 12.sp,
+                )
+            }
         }
-        Spacer(Modifier.weight(1f))
-        Text(
-            "按返回键退出",
-            color = FnColors.Muted,
-            fontSize = 13.sp,
-            modifier = Modifier.align(Alignment.CenterHorizontally),
-        )
     }
-}
 
 // ---------------------------------------------------------------- 平台选择
 
@@ -519,27 +790,20 @@ private fun PlatformRowAction(
 ) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(14.dp)
-    val accent = if (kind == PlatformRowActionKind.Delete) FnColors.Coral else FnColors.Text
+    // 聚焦一律珊瑚实心 + 深色图标，与设置页其它控件同一语言；删除待确认时也是实心，只换图标含义。
+    val solid = danger || focused
     val tint = when {
-        danger -> Color.White
-        focused -> accent
+        solid -> FnColors.FocusOnSolid
+        kind == PlatformRowActionKind.Delete -> FnColors.Coral
         else -> FnColors.Muted
     }
-    val fill = when {
-        danger -> FnColors.Coral
-        focused -> FnColors.SurfaceAlt
-        else -> FnColors.Surface
-    }
-    val stroke = when {
-        danger -> FnColors.Coral
-        focused -> FnFocus.ringColor
-        else -> Color.White.copy(alpha = 0.12f)
-    }
+    val fill = if (solid) FnColors.Coral else FnColors.Surface
+    val stroke = if (solid) FnColors.Coral else Color.White.copy(alpha = 0.12f)
     Box(
         modifier = Modifier
             .size(64.dp)
             .background(fill, shape)
-            .border(if (focused || danger) 2.dp else 1.dp, stroke, shape)
+            .border(if (solid) 2.dp else 1.dp, stroke, shape)
             .onFocusChanged { focused = it.isFocused }
             .focusable(true)
             .onKeyEvent { event ->
@@ -592,6 +856,64 @@ private fun PlatformRowAction(
                     color = tint,
                     start = androidx.compose.ui.geometry.Offset(w * 0.40f, h * 0.18f),
                     end = androidx.compose.ui.geometry.Offset(w * 0.60f, h * 0.18f),
+                    strokeWidth = stroke,
+                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                )
+            }
+        }
+    }
+}
+
+/** 在线音乐平台行的「检测」按钮：触发音源脚本检测，代替原本的「编辑」。 */
+@Composable
+private fun SourceCheckAction(
+    checking: Boolean,
+    onClick: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(14.dp)
+    val tint = if (focused) FnColors.FocusOnSolid else FnColors.Muted
+    val fill = if (focused) FnColors.Coral else FnColors.Surface
+    val stroke = if (focused) FnColors.Coral else Color.White.copy(alpha = 0.12f)
+    Box(
+        modifier = Modifier
+            .size(64.dp)
+            .background(fill, shape)
+            .border(if (focused) 2.dp else 1.dp, stroke, shape)
+            .onFocusChanged { focused = it.isFocused }
+            .focusable(true)
+            .onKeyEvent { event ->
+                val center = event.key == Key.DirectionCenter || event.key == Key.Enter
+                if (center && event.type == KeyEventType.KeyUp) {
+                    onClick()
+                    true
+                } else {
+                    false
+                }
+            }
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (checking) {
+            Text("识别中", color = tint, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+        } else {
+            androidx.compose.foundation.Canvas(Modifier.size(24.dp)) {
+                val stroke = 2.dp.toPx()
+                val w = size.width
+                val h = size.height
+                val cx = w / 2f
+                val cy = h / 2f
+                // 放大镜：圆 + 斜柄
+                drawCircle(
+                    color = tint,
+                    radius = w * 0.26f,
+                    center = androidx.compose.ui.geometry.Offset(cx - w * 0.06f, cy - h * 0.06f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke),
+                )
+                drawLine(
+                    color = tint,
+                    start = androidx.compose.ui.geometry.Offset(cx + w * 0.16f, cy + h * 0.16f),
+                    end = androidx.compose.ui.geometry.Offset(cx + w * 0.34f, cy + h * 0.34f),
                     strokeWidth = stroke,
                     cap = androidx.compose.ui.graphics.StrokeCap.Round,
                 )

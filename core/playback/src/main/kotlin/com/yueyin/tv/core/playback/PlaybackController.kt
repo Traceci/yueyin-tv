@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionResult
@@ -116,6 +117,10 @@ class PlaybackController(
     private var forceNextPresentationProjection = false
     private val autoAdvanceGate = RoamAutoAdvanceGate()
 
+    /** 自动跳过坏链接用：连续失败计数 + 上一次失败的那首（防止同一个 item 反复触发）。 */
+    private var consecutivePlaybackFailures = 0
+    private var lastFailedMediaId: String? = null
+
     private val listener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             forceNextPresentationProjection = forceNextPresentationProjection ||
@@ -130,9 +135,36 @@ class PlaybackController(
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             val player = controller ?: return
+            if (playbackState == Player.STATE_READY) consecutivePlaybackFailures = 0
             if (playbackState == Player.STATE_ENDED && queueKind == QueueKind.Roam) {
                 if (autoAdvanceGate.tryConsume(generation, player.currentMediaItem?.mediaId)) {
                     advanceRoam(RoamDirection.Next)
+                }
+            }
+        }
+
+        /**
+         * 音源给的直链是有时效的，也经常出现某首歌的 CDN 就是连不上。
+         * 以前这种情况会一直停在「播放失败：ERROR_CODE_IO_NETWORK_CONNECTION_FAILED」，
+         * 用户得手动点下一首。这里改成自动跳过：
+         * 连续失败 2 首以内直接跳下一首，到第 3 首才把错误留在界面上（说明是真断网了）。
+         */
+        override fun onPlayerError(error: PlaybackException) {
+            val player = controller ?: return
+            val failingId = player.currentMediaItem?.mediaId
+            if (failingId == null || failingId == lastFailedMediaId) return
+            lastFailedMediaId = failingId
+            if (consecutivePlaybackFailures >= MAX_AUTO_SKIP_FAILURES) return
+            consecutivePlaybackFailures++
+            if (!player.hasNextMediaItem()) return
+            scope.launch {
+                delay(AUTO_SKIP_DELAY_MS)
+                val current = controller ?: return@launch
+                if (current.currentMediaItem?.mediaId != failingId) return@launch
+                runCatching {
+                    current.seekToNextMediaItem()
+                    current.prepare()
+                    current.play()
                 }
             }
         }
@@ -1201,6 +1233,23 @@ class PlaybackController(
         )
         .build()
 
+    /**
+     * 给队列里还没取到直链的那一项补上地址。
+     *
+     * 「播放全部」时只同步取开头几首（否则要等几十秒），其余项先以空 uri 入队；
+     * 由调用方在后台逐首取链后调这里补回去。已经有 uri 的项直接跳过，不打断播放。
+     */
+    fun patchStreamUrl(mediaId: String, streamUrl: String) {
+        if (streamUrl.isBlank()) return
+        val player = controller ?: return
+        val index = (0 until player.mediaItemCount).firstOrNull { player.getMediaItemAt(it).mediaId == mediaId }
+            ?: return
+        val item = player.getMediaItemAt(index)
+        val existing = item.localConfiguration?.uri?.toString().orEmpty()
+        if (existing.isNotBlank()) return
+        player.replaceMediaItem(index, item.buildUpon().setUri(streamUrl).build())
+    }
+
     private fun applyModeLocally(player: Player, mode: PlayMode) {
         player.repeatMode = when (mode.mapping.repeatBehavior) {
             RepeatBehavior.Off -> Player.REPEAT_MODE_OFF
@@ -1393,6 +1442,10 @@ class PlaybackController(
         const val SNAPSHOT_INTERVAL_MS = 5_000L
         const val PREVIOUS_RESTART_THRESHOLD_MS = 3_000L
         val QUEUE_RETRY_DELAYS = longArrayOf(500L, 1_000L, 2_000L)
+
+        /** 坏链接自动跳过的上限：连续这么多次失败就认为是真的断网，把错误留在界面上。 */
+        const val MAX_AUTO_SKIP_FAILURES = 2
+        const val AUTO_SKIP_DELAY_MS = 400L
     }
 }
 

@@ -224,7 +224,7 @@ private fun SessionRecoveryScreen(
             ) { Text("切换登录", fontSize = 20.sp) }
         }
     }
-    LaunchedEffect(Unit) { retryFocus.requestFocus() }
+    LaunchedEffect(Unit) { runCatching { retryFocus.requestFocus() } }
 }
 
 @Composable
@@ -297,7 +297,11 @@ internal fun LoginScreen(
     val validServer = fnIdInput || ServerUrlNormalizer.normalize(server, https) is ServerUrlResult.Valid
     val canSubmit = !submitting && validServer && username.isNotBlank() &&
         (password.isNotBlank() || (hasSavedPassword && selectedProfileId != null))
-    LaunchedEffect(Unit) { if (savedServer.isBlank()) serverFocus.requestFocus() else usernameFocus.requestFocus() }
+    LaunchedEffect(Unit) {
+        runCatching {
+            if (savedServer.isBlank()) serverFocus.requestFocus() else usernameFocus.requestFocus()
+        }
+    }
 
     Box(
         Modifier.fillMaxSize().background(FnColors.Background),
@@ -638,7 +642,7 @@ internal fun LoginScreen(
                 ) { Text("清除所有历史记录", color = FnColors.Coral, fontSize = 19.sp) }
             }
         }
-        LaunchedEffect(firstHistoryFocus) { firstHistoryFocus?.requestFocus() }
+        LaunchedEffect(firstHistoryFocus) { runCatching { firstHistoryFocus?.requestFocus() } }
     }
 }
 
@@ -779,7 +783,8 @@ private fun TvTextField(
         editing = false
         imeWasVisible = false
         keyboard?.hide()
-        target?.requestFocus()
+        // 退出编辑后输入框可能已被重组移除，requestFocus 会抛未初始化异常。
+        runCatching { target?.requestFocus() }
     }
 
     Column(
@@ -812,7 +817,7 @@ private fun TvTextField(
             }
             when {
                 target != null -> {
-                    target.requestFocus()
+                    runCatching { target.requestFocus() }
                     true
                 }
                 else -> false

@@ -33,6 +33,7 @@ import com.yueyin.tv.core.model.RoamWindow
 import com.yueyin.tv.core.model.SharedLibrary
 import com.yueyin.tv.core.model.Track
 import com.yueyin.tv.core.model.TrackGuid
+import com.yueyin.tv.core.model.connect.ConnectType
 import com.yueyin.tv.core.model.playback.QueueSource
 import com.yueyin.tv.core.model.preferences.CacheUsage
 import com.yueyin.tv.core.lyrics.DefaultLyricsSources
@@ -731,8 +732,18 @@ class MusicRepository internal constructor(
         )
     }
 
-    fun prepareQueue(tracks: List<Track>): List<PlaybackTrack> {
-        protocolSource?.let { return it.queue(tracks) }
+    /**
+     * @param eagerStartIndex 从第几首开始同步取链（用户点的那首）。
+     * @param eagerCount 只同步取这几首的直链，其余留空由播放器后台补齐。
+     *   在线音源逐首取链很慢（WebView 脚本 + 探活），整页一次取完要几十秒，
+     *   用户点播放后会很久没声音、播放页也不弹。默认取全部，播放页按需传小值。
+     */
+    suspend fun prepareQueue(
+        tracks: List<Track>,
+        eagerStartIndex: Int = 0,
+        eagerCount: Int = Int.MAX_VALUE,
+    ): List<PlaybackTrack> {
+        protocolSource?.let { return it.queueEager(tracks, eagerStartIndex, eagerCount) }
         val api = session.requireApi()
         return tracks.asSequence()
             .filter { it.accessStatus == null || it.accessStatus == 0 }
@@ -761,11 +772,39 @@ class MusicRepository internal constructor(
     suspend fun currentLyrics(
         track: Track,
         onlineMatchingEnabled: Boolean = preferences.state.value.onlineLyricsMatchingEnabled,
-    ): CurrentResourceResult<CurrentLyrics> = resolveLyricsWithFallback(
-        onlineMatchingEnabled = onlineMatchingEnabled,
-        online = { onlineLyricsResolver.resolve(track) },
-        firstParty = { firstPartyCurrentLyrics(track.guid.value) },
-    )
+    ): CurrentResourceResult<CurrentLyrics> {
+        // 在线音乐平台没有服务端歌词，歌词只能靠内置歌词源（网易/QQ/酷狗）按歌名歌手匹配；
+        // 它和「在线歌词匹配」开关（语义是「给本地/服务器曲库做在线匹配」）无关，
+        // 不应被该开关关掉——否则用户一关开关，在线音乐就彻底没歌词了。
+        val isOnlinePlatform = protocolSource?.type == ConnectType.ONLINE
+        android.util.Log.d("YueyinLyrics", "currentLyrics guid=${track.guid.value} title=${track.title} artist=${track.artistName} album=${track.albumName} dur=${track.durationMs} isOnline=$isOnlinePlatform enabled=$onlineMatchingEnabled")
+        val result = if (isOnlinePlatform) {
+            // 在线平台：歌词只来自内置歌词源，匹配不到就是「无歌词」。
+            // 绝不 fallback 到音源脚本的 lyric action——洛雪音源没有这个 action，
+            // 少数脚本甚至会返回 "http://example.com/b.mp3" 之类的占位垃圾，
+            // 一旦 fallback 就会把垃圾当歌词显示。
+            try {
+                onlineLyricsResolver.resolve(track)
+                    ?.let { CurrentResourceResult.Ready(it) }
+                    ?: CurrentResourceResult.Absent
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (_: Exception) {
+                CurrentResourceResult.Absent
+            }
+        } else {
+            resolveLyricsWithFallback(
+                onlineMatchingEnabled = onlineMatchingEnabled,
+                online = { onlineLyricsResolver.resolve(track) },
+                firstParty = { firstPartyCurrentLyrics(track.guid.value) },
+            )
+        }
+        android.util.Log.d("YueyinLyrics", "currentLyrics result class=${result::class.simpleName}")
+        (result as? CurrentResourceResult.Ready)?.value?.let {
+            android.util.Log.d("YueyinLyrics", "currentLyrics Ready contentLen=${it.document.content.length} contentHead=${it.document.content.take(60)}")
+        }
+        return result
+    }
 
     suspend fun startRoam(): RoamWindow? {
         val namespace = session.cacheNamespace()
@@ -798,8 +837,11 @@ class MusicRepository internal constructor(
     suspend fun currentArtwork(
         coverId: String,
         variant: CoverVariant,
-    ): CurrentResourceResult<ByteArray> = currentResource {
-        withCurrentResourceRetry { loadArtwork(coverId, variant) }
+    ): CurrentResourceResult<ByteArray> {
+        android.util.Log.d("YueyinCover", "currentArtwork coverId=$coverId variant=${variant.width}")
+        return currentResource {
+            withCurrentResourceRetry { artwork(coverId, variant) }
+        }
     }
 
     suspend fun invalidateNamespace(namespace: String, includeEssential: Boolean = false) {

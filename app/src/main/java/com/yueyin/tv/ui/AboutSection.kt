@@ -49,6 +49,7 @@ internal fun AboutSection(
     updateFocus: FocusRequester,
     updateUpFocus: FocusRequester,
     updateDownFocus: FocusRequester,
+    updateLeftFocus: FocusRequester,
     onUpdateAction: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -63,10 +64,11 @@ internal fun AboutSection(
             updateFocus = updateFocus,
             updateUpFocus = updateUpFocus,
             updateDownFocus = updateDownFocus,
+            updateLeftFocus = updateLeftFocus,
             onUpdateAction = onUpdateAction,
             modifier = Modifier.weight(1f).height(152.dp),
         )
-        FeedbackCard(Modifier.width(340.dp).height(152.dp))
+        FeedbackCard(Modifier.width(216.dp).height(152.dp))
     }
 }
 
@@ -78,6 +80,7 @@ private fun AboutCard(
     updateFocus: FocusRequester,
     updateUpFocus: FocusRequester,
     updateDownFocus: FocusRequester,
+    updateLeftFocus: FocusRequester,
     onUpdateAction: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -122,29 +125,35 @@ private fun AboutCard(
         ) {
             StatusDot(updateState)
             Spacer(Modifier.width(9.dp))
-            Text(
-                statusText(updateState),
-                fontSize = 12.sp,
-                lineHeight = 15.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = statusColor(updateState),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (updateEnabled) {
-                statusDetail(updateState, lastCheckedAt)?.let { detail ->
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        detail,
-                        color = FnColors.Muted.copy(alpha = 0.75f),
-                        fontSize = 9.5.sp,
-                        lineHeight = 12.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+            // 状态 + 时间放进一个可伸缩区：宽度不够时先省略它们，保证右侧「检查更新」按钮完整显示。
+            Row(
+                Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    statusText(updateState),
+                    fontSize = 12.sp,
+                    lineHeight = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = statusColor(updateState),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (updateEnabled) {
+                    statusDetail(updateState, lastCheckedAt)?.let { detail ->
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            detail,
+                            color = FnColors.Muted.copy(alpha = 0.75f),
+                            fontSize = 9.5.sp,
+                            lineHeight = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
-            Spacer(Modifier.weight(1f))
             if (updateEnabled) {
                 SettingsActionButton(
                     label = actionLabel(updateState),
@@ -153,11 +162,12 @@ private fun AboutCard(
                     emphasis = updateState is UpdateUiState.Available,
                     onClick = onUpdateAction,
                     modifier = Modifier
-                        .width(128.dp)
+                        .width(112.dp)
                         .focusProperties {
                             up = updateUpFocus
                             down = updateDownFocus
-                            left = FocusRequester.Cancel
+                            // 左键回左栏「关于」。原来写 Cancel 等于把左键吞掉，用户按左没反应。
+                            left = updateLeftFocus
                             right = FocusRequester.Cancel
                         }
                         .focusRequester(updateFocus),
@@ -197,12 +207,12 @@ private fun FeedbackCard(modifier: Modifier = Modifier) {
         modifier
             .background(AboutPanel, RoundedCornerShape(9.dp))
             .border(0.75.dp, AboutBorder, RoundedCornerShape(9.dp))
-            .padding(horizontal = 18.dp),
+            .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FnQrCode(content = ISSUE_URL, size = 100.dp)
+        FnQrCode(content = ISSUE_URL, size = 60.dp)
         Column(
-            Modifier.padding(start = 16.dp),
+            Modifier.padding(start = 12.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text("反馈与建议", fontSize = 13.sp, lineHeight = 16.sp, fontWeight = FontWeight.Bold)

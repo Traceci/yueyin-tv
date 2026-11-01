@@ -11,7 +11,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class LyricsMatchCoordinator(
     sources: List<LyricsSource>,
     private val policy: LyricsMatchPolicy = LyricsMatchPolicy(),
-    private val sourceTimeoutMs: Long = 1_800L,
+    private val sourceTimeoutMs: Long = 4_000L,
     private val scorer: LyricsCandidateScorer = LyricsCandidateScorer(policy),
 ) {
     private val sources = sources.distinctBy(LyricsSource::id)

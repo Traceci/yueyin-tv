@@ -4,12 +4,14 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -33,7 +35,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -57,6 +61,9 @@ import com.yueyin.tv.AuthenticatedAppDependencies
 import com.yueyin.tv.BuildConfig
 import com.yueyin.tv.R
 import com.yueyin.tv.core.model.PlayerStyle
+import com.yueyin.tv.core.audiofx.FxPreset
+import com.yueyin.tv.core.audiofx.FxSettings
+import com.yueyin.tv.core.playback.AudioFxController
 import com.yueyin.tv.core.model.preferences.CacheBudget
 import com.yueyin.tv.core.model.preferences.CacheUsage
 import com.yueyin.tv.core.model.preferences.UiScale
@@ -73,31 +80,86 @@ private val SettingsControl = FnColors.SurfaceAlt
 private val SettingsDividerColor = Color.White.copy(alpha = 0.08f)
 private val SettingsBorderColor = Color.White.copy(alpha = 0.10f)
 /** 选中底色：主色 16% 压暗后的暗珊瑚，和主界面选中态同源。 */
-private val SettingsSelected = FnColors.Coral.copy(alpha = 0.16f)
-/** 未选中项的聚焦底色：在面板色上提亮一档的中性蓝。 */
-private val SettingsControlFocused = Color(0xFF232B36)
+private val SettingsSelected = FnColors.SelectedSoft
 /** 未选中项的描边：中性白发丝线，不再用灰绿色。 */
 private val SettingsControlBorder = Color.White.copy(alpha = 0.16f)
 
+/** 设置页的五个侧边栏分组。 */
+private enum class SettingsSection(val title: String, val subtitle: String) {
+    PLAYER("播放界面", "播放页样式、缩放与歌词行为"),
+    AUDIO_FX("音效", "音效模式（与播放条同步，选「无」即关闭）"),
+    PLATFORMS("平台", "平台连接与在线音源管理"),
+    CACHE("缓存", "图片与歌曲磁盘缓存"),
+    ABOUT("关于", "版本、更新与反馈"),
+}
+
+/** 设置页统一间距，避免各分组视觉节奏不一致。 */
+private val GAP_TITLE = 20.dp // 副标题到首个分组的间隔
+private val GAP_GROUP = 22.dp // 分组之间的纵向间隔
+private val GAP_LABEL = 10.dp // 分组标题到控件的间隔
+private val GAP_DESC = 12.dp // 说明文字到控件的间隔
+private val GAP_BLOCK = 16.dp // 说明块 / 操作按钮之间的间隔
+private val GAP_ROW = 10.dp // 同行多控件 / 多行之间的间隔
+
 @Composable
-internal fun SettingsScreen(container: AuthenticatedAppDependencies) {
+internal fun SettingsScreen(
+    container: AuthenticatedAppDependencies,
+    onAddPlatform: () -> Unit = {},
+    onRelogin: () -> Unit = {},
+    onEdit: (com.yueyin.tv.core.data.connect.ConnectProfile) -> Unit = {},
+    onDelete: (com.yueyin.tv.core.data.connect.ConnectProfile) -> Unit = {},
+    onSignOutFn: () -> Unit = {},
+    onAddSource: () -> Unit = {},
+    fnSessionActive: Boolean = false,
+) {
     val preferences by container.appPreferences.state.collectAsStateWithLifecycle()
     val updateState by container.updateController.state.collectAsStateWithLifecycle()
     val lastCheckedAt by container.updateController.lastCheckedAt.collectAsStateWithLifecycle()
     val scope = LocalLibraryRetainedState.current.scope
+
+    var selected by remember { mutableStateOf(SettingsSection.PLAYER) }
+    // 左栏当前握着遥控器焦点的那一项。焦点移进右栏后它变回 null，
+    // 此时当前分组用「选中浅底」继续标记，用户仍知道自己在哪个分组里。
+    var focusedNav by remember { mutableStateOf<SettingsSection?>(null) }
+
+    // 左栏导航项的焦点。
+    val navRequesters = remember { SettingsSection.entries.associateWith { FocusRequester() } }
+
+    // 右栏任意分组「最左边那个控件」按左键的出口：回到左栏对应分组，而不是把左键吞掉。
+    fun navFocusOf(section: SettingsSection): FocusRequester = navRequesters.getValue(section)
+
+    // —— 播放界面分组 ——
     val coverStyleFocus = remember { FocusRequester() }
     val posterStyleFocus = remember { FocusRequester() }
-    val onlineLyricsFocus = remember { FocusRequester() }
     val lyricsStyleFocus = remember { FocusRequester() }
     val compactScaleFocus = remember { FocusRequester() }
     val standardScaleFocus = remember { FocusRequester() }
     val relaxedScaleFocus = remember { FocusRequester() }
+    val onlineLyricsFocus = remember { FocusRequester() }
     val backgroundContinueFocus = remember { FocusRequester() }
+
+    // —— 音效分组 ——
+    // 直接订阅全局音效状态：播放条上的音效选择和这里共用同一份数据，改哪儿两边都同步。
+    val fxSettings by AudioFxController.state.collectAsStateWithLifecycle()
+    val fxPresetFocuses = remember { List(FxPreset.selectable.size) { FocusRequester() } }
+    fun applyFx(next: FxSettings) {
+        AudioFxController.update(next)
+    }
+
+    // —— 缓存分组 ——
     val cacheFocuses = remember { List(CacheBudget.entries.size) { FocusRequester() } }
     val clearCacheFocus = remember { FocusRequester() }
     val songCacheClearFocus = remember { FocusRequester() }
+
+    // —— 关于分组 ——
     val updateFocus = remember { FocusRequester() }
     val remoteGuideFocus = remember { FocusRequester() }
+
+    // —— 平台分组 ——
+    // 平台列表在 PlatformManageContent 内部，首焦点（第一张平台卡）由它自己拿。
+    // 这里给一个外部 requester 挂到同一张卡上，设置页才能用统一的「右键进右栏」把焦点送进去。
+    val platformFirstFocus = remember { FocusRequester() }
+
     var usage by remember { mutableStateOf(CacheUsage(artworkBytes = 0, indexBytes = 0)) }
     var songCacheBytes by remember { mutableStateOf(0L) }
     var showRemoteGuide by remember { mutableStateOf(false) }
@@ -117,334 +179,469 @@ internal fun SettingsScreen(container: AuthenticatedAppDependencies) {
     }
     LaunchedEffect(Unit) {
         yield()
-        runCatching { coverStyleFocus.requestFocus() }
+        runCatching { navRequesters.getValue(SettingsSection.PLAYER).requestFocus() }
     }
 
-    // 不再自绘不透明底色与两个灰绿装饰圆：让全局氛围背景透出来，
-    // 设置页与首页共用同一层底，翻页时底色不会突变。
+    // 左栏上下切换分组；右键把焦点交给当前分组右栏的第一个控件。
+    fun moveNav(delta: Int) {
+        val all = SettingsSection.entries
+        // 从「真正握着焦点的那一项」起步，而不是 selected。
+        // 焦点刚进出右栏时两者可能短暂不同步，用 selected 算下标会多跳一格。
+        val current = focusedNav ?: selected
+        val idx = (all.indexOf(current) + delta + all.size) % all.size
+        selected = all[idx]
+        navRequesters.getValue(all[idx]).let { runCatching { it.requestFocus() } }
+    }
+
+    /**
+     * 把焦点送进右栏。
+     *
+     * 不能同步调用 requestFocus：右栏是按 [selected] 组合的，刚按上/下换过分组的那一帧里
+     * 控件还没挂到窗口上，`requestFocus()` 会抛 `FocusRequester is not initialized`，
+     * 被包在 runCatching 里静默吞掉——表现出来就是「按右键没反应，得多按一次确认」。
+     *
+     * 所以这里等一帧（让重组落地）再请求，仍失败就再等一帧重试一次。
+     * 右键与确认键共用这条路径，行为一致。
+     */
+    val enterScope = rememberCoroutineScope()
+    fun firstFocusOf(section: SettingsSection): FocusRequester? = when (section) {
+        SettingsSection.PLAYER -> coverStyleFocus
+        SettingsSection.AUDIO_FX -> fxPresetFocuses.firstOrNull()
+        // 平台分组内联了平台列表，首焦点在 PlatformManageContent 内部，用外部 requester 接进来。
+        SettingsSection.PLATFORMS -> platformFirstFocus
+        SettingsSection.CACHE -> cacheFocuses.firstOrNull()
+        SettingsSection.ABOUT -> if (container.updateController.enabled) updateFocus else remoteGuideFocus
+    }
+    fun enterContent() {
+        val section = selected
+        val target = firstFocusOf(section) ?: return
+        enterScope.launch {
+            repeat(2) { attempt ->
+                withFrameNanos { }
+                if (runCatching { target.requestFocus() }.isSuccess) return@launch
+                if (attempt == 1) return@launch
+            }
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 48.dp, vertical = 28.dp),
         ) {
             Text("设置", fontSize = 30.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            Text("播放与歌词", fontSize = 16.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(10.dp))
-
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .background(SettingsPanel, RoundedCornerShape(FnRadius.md))
-                    .border(1.dp, SettingsBorderColor, RoundedCornerShape(FnRadius.md))
-                    .padding(horizontal = 22.dp),
-            ) {
-                SettingsRow(label = "播放界面", height = 65.dp) {
-                    SettingsChoiceButton(
-                        label = "CD 模式",
-                        selected = preferences.playerStyle == PlayerStyle.Cover,
-                        onClick = { container.appPreferences.setPlayerStyle(PlayerStyle.Cover) },
-                        modifier = Modifier
-                            .width(116.dp)
-                            .focusProperties {
-                                left = FocusRequester.Cancel
-                                right = posterStyleFocus
-                                down = compactScaleFocus
-                            }
-                            .focusRequester(coverStyleFocus),
-                    )
-                    SettingsChoiceButton(
-                        label = "大海报模式",
-                        selected = preferences.playerStyle == PlayerStyle.Poster,
-                        onClick = { container.appPreferences.setPlayerStyle(PlayerStyle.Poster) },
-                        modifier = Modifier
-                            .width(116.dp)
-                            .focusProperties {
-                                left = coverStyleFocus
-                                right = lyricsStyleFocus
-                                down = compactScaleFocus
-                            }
-                            .focusRequester(posterStyleFocus),
-                    )
-                    SettingsChoiceButton(
-                        label = "迷你歌词",
-                        selected = preferences.playerStyle == PlayerStyle.Lyrics,
-                        onClick = { container.appPreferences.setPlayerStyle(PlayerStyle.Lyrics) },
-                        modifier = Modifier
-                            .width(116.dp)
-                            .focusProperties {
-                                left = posterStyleFocus
-                                right = FocusRequester.Cancel
-                                down = compactScaleFocus
-                            }
-                            .focusRequester(lyricsStyleFocus),
-                    )
-                }
-                SettingsDivider()
-                SettingsRow(label = "界面缩放", height = 65.dp) {
-                    SettingsChoiceButton(
-                        label = "紧凑",
-                        selected = preferences.uiScale == UiScale.Compact,
-                        onClick = { container.appPreferences.setUiScale(UiScale.Compact) },
-                        modifier = Modifier
-                            .width(116.dp)
-                            .focusProperties {
-                                left = FocusRequester.Cancel
-                                right = standardScaleFocus
-                                up = coverStyleFocus
-                                down = onlineLyricsFocus
-                            }
-                            .focusRequester(compactScaleFocus),
-                    )
-                    SettingsChoiceButton(
-                        label = "标准",
-                        selected = preferences.uiScale == UiScale.Standard,
-                        onClick = { container.appPreferences.setUiScale(UiScale.Standard) },
-                        modifier = Modifier
-                            .width(116.dp)
-                            .focusProperties {
-                                left = compactScaleFocus
-                                right = relaxedScaleFocus
-                                up = posterStyleFocus
-                                down = onlineLyricsFocus
-                            }
-                            .focusRequester(standardScaleFocus),
-                    )
-                    SettingsChoiceButton(
-                        label = "宽松",
-                        selected = preferences.uiScale == UiScale.Relaxed,
-                        onClick = { container.appPreferences.setUiScale(UiScale.Relaxed) },
-                        modifier = Modifier
-                            .width(116.dp)
-                            .focusProperties {
-                                left = standardScaleFocus
-                                right = FocusRequester.Cancel
-                                up = lyricsStyleFocus
-                                down = onlineLyricsFocus
-                            }
-                            .focusRequester(relaxedScaleFocus),
-                    )
-                }
-                SettingsDivider()
-                SettingsRow(label = "歌词", height = 65.dp) {
-                    SettingsCheckbox(
-                        label = "在线歌词匹配",
-                        selected = preferences.onlineLyricsMatchingEnabled,
-                        onClick = {
-                            container.appPreferences.setOnlineLyricsMatchingEnabled(
-                                !preferences.onlineLyricsMatchingEnabled,
-                            )
-                        },
-                        modifier = Modifier
-                            .focusProperties {
-                                up = compactScaleFocus
-                                down = backgroundContinueFocus
-                                left = FocusRequester.Cancel
-                                right = FocusRequester.Cancel
-                            }
-                            .focusRequester(onlineLyricsFocus),
-                    )
-                }
-                SettingsDivider()
-                SettingsRow(label = "播放行为", height = 76.dp) {
-                    SettingsCheckbox(
-                        label = "按返回键退出时在后台继续播放",
-                        selected = preferences.backgroundContinueOnExit,
-                        onClick = {
-                            container.appPreferences.setBackgroundContinueOnExit(
-                                !preferences.backgroundContinueOnExit,
-                            )
-                        },
-                        modifier = Modifier
-                            .focusProperties {
-                                up = onlineLyricsFocus
-                                down = cacheFocuses.first()
-                                left = FocusRequester.Cancel
-                                right = FocusRequester.Cancel
-                            }
-                            .focusRequester(backgroundContinueFocus),
-                    )
-                }
-                SettingsDivider()
-                Row(
-                    Modifier.fillMaxWidth().height(80.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+            Spacer(Modifier.height(GAP_BLOCK))
+            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                // —— 左侧导航栏 ——
+                Column(
+                    Modifier
+                        .width(240.dp)
+                        .fillMaxHeight()
+                        .background(SettingsPanel, RoundedCornerShape(FnRadius.md))
+                        .border(1.dp, SettingsBorderColor, RoundedCornerShape(FnRadius.md))
+                        .padding(vertical = 14.dp, horizontal = 12.dp),
                 ) {
-                    Text(
-                        "图片磁盘缓存上限",
-                        color = FnColors.Muted,
-                        fontSize = 12.sp,
-                        modifier = Modifier.width(144.dp),
-                    )
-                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                            CacheBudget.entries.forEachIndexed { index, budget ->
-                                SettingsChoiceButton(
-                                    label = "${budget.megabytes} MB",
-                                    selected = preferences.cacheBudget == budget,
-                                    onClick = {
-                                        scope.launch {
-                                            container.appPreferences.setCacheBudget(budget)
-                                            container.musicRepository.applyArtworkBudget()
-                                            refreshUsage()
-                                        }
-                                    },
-                                    modifier = Modifier
-                                        .width(104.dp)
-                                        .focusProperties {
-                                            up = onlineLyricsFocus
-                                            down = if (container.updateController.enabled) {
-                                                updateFocus
-                                            } else {
-                                                FocusRequester.Cancel
+                    SettingsSection.entries.forEach { section ->
+                        val isSelected = section == selected
+                        val navFocused = focusedNav == section
+                        // 焦点实心 / 选中浅底 / 普通，三态统一（见 FnColors.FocusSolid 的注释）。
+                        val navFill = when {
+                            navFocused -> FnColors.FocusSolid
+                            isSelected -> SettingsSelected
+                            else -> Color.Transparent
+                        }
+                        val navStroke = when {
+                            navFocused -> FnColors.FocusSolid
+                            isSelected -> FnColors.Coral
+                            else -> SettingsBorderColor
+                        }
+                        val navInk = when {
+                            navFocused -> FnColors.FocusOnSolid
+                            isSelected -> FnColors.Coral
+                            else -> FnColors.Muted
+                        }
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .background(navFill, RoundedCornerShape(FnRadius.md))
+                                .border(
+                                    if (navFocused || isSelected) 1.5.dp else 0.5.dp,
+                                    navStroke,
+                                    RoundedCornerShape(FnRadius.md),
+                                )
+                                // 焦点修饰符必须写在 clickable 之前：clickable 自己就是焦点节点，
+                                // 再叠一层 focusable() 会造出第二个节点，焦点落在 clickable 那个上，
+                                // 而 requestFocus / onFocusChanged / onPreviewKeyEvent 挂在另一个上——
+                                // 表现就是「焦点看不见、上下列表不动、右键也不进右栏」。
+                                .focusRequester(navRequesters.getValue(section))
+                                .onFocusChanged {
+                                    if (it.isFocused) {
+                                        // 守卫：焦点从右栏「跳」回左栏时，落点必须就是当前分组。
+                                        // 落到别的项说明方向键目标失效后 Compose 退化成几何搜索，
+                                        // 按垂直距离猜了一个（实测会落到「关于」「缓存」）。
+                                        // 这时不切分组，直接把焦点送回右栏，避免一次误触就换了内容。
+                                        // moveNav 是先改 selected 再请求焦点，所以正常上下移动不会命中这里。
+                                        if (focusedNav == null && section != selected) {
+                                            enterScope.launch {
+                                                repeat(3) {
+                                                    withFrameNanos { }
+                                                    val back = firstFocusOf(selected) ?: return@launch
+                                                    if (runCatching { back.requestFocus() }.isSuccess) return@launch
+                                                }
                                             }
-                                            left = cacheFocuses.getOrNull(index - 1)
-                                                ?: FocusRequester.Cancel
-                                            right = cacheFocuses.getOrNull(index + 1)
-                                                ?: clearCacheFocus
+                                            return@onFocusChanged
                                         }
-                                        .focusRequester(cacheFocuses[index]),
+                                        focusedNav = section
+                                        if (!isSelected) selected = section
+                                    } else if (focusedNav == section) {
+                                        focusedNav = null
+                                    }
+                                }
+                                .onPreviewKeyEvent { event ->
+                                    // 遥控器按一下 = KeyDown + KeyUp 两个事件，两者的 event.key 相同。
+                                    // 不做类型过滤的话 moveNav 会被执行两次，表现就是「按一下跳两格」。
+                                    val known = event.key == Key.DirectionDown ||
+                                        event.key == Key.DirectionUp ||
+                                        event.key == Key.DirectionRight ||
+                                        event.key == Key.DirectionLeft ||
+                                        event.key == Key.Enter ||
+                                        event.key == Key.DirectionCenter
+                                    // 抬起事件只吞掉、不再执行动作（吞掉是为了别让下层 clickable 再补一刀）。
+                                    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent known
+                                    when (event.key) {
+                                        Key.DirectionDown -> { moveNav(+1); true }
+                                        Key.DirectionUp -> { moveNav(-1); true }
+                                        Key.DirectionRight -> { enterContent(); true }
+                                        // 确定/OK 也能直接展开右侧内容（与右键同效），不用再按右键。
+                                        Key.Enter, Key.DirectionCenter -> { enterContent(); true }
+                                        // 左栏已经是最左边一列，左键就地吃掉。
+                                        // 原来返回 false 会一路冒泡到顶层导航条，而导航是「焦点落到即切页」，
+                                        // 表现就是「在设置页任意一项按左，整页被切回首页」。
+                                        Key.DirectionLeft -> true
+                                        else -> false
+                                    }
+                                }
+                                .clickable { selected = section },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(6.dp)
+                                    .background(
+                                        if (navFocused || isSelected) navInk else navInk.copy(alpha = 0.4f),
+                                        CircleShape,
+                                    ),
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                section.title,
+                                fontSize = 15.sp,
+                                lineHeight = 18.sp,
+                                fontWeight = if (navFocused || isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                color = navInk,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+
+                // —— 右侧内容区 ——
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .verticalScroll(rememberScrollState())
+                        .background(SettingsPanel, RoundedCornerShape(FnRadius.md))
+                        .border(1.dp, SettingsBorderColor, RoundedCornerShape(FnRadius.md))
+                        .padding(horizontal = 28.dp, vertical = 24.dp),
+                ) {
+                    Text(selected.title, fontSize = 18.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(selected.subtitle, fontSize = 12.sp, lineHeight = 16.sp, color = FnColors.Muted)
+                    Spacer(Modifier.height(GAP_TITLE))
+
+                    when (selected) {
+                        SettingsSection.PLAYER -> {
+                            GroupLabel("样式")
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                SettingsChoiceButton(
+                                    label = "CD 模式",
+                                    selected = preferences.playerStyle == PlayerStyle.Cover,
+                                    onClick = { container.appPreferences.setPlayerStyle(PlayerStyle.Cover) },
+                                    modifier = Modifier
+                                        .width(140.dp)
+                                        .focusProperties { right = posterStyleFocus; left = navFocusOf(SettingsSection.PLAYER) }
+                                        .focusRequester(coverStyleFocus),
+                                )
+                                SettingsChoiceButton(
+                                    label = "大海报模式",
+                                    selected = preferences.playerStyle == PlayerStyle.Poster,
+                                    onClick = { container.appPreferences.setPlayerStyle(PlayerStyle.Poster) },
+                                    modifier = Modifier
+                                        .width(140.dp)
+                                        .focusProperties { left = coverStyleFocus; right = lyricsStyleFocus }
+                                        .focusRequester(posterStyleFocus),
+                                )
+                                SettingsChoiceButton(
+                                    label = "迷你歌词",
+                                    selected = preferences.playerStyle == PlayerStyle.Lyrics,
+                                    onClick = { container.appPreferences.setPlayerStyle(PlayerStyle.Lyrics) },
+                                    modifier = Modifier
+                                        .width(140.dp)
+                                        .focusProperties { left = posterStyleFocus; right = FocusRequester.Cancel }
+                                        .focusRequester(lyricsStyleFocus),
                                 )
                             }
+                            Spacer(Modifier.height(GAP_GROUP))
+                            GroupLabel("界面缩放")
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                SettingsChoiceButton(
+                                    label = "紧凑",
+                                    selected = preferences.uiScale == UiScale.Compact,
+                                    onClick = { container.appPreferences.setUiScale(UiScale.Compact) },
+                                    modifier = Modifier
+                                        .width(140.dp)
+                                        .focusProperties { right = standardScaleFocus; left = navFocusOf(SettingsSection.PLAYER) }
+                                        .focusRequester(compactScaleFocus),
+                                )
+                                SettingsChoiceButton(
+                                    label = "标准",
+                                    selected = preferences.uiScale == UiScale.Standard,
+                                    onClick = { container.appPreferences.setUiScale(UiScale.Standard) },
+                                    modifier = Modifier
+                                        .width(140.dp)
+                                        .focusProperties { left = compactScaleFocus; right = relaxedScaleFocus }
+                                        .focusRequester(standardScaleFocus),
+                                )
+                                SettingsChoiceButton(
+                                    label = "宽松",
+                                    selected = preferences.uiScale == UiScale.Relaxed,
+                                    onClick = { container.appPreferences.setUiScale(UiScale.Relaxed) },
+                                    modifier = Modifier
+                                        .width(140.dp)
+                                        .focusProperties { left = standardScaleFocus; right = FocusRequester.Cancel }
+                                        .focusRequester(relaxedScaleFocus),
+                                )
+                            }
+                            Spacer(Modifier.height(GAP_GROUP))
+                            GroupLabel("歌词")
+                            SettingsCheckbox(
+                                label = "在线歌词匹配",
+                                selected = preferences.onlineLyricsMatchingEnabled,
+                                onClick = {
+                                    container.appPreferences.setOnlineLyricsMatchingEnabled(
+                                        !preferences.onlineLyricsMatchingEnabled,
+                                    )
+                                },
+                                modifier = Modifier
+                                    .focusProperties { left = navFocusOf(SettingsSection.PLAYER); right = FocusRequester.Cancel }
+                                    .focusRequester(onlineLyricsFocus),
+                            )
+                            Spacer(Modifier.height(GAP_GROUP))
+                            GroupLabel("播放行为")
+                            SettingsCheckbox(
+                                label = "按返回键退出时在后台继续播放",
+                                selected = preferences.backgroundContinueOnExit,
+                                onClick = {
+                                    container.appPreferences.setBackgroundContinueOnExit(
+                                        !preferences.backgroundContinueOnExit,
+                                    )
+                                },
+                                modifier = Modifier
+                                    .focusProperties { left = navFocusOf(SettingsSection.PLAYER); right = FocusRequester.Cancel }
+                                    .focusRequester(backgroundContinueFocus),
+                            )
                         }
-                        Text(
-                            "当前 ${formatBytes(usage.totalBytes)}（图片 ${formatBytes(usage.artworkBytes)} / 资料 ${formatBytes(usage.indexBytes)}）",
-                            color = FnColors.Muted,
-                            fontSize = 10.sp,
-                            lineHeight = 12.sp,
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    SettingsActionButton(
-                        label = "清除图片和资料缓存",
-                        onClick = {
-                            scope.launch {
-                                container.authenticatedActions.clearAllEvictableCaches()
-                                refreshUsage()
-                            }
-                        },
-                        modifier = Modifier
-                            .width(166.dp)
-                            .focusProperties {
-                                up = onlineLyricsFocus
-                                // 下一站是「清除歌曲缓存」，不要跨过它，否则该按钮遥控器永远到不了
-                                down = songCacheClearFocus
-                                left = cacheFocuses.last()
-                                right = FocusRequester.Cancel
-                            }
-                            .focusRequester(clearCacheFocus),
-                    )
-                }
-                SettingsDivider()
-                Row(
-                    Modifier.fillMaxWidth().height(80.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "歌曲磁盘缓存",
-                        color = FnColors.Muted,
-                        fontSize = 12.sp,
-                        modifier = Modifier.width(144.dp),
-                    )
-                    Column(verticalArrangement = Arrangement.Center) {
-                        Text(
-                            "当前 ${formatBytes(songCacheBytes)}",
-                            color = FnColors.Muted,
-                            fontSize = 11.sp,
-                            lineHeight = 14.sp,
-                        )
-                        Text(
-                            "已播放歌曲的本地缓存",
-                            color = FnColors.Muted.copy(alpha = 0.7f),
-                            fontSize = 10.sp,
-                            lineHeight = 12.sp,
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    SettingsActionButton(
-                        label = "清除歌曲缓存",
-                        onClick = {
-                            container.playbackController.clearSongCache()
-                            scope.launch { refreshSongCacheUsage() }
-                        },
-                        modifier = Modifier
-                            .width(166.dp)
-                            .focusProperties {
-                                up = clearCacheFocus
-                                down = if (container.updateController.enabled) {
-                                    updateFocus
-                                } else {
-                                    remoteGuideFocus
+
+                        SettingsSection.AUDIO_FX -> {
+                            // 不再有独立开关：选「无」= 关音效，选其它任意一档 = 开音效并套用该曲线。
+                            // 和播放页进度条旁的音效选择器共用 AudioFxController 这一份状态。
+                            GroupLabel("音效模式")
+                            Text(
+                                "选中任意一档即开启音效；选「无」即关闭音效。此处的选择与播放条上的音效按钮实时同步。",
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp,
+                                color = FnColors.Muted,
+                            )
+                            Spacer(Modifier.height(GAP_DESC))
+                            val presets = FxPreset.selectable
+                            val perRow = 5
+                            presets.chunked(perRow).forEachIndexed { rowIndex, rowPresets ->
+                                if (rowIndex > 0) Spacer(Modifier.height(GAP_ROW))
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    rowPresets.forEachIndexed { columnIndex, preset ->
+                                        val index = rowIndex * perRow + columnIndex
+                                        SettingsChoiceButton(
+                                            label = preset.displayName,
+                                            selected = fxSettings.effectLabel == preset.displayName,
+                                            onClick = { applyFx(fxSettings.selecting(preset)) },
+                                            modifier = Modifier
+                                                .width(96.dp)
+                                                .focusProperties {
+                                                    left = fxPresetFocuses.getOrNull(index - 1)
+                                                        ?.takeIf { columnIndex > 0 } ?: navFocusOf(SettingsSection.AUDIO_FX)
+                                                    right = fxPresetFocuses.getOrNull(index + 1)
+                                                        ?.takeIf { columnIndex < rowPresets.lastIndex }
+                                                        ?: FocusRequester.Cancel
+                                                    down = fxPresetFocuses.getOrNull(index + perRow)
+                                                        ?: FocusRequester.Cancel
+                                                    up = fxPresetFocuses.getOrNull(index - perRow)
+                                                        ?: FocusRequester.Cancel
+                                                }
+                                                .focusRequester(fxPresetFocuses[index]),
+                                        )
+                                    }
                                 }
-                                left = cacheFocuses.last()
-                                right = FocusRequester.Cancel
                             }
-                            .focusRequester(songCacheClearFocus),
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(14.dp))
-            Text("关于", fontSize = 16.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(10.dp))
-            AboutSection(
-                updateState = updateState,
-                updateEnabled = container.updateController.enabled,
-                lastCheckedAt = lastCheckedAt,
-                updateFocus = updateFocus,
-                updateUpFocus = songCacheClearFocus,
-                updateDownFocus = remoteGuideFocus,
-                onUpdateAction = {
-                    if (updateState is UpdateUiState.Available) {
-                        container.updateController.startDownload()
-                    } else {
-                        container.updateController.checkManually()
-                    }
-                },
-            )
-
-            Spacer(Modifier.height(14.dp))
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .height(64.dp)
-                    .background(SettingsPanel, RoundedCornerShape(FnRadius.md))
-                    .border(1.dp, SettingsBorderColor, RoundedCornerShape(FnRadius.md))
-                    .padding(horizontal = 22.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text("按键说明", color = FnColors.Muted, fontSize = 12.sp, lineHeight = 14.sp)
-                    Text(
-                        "查看播放页的遥控器按键用法",
-                        color = FnColors.Muted.copy(alpha = 0.7f),
-                        fontSize = 10.sp,
-                        lineHeight = 12.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                SettingsActionButton(
-                    label = "查看按键说明",
-                    onClick = { showRemoteGuide = true },
-                    modifier = Modifier
-                        .width(150.dp)
-                        .focusProperties {
-                            up = if (container.updateController.enabled) updateFocus else songCacheClearFocus
-                            down = FocusRequester.Cancel
-                            left = FocusRequester.Cancel
-                            right = FocusRequester.Cancel
                         }
-                        .focusRequester(remoteGuideFocus),
-                )
-            }
-            if (showRemoteGuide) {
-                RemoteControlGuide { showRemoteGuide = false }
+
+                        SettingsSection.PLATFORMS -> {
+                            // 平台列表 + 在线音源直接铺在设置页内，不再进二级「管理平台与音源」页。
+                            // 滚动由右侧内容区的 verticalScroll 统一处理，这里不再单独套滚动容器。
+                            com.yueyin.tv.ui.connect.PlatformManageContent(
+                                onAdd = onAddPlatform,
+                                onRelogin = onRelogin,
+                                onEdit = onEdit,
+                                onDelete = onDelete,
+                                onSignOutFn = onSignOutFn,
+                                fnSessionActive = fnSessionActive,
+                                onAddSource = onAddSource,
+                                autoRequestFocus = false,
+                                externalFirstFocus = platformFirstFocus,
+                                // 左键出口：平台卡 / 新增平台 / 添加音源都回到左栏「平台」。
+                                navExitFocus = navFocusOf(SettingsSection.PLATFORMS),
+                            )
+                        }
+
+                        SettingsSection.CACHE -> {
+                            GroupLabel("图片磁盘缓存上限")
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                CacheBudget.entries.forEachIndexed { index, budget ->
+                                    SettingsChoiceButton(
+                                        label = "${budget.megabytes} MB",
+                                        selected = preferences.cacheBudget == budget,
+                                        onClick = {
+                                            scope.launch {
+                                                container.appPreferences.setCacheBudget(budget)
+                                                container.musicRepository.applyArtworkBudget()
+                                                refreshUsage()
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .width(104.dp)
+                                            .focusProperties {
+                                                left = cacheFocuses.getOrNull(index - 1) ?: navFocusOf(SettingsSection.CACHE)
+                                                right = cacheFocuses.getOrNull(index + 1) ?: clearCacheFocus
+                                            }
+                                            .focusRequester(cacheFocuses[index]),
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "当前 ${formatBytes(usage.totalBytes)}（图片 ${formatBytes(usage.artworkBytes)} / 资料 ${formatBytes(usage.indexBytes)}）",
+                                color = FnColors.Muted,
+                                fontSize = 11.sp,
+                                lineHeight = 14.sp,
+                            )
+                            Spacer(Modifier.height(GAP_BLOCK))
+                            SettingsActionButton(
+                                label = "清除图片和资料缓存",
+                                onClick = {
+                                    scope.launch {
+                                        container.authenticatedActions.clearAllEvictableCaches()
+                                        refreshUsage()
+                                    }
+                                },
+                                modifier = Modifier
+                                    .width(190.dp)
+                                    .focusProperties {
+                                        // 左键回到左栏本分组。原先指向 cacheFocuses.last()，按左会跳到最右边的 MB 档位，
+                                        // 看起来就是「回不到缓存」；不写的话会走几何搜索，直接落到下面的「关于」。
+                                        left = navFocusOf(SettingsSection.CACHE)
+                                        right = FocusRequester.Cancel
+                                        down = songCacheClearFocus
+                                    }
+                                    .focusRequester(clearCacheFocus),
+                            )
+                            Spacer(Modifier.height(GAP_GROUP))
+                            GroupLabel("歌曲磁盘缓存")
+                            Text(
+                                "当前 ${formatBytes(songCacheBytes)} · 已播放歌曲的本地缓存",
+                                color = FnColors.Muted,
+                                fontSize = 11.sp,
+                                lineHeight = 14.sp,
+                            )
+                            Spacer(Modifier.height(GAP_DESC))
+                            SettingsActionButton(
+                                label = "清除歌曲缓存",
+                                onClick = {
+                                    container.playbackController.clearSongCache()
+                                    scope.launch { refreshSongCacheUsage() }
+                                },
+                                modifier = Modifier
+                                    .width(190.dp)
+                                    .focusProperties {
+                                        // 同上：不显式指定左键，几何搜索会落到左栏最靠近的「关于」。
+                                        left = navFocusOf(SettingsSection.CACHE)
+                                        right = FocusRequester.Cancel
+                                        up = clearCacheFocus
+                                    }
+                                    .focusRequester(songCacheClearFocus),
+                            )
+                        }
+
+                        SettingsSection.ABOUT -> {
+                            AboutSection(
+                                updateState = updateState,
+                                updateEnabled = container.updateController.enabled,
+                                lastCheckedAt = lastCheckedAt,
+                                updateFocus = updateFocus,
+                                // 更新按钮在卡片最上行：左键/上键都回左栏「关于」。
+                                // 原先 up 与 left 都是 Cancel，按上去、按左去都没反应，焦点被锁死在卡片里。
+                                updateUpFocus = navFocusOf(SettingsSection.ABOUT),
+                                updateDownFocus = remoteGuideFocus,
+                                updateLeftFocus = navFocusOf(SettingsSection.ABOUT),
+                                onUpdateAction = {
+                                    if (updateState is UpdateUiState.Available) {
+                                        container.updateController.startDownload()
+                                    } else {
+                                        container.updateController.checkManually()
+                                    }
+                                },
+                            )
+                            Spacer(Modifier.height(GAP_BLOCK))
+                            SettingsActionButton(
+                                label = "查看按键说明",
+                                onClick = { showRemoteGuide = true },
+                                modifier = Modifier
+                                    .width(150.dp)
+                                    .focusProperties {
+                                        up = if (container.updateController.enabled) updateFocus else FocusRequester.Cancel
+                                        // 显式指定，别依赖几何搜索落到哪一项。
+                                        left = navFocusOf(SettingsSection.ABOUT)
+                                        right = FocusRequester.Cancel
+                                    }
+                                    .focusRequester(remoteGuideFocus),
+                            )
+                        }
+                    }
+                }
             }
         }
+        if (showRemoteGuide) {
+            RemoteControlGuide { showRemoteGuide = false }
+        }
     }
+}
+
+@Composable
+private fun GroupLabel(text: String) {
+    Text(text, fontSize = 13.sp, lineHeight = 16.sp, color = FnColors.Muted, fontWeight = FontWeight.SemiBold)
+    Spacer(Modifier.height(GAP_ROW))
 }
 
 @Composable
@@ -485,24 +682,24 @@ private fun SettingsChoiceButton(
         scale = ButtonDefaults.scale(focusedScale = 1f),
         colors = ButtonDefaults.colors(
             containerColor = if (selected) SettingsSelected else SettingsControl,
-            contentColor = FnColors.Text,
-            // 聚焦≠选中：未选中的聚焦用中性蓝，避免被误认为“也被选中”
-            focusedContainerColor = if (selected) SettingsSelected else SettingsControlFocused,
-            focusedContentColor = FnColors.Text,
-            pressedContainerColor = FnColors.FocusFill,
-            pressedContentColor = FnColors.Text,
+            contentColor = if (selected) FnColors.Coral else FnColors.Text,
+            // 焦点一律珊瑚实心：和选中态（浅底+橙字）一眼可分，全页统一。
+            focusedContainerColor = FnColors.FocusSolid,
+            focusedContentColor = FnColors.FocusOnSolid,
+            pressedContainerColor = FnColors.FocusSolid,
+            pressedContentColor = FnColors.FocusOnSolid,
         ),
         border = ButtonDefaults.border(
             border = Border(
                 BorderStroke(if (selected) 1.5.dp else 0.5.dp, if (selected) FnColors.Coral else SettingsControlBorder),
                 shape = shape,
             ),
-            // 聚焦边框：选中项用珊瑚橙，未选中项用暖金，一眼可辨
+            // 实心焦点上用一道深色细边勾出轮廓，避免整块糊成一片。
             focusedBorder = Border(
-                BorderStroke(1.5.dp, if (selected) FnColors.Coral else FnColors.Amber),
+                BorderStroke(1.5.dp, FnColors.FocusOnSolid.copy(alpha = 0.35f)),
                 shape = shape,
             ),
-            pressedBorder = Border(BorderStroke(3.dp, FnFocus.ringColor), shape = shape),
+            pressedBorder = Border(BorderStroke(1.5.dp, FnColors.FocusOnSolid.copy(alpha = 0.35f)), shape = shape),
         ),
         contentPadding = PaddingValues(horizontal = 13.dp, vertical = 0.dp),
     ) {
@@ -530,11 +727,11 @@ internal fun SettingsActionButton(
         scale = ButtonDefaults.scale(focusedScale = 1f),
         colors = ButtonDefaults.colors(
             containerColor = if (emphasis) FnColors.Coral else SettingsControl,
-            contentColor = FnColors.Text,
-            focusedContainerColor = FnColors.Coral,
-            focusedContentColor = FnColors.Text,
-            pressedContainerColor = FnColors.Coral,
-            pressedContentColor = FnColors.Text,
+            contentColor = if (emphasis) FnColors.FocusOnSolid else FnColors.Text,
+            focusedContainerColor = FnColors.FocusSolid,
+            focusedContentColor = FnColors.FocusOnSolid,
+            pressedContainerColor = FnColors.FocusSolid,
+            pressedContentColor = FnColors.FocusOnSolid,
             disabledContainerColor = if (emphasis) FnColors.Coral.copy(alpha = 0.34f) else FnColors.SurfaceAlt.copy(alpha = 0.55f),
             disabledContentColor = FnColors.Muted,
         ),
@@ -543,8 +740,11 @@ internal fun SettingsActionButton(
                 BorderStroke(if (emphasis) 1.5.dp else 0.5.dp, if (emphasis) FnColors.Coral else SettingsControlBorder),
                 shape = shape,
             ),
-            focusedBorder = Border(BorderStroke(3.dp, FnFocus.ringColor), shape = shape),
-            pressedBorder = Border(BorderStroke(3.dp, FnFocus.ringColor), shape = shape),
+            focusedBorder = Border(
+                BorderStroke(1.5.dp, FnColors.FocusOnSolid.copy(alpha = 0.35f)),
+                shape = shape,
+            ),
+            pressedBorder = Border(BorderStroke(1.5.dp, FnColors.FocusOnSolid.copy(alpha = 0.35f)), shape = shape),
         ),
         contentPadding = PaddingValues(0.dp),
     ) {
@@ -565,16 +765,43 @@ internal fun SettingsCheckbox(
     modifier: Modifier = Modifier,
 ) {
     var focused by remember { mutableStateOf(false) }
+    // 与按钮同一套语言：焦点 = 珊瑚实心；选中但焦点不在 = 珊瑚浅底 + 珊瑚边。
+    val ink = when {
+        focused -> FnColors.FocusOnSolid
+        selected -> FnColors.Coral
+        else -> FnColors.Text
+    }
+    val boxFill = when {
+        selected && focused -> FnColors.FocusOnSolid
+        selected -> FnColors.Coral
+        else -> Color.Transparent
+    }
+    val boxStroke = when {
+        focused -> FnColors.FocusOnSolid
+        selected -> FnColors.Coral
+        else -> FnColors.Muted
+    }
     Row(
         modifier = modifier
             .focusBringIntoView()
             .width(320.dp)
-            .height(44.dp)
+            .height(34.dp)
             .onFocusChanged { focused = it.isFocused }
-            .background(SettingsControl, RoundedCornerShape(FnRadius.sm))
+            .background(
+                when {
+                    focused -> FnColors.FocusSolid
+                    selected -> SettingsSelected
+                    else -> SettingsControl
+                },
+                RoundedCornerShape(FnRadius.sm),
+            )
             .border(
-                if (focused) 1.5.dp else 0.5.dp,
-                if (focused) FnColors.Coral else SettingsControlBorder,
+                if (focused || selected) 1.5.dp else 0.5.dp,
+                when {
+                    focused -> FnColors.FocusOnSolid.copy(alpha = 0.35f)
+                    selected -> FnColors.Coral
+                    else -> SettingsControlBorder
+                },
                 RoundedCornerShape(FnRadius.sm),
             )
             .focusable()
@@ -600,16 +827,23 @@ internal fun SettingsCheckbox(
         Box(
             Modifier
                 .size(16.dp)
-                .background(if (selected) FnColors.Warning else Color.Transparent, RoundedCornerShape(2.dp))
-                .border(1.5.dp, if (selected) FnColors.Warning else FnColors.Muted, RoundedCornerShape(2.dp)),
+                .background(boxFill, RoundedCornerShape(2.dp))
+                .border(1.5.dp, boxStroke, RoundedCornerShape(2.dp)),
             contentAlignment = Alignment.Center,
         ) {
             if (selected) {
-                Text("✓", color = FnColors.Background, fontSize = 12.sp, lineHeight = 12.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "✓",
+                    color = if (focused) FnColors.FocusSolid else FnColors.FocusOnSolid,
+                    fontSize = 12.sp,
+                    lineHeight = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                )
             }
         }
         Text(
             label,
+            color = ink,
             fontSize = 12.sp,
             lineHeight = 14.sp,
             fontWeight = FontWeight.SemiBold,

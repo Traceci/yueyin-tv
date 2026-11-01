@@ -298,7 +298,7 @@ private fun UpdateAvailableDialog(state: UpdateUiState.Available, controller: Up
             }
         }
     }
-    LaunchedEffect(Unit) { updateFocus.requestFocus() }
+    LaunchedEffect(Unit) { runCatching { updateFocus.requestFocus() } }
 }
 
 @Composable
@@ -495,7 +495,7 @@ private fun UpdateStatusDialog(
                         ) { Text(secondaryLabel) }
                     }
                 }
-                LaunchedEffect(Unit) { firstFocus.requestFocus() }
+                LaunchedEffect(Unit) { runCatching { firstFocus.requestFocus() } }
             }
         }
     }

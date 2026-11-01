@@ -46,6 +46,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -80,6 +81,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -160,6 +162,9 @@ import com.yueyin.tv.core.model.playback.MAX_ACTIVE_QUEUE_ITEMS
 import com.yueyin.tv.core.model.playback.QueuePageItem
 import com.yueyin.tv.core.model.playback.QueuePageSegment
 import com.yueyin.tv.core.model.playback.boundedQueueWindow
+import com.yueyin.tv.core.audiofx.FxPreset
+import com.yueyin.tv.core.audiofx.FxSettings
+import com.yueyin.tv.core.playback.AudioFxController
 import com.yueyin.tv.core.playback.PlaybackUiState
 import com.yueyin.tv.core.playback.PlaybackProgressState
 import com.mocharealm.accompanist.lyrics.core.model.SyncedLyrics
@@ -269,6 +274,7 @@ internal fun ImmersivePlayer(
     container: AuthenticatedAppDependencies,
     playback: PlaybackUiState,
     visualContinuity: PlayerVisualContinuity,
+    onBack: () -> Unit,
     onExitRoam: () -> Unit,
 ) {
     val preferences by container.appPreferences.state.collectAsStateWithLifecycle()
@@ -290,8 +296,13 @@ internal fun ImmersivePlayer(
     val favoriteLibraryState by container.musicRepository.favoriteState.collectAsStateWithLifecycle()
     val currentFavorite = favoriteLibraryState.statuses[playback.mediaId] ?: metadata?.isFavorite ?: false
     val favoritePending = playback.mediaId in favoriteLibraryState.pending
-    var controlsVisible by remember { mutableStateOf(false) }
+    // 进入播放页先显示控制条：以前是"进来自动隐藏"，用户点「播放全部」后看到一屏只有封面、
+    // 没有任何控件，很容易以为"播放页没打开"。5 秒后自动收起，沉浸效果不变。
+    var controlsVisible by remember { mutableStateOf(true) }
     var queueVisible by remember { mutableStateOf(false) }
+    // 播放条上的音效选择面板：选「无」= 关，选其它 = 开并套用该曲线（和设置页共用一份状态）
+    var fxPanelVisible by remember { mutableStateOf(false) }
+    val fxSettings by AudioFxController.state.collectAsStateWithLifecycle()
     var consumeBackKeyUp by remember { mutableStateOf(false) }
     var interactionEpoch by remember { mutableStateOf(0) }
     var osdMessage by remember { mutableStateOf<String?>(null) }
@@ -317,6 +328,8 @@ internal fun ImmersivePlayer(
     val favoriteFocus = remember { FocusRequester() }
     val queueFocus = remember { FocusRequester() }
     val exitRoamFocus = remember { FocusRequester() }
+    val fxFocus = remember { FocusRequester() }
+    val fxPresetFocuses = remember { List(FxPreset.selectable.size) { FocusRequester() } }
     val statusRetryFocus = remember { FocusRequester() }
     val context = LocalContext.current
     val roaming = playback.queueKind == QueueKind.Roam
@@ -334,8 +347,9 @@ internal fun ImmersivePlayer(
     }
     fun dismissPlayerChrome() {
         queueVisible = false
+        fxPanelVisible = false
         controlsVisible = false
-        playerFocus.requestFocus()
+        runCatching { playerFocus.requestFocus() }
     }
     val transportActions = PlayerTransportActions(
         seekBy = { deltaMs -> container.playbackController.seekBy(deltaMs) },
@@ -383,21 +397,31 @@ internal fun ImmersivePlayer(
         canRetryPresentation = presentation.canRetry,
         playbackError = playback.error?.displayName,
     )?.retry != null
-    LaunchedEffect(interactionEpoch, controlsVisible, queueVisible) {
-        if (controlsVisible && !queueVisible) {
+    LaunchedEffect(interactionEpoch, controlsVisible, queueVisible, fxPanelVisible) {
+        // 音效面板开着的时候不能让 chrome 自动收起，否则面板刚弹出就被藏起来
+        if (controlsVisible && !queueVisible && !fxPanelVisible) {
             delay(5_000)
             controlsVisible = false
         }
     }
-    LaunchedEffect(controlsVisible, queueVisible) {
+    LaunchedEffect(controlsVisible, queueVisible, fxPanelVisible) {
         when {
             queueVisible -> Unit
-            controlsVisible -> playFocus.requestFocus()
-            else -> playerFocus.requestFocus()
+            fxPanelVisible -> {
+                // 面板打开时把焦点交给当前音效档，遥控器一下就能左右换
+                val index = FxPreset.selectable.indexOfFirst { it.displayName == fxSettings.effectLabel }
+                runCatching { fxPresetFocuses.getOrNull(index.coerceAtLeast(0))?.requestFocus() }
+            }
+            // 控制层重新出现时，初始焦点交给播放按钮：由 PlayerControlOverlay 在挂载后自行请求，
+            // 这里不直接 requestFocus，避免控件尚未挂载时抛 “FocusRequester is not initialized” 使 App 重启。
+            controlsVisible -> Unit
+            else -> runCatching { playerFocus.requestFocus() }
         }
     }
     LaunchedEffect(roaming) {
-        if (!roaming && controlsVisible) playFocus.requestFocus()
+        // 同样必须防「控件层尚未挂载」：playFocus 属于控制浮层，浮层没组合出来时
+        // requestFocus() 会抛 FocusRequester is not initialized，直接把 App 打重启。
+        if (!roaming && controlsVisible) runCatching { playFocus.requestFocus() }
     }
     LaunchedEffect(queueVisible, playback.queueItems.isEmpty()) {
         if (queueVisible && playback.queueItems.isEmpty()) {
@@ -412,15 +436,27 @@ internal fun ImmersivePlayer(
         delay(osdDurationMs)
         osdMessage = null
     }
-    BackHandler(queueVisible || controlsVisible) {
-        dismissPlayerChrome()
+    // 播放页必须自己把返回键管到底。
+    // 以前这个 BackHandler 只在控制条/队列/音效面板可见时启用，自动收起（5 秒）后就失效，
+    // 返回事件冒泡到顶层：先弹搜索页、再弹首页、再来一次「再按一次退出」——连着按几下 App 就没了。
+    // 现在收尾逻辑改成：有浮层就先关浮层，没浮层才退出播放页，永远不往上冒。
+    BackHandler {
+        if (fxPanelVisible) {
+            fxPanelVisible = false
+            controlsVisible = true
+            runCatching { fxFocus.requestFocus() }
+        } else if (queueVisible || controlsVisible) {
+            dismissPlayerChrome()
+        } else {
+            onBack()
+        }
     }
     Box(
         Modifier.fillMaxSize()
             .background(FnColors.Background)
             .focusRequester(playerFocus)
             .dismissPlayerChromeOnBack(
-                chromeVisible = controlsVisible || queueVisible,
+                chromeVisible = controlsVisible || queueVisible || fxPanelVisible,
                 consumeBackKeyUp = consumeBackKeyUp,
                 setConsumeBackKeyUp = { consumeBackKeyUp = it },
                 onDismiss = ::dismissPlayerChrome,
@@ -455,6 +491,10 @@ internal fun ImmersivePlayer(
                 PlayerPosterBackdrop(posterPanelColor, Modifier.fillMaxSize())
             }
             else -> PlayerBackdrop(ambienceColor, Modifier.fillMaxSize())
+        }
+        // 呼吸光晕只在 CD 唱片模式开启：光打在背板上、内容之下，跟着唱片一起呼吸。
+        if (!poster && !lyrics) {
+            AmbientGlowOverlay(ambienceColor, Modifier.fillMaxSize())
         }
         PlayerMainContent(
             poster = poster,
@@ -505,6 +545,7 @@ internal fun ImmersivePlayer(
                     favoriteFocus = favoriteFocus,
                     modeFocus = modeFocus,
                     queueFocus = queueFocus,
+                    fxFocus = fxFocus,
                     exitRoamFocus = exitRoamFocus,
                     statusRetryFocus = statusRetryFocus,
                     statusRetryAvailable = statusRetryAvailable,
@@ -512,6 +553,7 @@ internal fun ImmersivePlayer(
                     favorite = currentFavorite,
                     favoriteEnabled = playback.mediaId.isNotBlank() && !favoritePending,
                     queueCount = playback.loadedPlayableCount,
+                    fxLabel = fxSettings.effectLabel,
                     onInteraction = ::revealControls,
                     onSeek = { deltaMs ->
                         // 不可拖动时给出提示，避免"拖了没反应"的困惑
@@ -552,9 +594,37 @@ internal fun ImmersivePlayer(
                         }
                     },
                     onExitRoam = onExitRoam,
+                    onOpenFx = {
+                        revealControls()
+                        fxPanelVisible = true
+                    },
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
             }
+        }
+        if (fxPanelVisible && controlsVisible) {
+            PlayerFxPanel(
+                current = fxSettings,
+                presetFocuses = fxPresetFocuses,
+                onSelect = { preset ->
+                    // 播放条音效面板改为「焦点选中即生效」，不再需要按确定；
+                    // 面板打开时聚焦当前档会触发一次 onFocus，这里仅在确实切换时才更新并提示。
+                    if (fxSettings.effectLabel != preset.displayName) {
+                        // 不再弹「音效：xxx」浮层：面板本身就显示当前档位和开启状态，
+                        // 选一次盖一层黑底提示，反而挡住画面。
+                        AudioFxController.update(fxSettings.selecting(preset))
+                    }
+                },
+                onClose = {
+                    fxPanelVisible = false
+                    runCatching { fxFocus.requestFocus() }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    // 左右留边：窄屏上铺满时面板不至于贴死屏幕边缘。
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 136.dp),
+            )
         }
         PlayerTransportOsd(
             message = osdMessage,
@@ -638,34 +708,9 @@ internal fun Modifier.revealPlayerChromeOnKey(
     }
 }
 
-/** 纯黑/近纯黑封面补底用的暗青灰：0 乘任何放大系数仍是 0，必须单独兜一层。 */
-private val LiftFloor = Color(0xFF252E34)
-
-/**
- * 亮度下限：深色封面（或关闭动态取色时的兜底底色）会让 CD 模式背板糊成一片纯黑，
- * 在亮度层次好的大屏和差一些的小屏上观感差异会非常明显。
- * 这里按比例放大 RGB（保持色相）把亮度抬到 [minLuminance]，已够亮的颜色原样返回，
- * 不会把浅色封面洗白；近纯黑则额外补一层中性灰，保证至少能看出渐变走向。
- */
-private fun Color.liftLuminance(minLuminance: Float): Color {
-    val luma = 0.2126f * red + 0.7152f * green + 0.0722f * blue
-    if (luma >= minLuminance) return this
-    val scale = (minLuminance / luma.coerceAtLeast(0.001f)).coerceAtMost(3.5f)
-    val boosted = Color(
-        red = (red * scale).coerceAtMost(1f),
-        green = (green * scale).coerceAtMost(1f),
-        blue = (blue * scale).coerceAtMost(1f),
-        alpha = alpha,
-    )
-    return if (luma <= 0.01f) {
-        androidx.compose.ui.graphics.lerp(boosted, LiftFloor, 0.62f)
-    } else {
-        boosted
-    }
-}
-
 @Composable
-private fun PlayerBackdrop(targetColor: Color, modifier: Modifier = Modifier) {    var fromColor by remember { mutableStateOf(targetColor) }
+private fun PlayerBackdrop(targetColor: Color, modifier: Modifier = Modifier) {
+    var fromColor by remember { mutableStateOf(targetColor) }
     var toColor by remember { mutableStateOf(targetColor) }
     val progress = remember { Animatable(1f) }
     LaunchedEffect(targetColor) {
@@ -674,7 +719,7 @@ private fun PlayerBackdrop(targetColor: Color, modifier: Modifier = Modifier) { 
         progress.snapTo(0f)
         progress.animateTo(1f, tween(durationMillis = 650, easing = LinearEasing))
     }
-    val animatedColor = androidx.compose.ui.graphics.lerp(fromColor, toColor, progress.value).liftLuminance(0.20f)
+    val animatedColor = androidx.compose.ui.graphics.lerp(fromColor, toColor, progress.value)
     val glowColor = androidx.compose.ui.graphics.lerp(animatedColor, FnColors.Background, 0.30f)
     Canvas(modifier) {
         val w = size.width
@@ -749,6 +794,60 @@ private fun PlayerPosterBackdrop(targetColor: Color, modifier: Modifier = Modifi
 }
 
 /**
+ * CD 唱片模式的呼吸光晕：两盏灯围着黑胶"打架"——
+ * 左下暖光（跟随封面主色）从唱片背后溢出，右上冷光（主色向紫偏移）反向游动，
+ * 8s 一个来回、用 Screen 混合叠在背板上。只画在「背板之上、内容之下」，
+ * 所以光落在背景上，不会糊住封面、歌名和歌词。
+ */
+@Composable
+private fun AmbientGlowOverlay(color: Color, modifier: Modifier = Modifier) {
+    // 8s 去 + 8s 回（共 16s 一个来回）：用 24fps 的慢速相位驱动，三角波还原原来的
+    // RepeatMode.Reverse 行为。相位只在绘制阶段读取，既不会每帧重组，
+    // 也不会每帧都重画两层整屏径向渐变。
+    val phaseState = rememberSlowPhase(periodMillis = 16_000)
+    val coolColor = androidx.compose.ui.graphics.lerp(color, FnColors.Violet, 0.62f)
+    Canvas(modifier) {
+        val raw = phaseState.value
+        val phase = if (raw < 0.5f) raw * 2f else 2f - raw * 2f
+        val w = size.width
+        val h = size.height
+        // 暖光：唱片正后方，随呼吸放大并轻微上浮
+        val warmRadius = w * (0.52f + 0.16f * phase)
+        val warmCenter = androidx.compose.ui.geometry.Offset(w * (0.28f + 0.04f * phase), h * (0.54f - 0.03f * phase))
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    color.copy(alpha = 0.32f + 0.24f * phase),
+                    color.copy(alpha = 0.10f + 0.10f * phase),
+                    Color.Transparent,
+                ),
+                center = warmCenter,
+                radius = warmRadius,
+            ),
+            center = warmCenter,
+            radius = warmRadius,
+            blendMode = BlendMode.Screen,
+        )
+        // 冷光：右上角反向摆动，和暖光错开相位，形成"灯在动"的呼吸感
+        val coolRadius = w * (0.40f + 0.12f * (1f - phase))
+        val coolCenter = androidx.compose.ui.geometry.Offset(w * (0.74f - 0.03f * phase), h * (0.30f + 0.05f * phase))
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    coolColor.copy(alpha = 0.26f + 0.14f * (1f - phase)),
+                    Color.Transparent,
+                ),
+                center = coolCenter,
+                radius = coolRadius,
+            ),
+            center = coolCenter,
+            radius = coolRadius,
+            blendMode = BlendMode.Screen,
+        )
+    }
+}
+
+/**
  * 大海报模式下的毛玻璃背板：把封面放大虚化铺满全屏，右侧叠一层主题色渐变，
  * 让海报与信息面板之间有一层"雾面"过渡（Android 12 以下 blur 自动降级为虚化前的暗化底）。
  */
@@ -777,12 +876,8 @@ private fun PosterBlurredBackdrop(bitmap: Bitmap, panelColor: Color, modifier: M
 }
 
 /**
- * 迷你歌词模式的悬浮光效——4 个跨色轮的光球 + Screen 叠加 + 色相整体旋转。
- *
- * 亮度经过两轮调整：早先为了压住躁动把峰值降到 0.50/0.45/0.41/0.41，
- * 结果在亮度层次较差的电视上整屏看起来"没有光效"，现在回到 0.58/0.52/0.48/0.48，
- * 并把盖在光斑上的两层压暗从 0.55/0.25 收到 0.42/0.18。
- * 关键点：光斑 alpha 与压暗层要一起看，只提 alpha 不降压暗等于白提。
+ * 迷你歌词模式的悬浮光效——回到最初版的形态（4 个跨色轮的光球 + Screen 叠加 + 色相整体旋转），
+ * 只把峰值亮度从 0.55/0.50/0.45/0.45 下调到 0.50/0.45/0.41/0.41（约 −9%）。
  *
  * 关于"跳"：圆心、纵向偏移、半径呼吸必须由**同一个相位角**派生
  * （`sin(angle)` / `cos(angle + 1.7)` / `sin(angle + 0.5)`），
@@ -827,22 +922,20 @@ private fun LiquidBackdrop(modifier: Modifier = Modifier) {
                 blendMode = BlendMode.Screen,
             )
         }
-        blob(t1.value, 14f, 0.62f, 0.58f)
-        blob(t2.value, 190f, 0.62f, 0.52f)
-        blob(t3.value, 265f, 0.60f, 0.48f)
-        blob(t4.value, 35f, 0.65f, 0.48f)
-        // 压暗层只用来托住歌词文字，不能把刚画好的光斑又压回黑色：
-        // 原值 0.55 / 0.25 在亮度层次差的电视上会让整屏看起来"没有光效"。
+        blob(t1.value, 14f, 0.62f, 0.50f)
+        blob(t2.value, 190f, 0.62f, 0.45f)
+        blob(t3.value, 265f, 0.60f, 0.41f)
+        blob(t4.value, 35f, 0.65f, 0.41f)
         drawRect(
             Brush.verticalGradient(
-                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.42f)),
+                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f)),
                 startY = size.height * 0.5f,
                 endY = size.height,
             ),
         )
         drawRect(
             Brush.verticalGradient(
-                colors = listOf(Color.Black.copy(alpha = 0.18f), Color.Transparent),
+                colors = listOf(Color.Black.copy(alpha = 0.25f), Color.Transparent),
                 startY = 0f,
                 endY = size.height * 0.25f,
             ),
@@ -1341,7 +1434,8 @@ internal fun PlayerStatusRetryButton(
     Button(
         onClick = {
             onInteraction()
-            returnFocusRequester.requestFocus()
+            // 重试成功后按钮本身可能立刻被移除，此时再 requestFocus 会抛未初始化异常。
+            runCatching { returnFocusRequester.requestFocus() }
             onRetry()
         },
         modifier = Modifier.height(40.dp)
@@ -1772,7 +1866,7 @@ internal fun PlaybackQueueOverlay(
                     val requester = remember(rowKey) { FocusRequester() }
                     val deleteRequester = remember(rowKey) { FocusRequester() }
                     LaunchedEffect(requestedFocusKey, rowKey) {
-                        if (requestedFocusKey == rowKey) requester.requestFocus()
+                        if (requestedFocusKey == rowKey) runCatching { requester.requestFocus() }
                     }
                     val rowShape = RoundedCornerShape(5.dp)
                     Row(Modifier.fillMaxWidth().height(54.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1967,6 +2061,7 @@ internal fun PlayerControlOverlay(
     favoriteFocus: FocusRequester,
     modeFocus: FocusRequester,
     queueFocus: FocusRequester,
+    fxFocus: FocusRequester,
     exitRoamFocus: FocusRequester,
     statusRetryFocus: FocusRequester,
     statusRetryAvailable: Boolean,
@@ -1974,6 +2069,7 @@ internal fun PlayerControlOverlay(
     favorite: Boolean,
     favoriteEnabled: Boolean,
     queueCount: Int,
+    fxLabel: String,
     onInteraction: () -> Unit,
     onSeek: (Long) -> Unit,
     onPrevious: () -> Unit,
@@ -1983,9 +2079,12 @@ internal fun PlayerControlOverlay(
     onCyclePlayMode: () -> Unit,
     onOpenQueue: () -> Unit,
     onExitRoam: () -> Unit,
+    onOpenFx: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var progressFocused by remember { mutableStateOf(false) }
+    // 控制层挂载后即把焦点交给播放按钮（此时节点已挂载，不会抛 FocusRequester 未初始化）。
+    LaunchedEffect(Unit) { runCatching { playFocus.requestFocus() } }
     val fraction = playerProgressFraction(positionMs, durationMs)
     Column(
         modifier.fillMaxWidth().height(124.dp)
@@ -2024,12 +2123,12 @@ internal fun PlayerControlOverlay(
                         }
                         Key.DirectionDown -> {
                             onInteraction()
-                            playFocus.requestFocus()
+                            runCatching { playFocus.requestFocus() }
                             true
                         }
                         Key.DirectionUp -> {
                             onInteraction()
-                            if (statusRetryAvailable) statusRetryFocus.requestFocus()
+                            if (statusRetryAvailable) runCatching { statusRetryFocus.requestFocus() }
                             true
                         }
                         else -> false
@@ -2161,21 +2260,152 @@ internal fun PlayerControlOverlay(
                     onClick = onNext,
                 )
             }
-            PlayerSideActionButton(
-                label = "退出漫游".takeIf { roaming },
-                glyph = PlayerSideActionGlyph.Queue.takeUnless { roaming },
-                description = if (roaming) "退出漫游" else "播放队列，共 $queueCount 首",
-                focusRequester = if (roaming) exitRoamFocus else queueFocus,
-                upFocus = progressFocus,
-                leftFocus = if (nextEnabled) nextFocus else playFocus,
-                onFocus = onInteraction,
-                onClick = {
-                    onInteraction()
-                    if (roaming) onExitRoam() else onOpenQueue()
-                },
-                emphasized = roaming,
-                modifier = Modifier.align(Alignment.CenterEnd),
+            Row(
+                Modifier.align(Alignment.CenterEnd),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // 音效：和「播放队列」并排放在右侧，直接对着播放条就能换，
+                // 不用退出去进设置页（这也是用户提的主要诉求）。
+                PlayerSideActionButton(
+                    label = if (fxLabel == FxPreset.NONE.displayName) "音效" else "音效·$fxLabel",
+                    description = "音效：$fxLabel，左右切换即生效",
+                    focusRequester = fxFocus,
+                    upFocus = progressFocus,
+                    leftFocus = if (nextEnabled) nextFocus else playFocus,
+                    rightFocus = if (roaming) exitRoamFocus else queueFocus,
+                    selected = fxLabel != FxPreset.NONE.displayName,
+                    onFocus = onInteraction,
+                    onClick = {
+                        onInteraction()
+                        onOpenFx()
+                    },
+                )
+                PlayerSideActionButton(
+                    label = "退出漫游".takeIf { roaming },
+                    glyph = PlayerSideActionGlyph.Queue.takeUnless { roaming },
+                    description = if (roaming) "退出漫游" else "播放队列，共 $queueCount 首",
+                    focusRequester = if (roaming) exitRoamFocus else queueFocus,
+                    upFocus = progressFocus,
+                    leftFocus = if (roaming) fxFocus else fxFocus,
+                    onFocus = onInteraction,
+                    onClick = {
+                        onInteraction()
+                        if (roaming) onExitRoam() else onOpenQueue()
+                    },
+                    emphasized = roaming,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 播放条上的音效选择面板。
+ *
+ * 和设置页共用 [AudioFxController] 的状态：这里选完，设置页立刻显示同一个档；
+ * 设置页改完，播放条上的按钮文案也跟着变。
+ * 「无」不是一个开关，而是列表里的一档——选它就是关音效。
+ */
+@Composable
+private fun PlayerFxPanel(
+    current: FxSettings,
+    presetFocuses: List<FocusRequester>,
+    onSelect: (FxPreset) -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val presets = FxPreset.selectable
+    val glassShape = RoundedCornerShape(16.dp)
+    Column(
+        modifier
+            // 面板宽度跟着屏幕走：TV 上不超过 760dp，窄屏（手机横屏）按可用宽度铺开。
+            // 之前 8 个固定宽度的按钮排成一行时总宽约 760dp，手机屏只有 640dp 上下，
+            // 右侧几档连着「音效」按键一起被推到屏幕外，触屏自然点不到。
+            .widthIn(max = 760.dp)
+            .fillMaxWidth()
+            .shadow(18.dp, glassShape, clip = false)
+            .clip(glassShape)
+            // 毛玻璃质感。说明：面板背后是播放器的视频 Surface，Compose 拿不到它的像素，
+            // 所以做不了真正的背景模糊。这里用「低不透明度 + 上浅下深的冷灰渐变 + 顶部高光描边」
+            // 模拟磨砂玻璃：画面会透上来，不再是原来那块死黑底。
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color(0xD92C333A), Color(0xC014181C)),
+                ),
             )
+            .border(
+                width = 1.dp,
+                brush = Brush.verticalGradient(
+                    listOf(
+                        Color.White.copy(alpha = 0.26f),
+                        Color.White.copy(alpha = 0.04f),
+                    ),
+                ),
+                shape = glassShape,
+            )
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("音效", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = FnColors.Text)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (current.effectLabel == FxPreset.NONE.displayName) "未开启" else "已开启 · ${current.effectLabel}",
+                fontSize = 10.sp,
+                color = if (current.effectLabel == FxPreset.NONE.displayName) FnColors.Muted else FnColors.Coral,
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        // 固定一排：8 档按权重平分面板宽度，屏幕再窄也不会被挤出边界。
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            presets.forEachIndexed { index, preset ->
+                val selected = current.effectLabel == preset.displayName
+                val requester = presetFocuses[index]
+                TvMaterialButton(
+                    onClick = { onSelect(preset) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(34.dp)
+                        // 触屏兜底：TV 组件原本只保证遥控器可用，这里补一层指针点击。
+                        .playerTouchTarget(onClick = { onSelect(preset) })
+                        // 焦点落在某个档上即立即生效（选中即切换），无需再按确定。
+                        .focusProperties {
+                            left = presetFocuses.getOrNull(index - 1) ?: FocusRequester.Cancel
+                            right = presetFocuses.getOrNull(index + 1) ?: FocusRequester.Cancel
+                            up = FocusRequester.Cancel
+                            down = FocusRequester.Cancel
+                        }
+                        .focusRequester(requester)
+                        .onFocusChanged { if (it.isFocused) onSelect(preset) }
+                        .semantics { contentDescription = "音效 ${preset.displayName}" },
+                    scale = ButtonDefaults.scale(focusedScale = 1.08f),
+                    colors = ButtonDefaults.colors(
+                        containerColor = if (selected) Color(0x33FF3B4D) else Color.White.copy(alpha = 0.08f),
+                        contentColor = if (selected) Color(0xFFFF3B4D) else FnColors.Text,
+                        focusedContainerColor = FnColors.Coral,
+                        focusedContentColor = FnColors.Background,
+                        pressedContainerColor = FnColors.Coral,
+                        pressedContentColor = FnColors.Background,
+                    ),
+                    contentPadding = PaddingValues(0.dp),
+                ) {
+                    // tv-material3 的 Button 内容区默认左对齐（Row + Start），
+                    // 档位名字数不一（无/现场/流行…）会各自贴左，看起来忽左忽右。
+                    // 这里显式铺满按钮并用 Box 居中，保证 8 档文字都落在按钮正中。
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            preset.displayName,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -2195,16 +2425,19 @@ private fun PlayerSideActionButton(
     onFocus: () -> Unit,
     onClick: () -> Unit,
 ) {
-    val buttonWidth = if (glyph == null) 104.dp else 36.dp
+    val isText = glyph == null
+    val buttonWidth = if (isText) 76.dp else 36.dp
+    val boxWidth = if (isText) 76.dp else 48.dp
+    val boxHeight = if (isText) 36.dp else 48.dp
     Box(
         modifier
-            .size(width = if (glyph == null) 104.dp else 48.dp, height = 48.dp)
+            .size(width = boxWidth, height = boxHeight)
             .playerTouchTarget(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         TvMaterialButton(
             onClick = onClick,
-            modifier = Modifier.size(width = buttonWidth, height = 29.dp)
+            modifier = Modifier.size(width = buttonWidth, height = 30.dp)
                 .focusProperties {
                     up = upFocus
                     down = FocusRequester.Cancel
@@ -2251,21 +2484,33 @@ private fun PlayerSideActionButton(
     }
 }
 
-private fun Modifier.playerTouchTarget(enabled: Boolean = true, onClick: () -> Unit): Modifier =
-    if (!enabled) {
+/**
+ * 给 TV 控件补一层触屏点击。
+ *
+ * 两个要点：
+ * 1. 手势用 `pointerInput(Unit)` 固定 key，回调走 [rememberUpdatedState]。原来是
+ *    `pointerInput(onClick)`，而 onClick 每次重组都是新 lambda；播放页进度在不停刷新，
+ *    `onClick` 一变指针输入就重启，正在按下的手指被中途取消——触屏表现为「点了没反应」。
+ * 2. 在 Initial 阶段消费按下事件，避免和内部 [TvMaterialButton] 的 clickable 重复触发。
+ */
+@Composable
+internal fun Modifier.playerTouchTarget(enabled: Boolean = true, onClick: () -> Unit): Modifier {
+    val currentOnClick by rememberUpdatedState(onClick)
+    return if (!enabled) {
         this
     } else {
-        pointerInput(onClick) {
+        pointerInput(Unit) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                 down.consume()
                 waitForUpOrCancellation(pass = PointerEventPass.Initial)?.let { up ->
                     up.consume()
-                    onClick()
+                    currentOnClick()
                 }
             }
         }
     }
+}
 
 private enum class PlayerSideActionGlyph {
     HeartOutline,

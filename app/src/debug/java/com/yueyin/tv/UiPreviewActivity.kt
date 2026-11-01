@@ -53,6 +53,15 @@ import com.yueyin.tv.ui.PlayerControlOverlay
 import com.yueyin.tv.ui.PlayerTransportOsd
 import com.yueyin.tv.ui.PlaylistTile
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import java.io.File
+import kotlinx.serialization.json.put
+
 
 /**
  * 仅 debug 变体存在的版式预览页：用假数据渲染真实的首页 Composable，
@@ -73,6 +82,11 @@ class UiPreviewActivity : ComponentActivity() {
                             "allplaylists" -> PreviewAllPlaylists()
                             "allplaylists-grid" -> PreviewAllPlaylistsGrid()
                             "my" -> PreviewMy()
+                            "connect" -> PreviewConnectEmpty()
+                            "sources" -> PreviewSources()
+                            "receive" -> PreviewReceive()
+                            "home-no-library" -> PreviewHomeNoLibrary()
+                            "lxtest" -> PreviewLxTest()
                             else -> PreviewHome()
                         }
                     }
@@ -126,6 +140,7 @@ private fun PreviewPlayer() {
         val favoriteFocus = remember { FocusRequester() }
         val modeFocus = remember { FocusRequester() }
         val queueFocus = remember { FocusRequester() }
+        val fxFocus = remember { FocusRequester() }
         val exitRoamFocus = remember { FocusRequester() }
         val statusRetryFocus = remember { FocusRequester() }
         PlayerControlOverlay(
@@ -142,6 +157,7 @@ private fun PreviewPlayer() {
             favoriteFocus = favoriteFocus,
             modeFocus = modeFocus,
             queueFocus = queueFocus,
+            fxFocus = fxFocus,
             exitRoamFocus = exitRoamFocus,
             statusRetryFocus = statusRetryFocus,
             statusRetryAvailable = false,
@@ -149,6 +165,7 @@ private fun PreviewPlayer() {
             favorite = false,
             favoriteEnabled = true,
             queueCount = 18,
+            fxLabel = "低音",
             onInteraction = {},
             onSeek = {},
             onPrevious = {},
@@ -158,6 +175,7 @@ private fun PreviewPlayer() {
             onCyclePlayMode = {},
             onOpenQueue = {},
             onExitRoam = {},
+            onOpenFx = {},
             modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
         )
     }
@@ -393,3 +411,119 @@ private fun PreviewHome() {
         onPlayer = {},
     )
 }
+
+@Composable
+private fun PreviewConnectEmpty() {
+    com.yueyin.tv.ui.ConnectFirstScreen(
+        savedPlatforms = emptyList(),
+        sourceSummary = "还没添加",
+        hasSource = false,
+        onConnect = {},
+        onManageSources = {},
+        onPickSaved = {},
+    )
+}
+
+@Composable
+private fun PreviewSources() {
+    val store = com.yueyin.tv.ui.source.MusicSourceRuntime.store
+    remember {
+        if (store.state.value.count == 0) {
+            store.add(
+                "lx-source.js",
+                "// 预览用假脚本\nlx.on('request', () => 'http://example.com/a.mp3')",
+            )
+            store.add(
+                "长青SVIP音源 v1.2.0.js",
+                "// 预览用假脚本\nlx.on('request', () => 'http://example.com/b.mp3')",
+            )
+            store.state.value.sources.firstOrNull()?.let {
+                store.recordCheck(it.id, listOf("kw", "tx"), listOf("kw", "tx", "wy"), "两平台可播")
+            }
+        }
+    }
+    com.yueyin.tv.ui.source.MusicSourceScreen(onAdd = {}, onBack = {})
+}
+
+@Composable
+private fun PreviewReceive() {
+    com.yueyin.tv.ui.source.SourceReceiveScreen(onDone = {})
+}
+
+@Composable
+private fun PreviewHomeNoLibrary() {
+    com.yueyin.tv.ui.HomeWithoutLibrary(
+        sourceSummary = "已添加 2 个 · 酷我 / QQ 可用",
+        onConnect = {},
+        onManageSources = {},
+    )
+}
+
+/**
+ * 音源运行时自检（仅 debug）：读 filesDir/lx-test.js，加载脚本、问一次取链。
+ * 用来在模拟器上确认 WebView 宿主 + 加密/请求桥是否真的跑得通。
+ */
+@Composable
+private fun PreviewLxTest() {
+    val context = LocalContext.current
+    var lines by remember { mutableStateOf(listOf("准备中…")) }
+
+    LaunchedEffect(Unit) {
+        val out = mutableListOf<String>()
+        val file = File(context.filesDir, "lx-test.js")
+        if (!file.exists()) {
+            lines = listOf("没找到 ${file.absolutePath}", "先把脚本 adb push 到应用私有目录再试")
+            return@LaunchedEffect
+        }
+        val script = runCatching { file.readText() }.getOrElse {
+            lines = listOf("读取失败: ${it.message}")
+            return@LaunchedEffect
+        }
+        out += "脚本 ${script.length} 字节"
+        val runtime = com.yueyin.tv.source.OnlineSourceRuntime.get(context)
+        val loaded = runCatching { runtime.loadScript(file.name, script) }.getOrElse { false }
+        out += "loadScript = $loaded"
+        val declared = runCatching { runtime.declaredPlatforms() }.getOrElse { emptySet() }
+        out += "声明平台: ${declared.joinToString(",").ifBlank { "（无）" }}"
+
+        val cases = listOf(
+            Triple("kw", "51685512", "晴天"),
+            Triple("wy", "3440441479", "晴天"),
+        )
+        for ((platform, id, name) in cases) {
+            if (declared.isNotEmpty() && !declared.contains(platform)) {
+                out += "[$platform] 脚本未声明该平台，跳过"
+                continue
+            }
+            val info = kotlinx.serialization.json.buildJsonObject {
+                put("type", "320k")
+                put(
+                    "musicInfo",
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("songmid", id); put("songId", id); put("id", id); put("rid", id)
+                        put("hash", id); put("strMediaMid", id); put("copyrightId", id)
+                        put("name", name); put("singer", "周杰伦"); put("albumName", "叶惠美")
+                        put("interval", "269"); put("duration", 269)
+                    },
+                )
+            }
+            val value = runCatching { runtime.call(platform, "musicUrl", info) }.getOrNull()
+            out += "[$platform] -> ${value?.take(120) ?: "null"}"
+        }
+        out += "--- 最近日志 ---"
+        out += com.yueyin.tv.source.LxLog.recent().takeLast(12)
+        lines = out
+    }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(20.dp)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        lines.forEach { line ->
+            Text(line, color = FnColors.Text, fontSize = 11.sp, modifier = Modifier.padding(vertical = 1.dp))
+        }
+    }
+}
+

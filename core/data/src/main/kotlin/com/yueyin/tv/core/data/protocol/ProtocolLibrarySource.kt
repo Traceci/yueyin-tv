@@ -75,7 +75,9 @@ class ProtocolLibrarySource(
 
     suspend fun artists(page: Int, pageSize: Int): Page<Artist> {
         val artists = mutex.withLock {
-            allArtists ?: protocol.artists(profile).also { allArtists = it }
+            // 空结果不缓存：在线平台首屏聚合歌手时若恰逢网络抖动返回空，
+            // 缓存成空列表会让"歌手"长期空白且永不重试。非空才落缓存。
+            allArtists ?: protocol.artists(profile).also { if (it.isNotEmpty()) allArtists = it }
         }
         return artists.map { it.toDomain() }.paged(page, pageSize)
     }
@@ -149,14 +151,42 @@ class ProtocolLibrarySource(
 
     // ---------------------------------------------------------------- 播放 / 封面 / 歌词
 
-    fun prepare(track: Track): PlaybackTrack = PlaybackTrack(
+    suspend fun prepare(track: Track): PlaybackTrack = PlaybackTrack(
         track = track,
-        streamUrl = protocol.streamUrl(profile, track.guid.value),
+        streamUrl = protocol.resolveStreamUrl(profile, track.guid.value),
         artworkUrl = track.coverId?.let { protocol.coverUrl(profile, it, CoverVariant.Player.width ?: 800) },
     )
 
     /** 整队列的播放信息：必须走协议取流地址，否则会拿到飞牛的 URL 而播不出来。 */
-    fun queue(tracks: List<Track>): List<PlaybackTrack> = tracks.map(::prepare)
+    suspend fun queue(tracks: List<Track>): List<PlaybackTrack> = tracks.map { prepare(it) }
+
+    /**
+     * 只把 [startIndex] 起往后的 [aheadCount] 首直链取出来，其余先留空。
+     *
+     * 在线音源取一条链要过一次 WebView 里的脚本 + 一次 1KB 探活，实测 ~300ms/首；
+     * 100 首的队列一次性取完要 30 秒以上——用户点「播放全部」后要干等半分钟才出声、
+     * 播放页也才弹出来，体感就是「点了没反应」。
+     * 所以只取「即将要播的那首 + 后面一首」，剩下的由调用方在后台补齐
+     * （见 PlaybackController.patchStreamUrl）。
+     *
+     * 注意起点是 [startIndex] 而不是 0：用户点榜单第 80 首时，
+     * 从 0 开始按顺序取要先把前 79 首取完才轮到他点的那首，白白干等 24 秒。
+     */
+    suspend fun queueEager(tracks: List<Track>, startIndex: Int, aheadCount: Int): List<PlaybackTrack> {
+        val from = startIndex.coerceIn(0, maxOf(tracks.size - 1, 0))
+        val eagerRange = from until (from + aheadCount.coerceAtLeast(1)).coerceAtMost(tracks.size)
+        return tracks.mapIndexed { index, track ->
+            if (index in eagerRange) {
+                prepare(track)
+            } else {
+                PlaybackTrack(
+                    track = track,
+                    streamUrl = "",
+                    artworkUrl = track.coverId?.let { protocol.coverUrl(profile, it, CoverVariant.Player.width ?: 800) },
+                )
+            }
+        }
+    }
 
     /** 按 guid 在已加载的缓存里找回曲目（播放页需要标题/歌手/封面）。 */
     suspend fun trackOrNull(guid: String): Track? {
@@ -175,10 +205,20 @@ class ProtocolLibrarySource(
 
     suspend fun artwork(coverId: String, variant: CoverVariant): ByteArray? = withContext(Dispatchers.IO) {
         val url = protocol.coverUrl(profile, coverId, variant.width ?: 800).takeIf { it.isNotBlank() }
-            ?: return@withContext null
+        android.util.Log.d("YueyinCover", "artwork coverId=$coverId url=$url")
+        if (url == null) return@withContext null
         runCatching {
-            val request = Request.Builder().url(url).get().build()
+            val request = Request.Builder()
+                .url(url)
+                // 在线平台（QQ 的 y.gtimg.cn、网易的 CDN 等）对封面有防盗链，
+                // 裸请求会被判 403。带一个浏览器 UA 和空 Referer 即可绕过大部分校验；
+                // 服务器平台（飞牛/Navidrome）的 coverUrl 走 LocalStreamProxy，这些头不影响。
+                .header("User-Agent", BROWSER_USER_AGENT)
+                .header("Referer", "https://music.163.com/")
+                .get()
+                .build()
             client.newCall(request).execute().use { response ->
+                android.util.Log.d("YueyinCover", "artwork response code=${response.code} len=${response.body.contentLength()}")
                 if (!response.isSuccessful) return@runCatching null
                 response.body.bytes()
             }
@@ -265,6 +305,9 @@ class ProtocolLibrarySource(
     }
 
     private companion object {
+        const val BROWSER_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)

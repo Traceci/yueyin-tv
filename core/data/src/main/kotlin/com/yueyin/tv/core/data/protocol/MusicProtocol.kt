@@ -66,6 +66,15 @@ interface MusicProtocol {
     /** 给 Media3 直接播放的地址（可带鉴权参数）。 */
     fun streamUrl(profile: ConnectProfile, songId: String): String
 
+    /**
+     * 取播放地址的可挂起版本，播放前调用。
+     *
+     * 大多数协议取流地址只是拼 URL（同步 [streamUrl] 即可）；但有些协议（如在线音乐）
+     * 取链是异步的（要跑音源脚本），这里给它们一个"缓存未命中就现场取"的机会。
+     * 默认实现直接退回同步 [streamUrl]。
+     */
+    suspend fun resolveStreamUrl(profile: ConnectProfile, songId: String): String = streamUrl(profile, songId)
+
     fun coverUrl(profile: ConnectProfile, coverId: String, size: Int = 512): String
 
     /** 返回 LRC 原文；没有歌词时返回 null。 */

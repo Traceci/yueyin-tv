@@ -72,6 +72,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -149,7 +150,6 @@ import com.yueyin.tv.R
 import com.yueyin.tv.core.model.connect.ConnectType
 import com.yueyin.tv.ui.connect.ConnectFormScreen
 import com.yueyin.tv.ui.connect.PlatformIcon
-import com.yueyin.tv.ui.connect.PlatformLibraryScreen
 import com.yueyin.tv.ui.connect.PlatformManageScreen
 import com.yueyin.tv.ui.connect.PlatformPickerScreen
 import com.yueyin.tv.CrashLogStore
@@ -165,6 +165,7 @@ import com.yueyin.tv.core.model.AppException
 import com.yueyin.tv.core.model.Artist
 import com.yueyin.tv.core.model.CoverVariant
 import com.yueyin.tv.core.model.Page
+import com.yueyin.tv.core.model.PlaybackTrack
 import com.yueyin.tv.core.model.PlayerStyle
 import com.yueyin.tv.core.model.Playlist
 import com.yueyin.tv.core.model.Track
@@ -247,6 +248,7 @@ internal class NavRequesters(
     val albums: FocusRequester = FocusRequester(),
     val playlists: FocusRequester = FocusRequester(),
     val my: FocusRequester = FocusRequester(),
+    val settings: FocusRequester = FocusRequester(),
     val search: FocusRequester = FocusRequester(),
     val nowPlaying: FocusRequester = FocusRequester(),
 ) {
@@ -255,6 +257,7 @@ internal class NavRequesters(
         "albums" -> albums
         "playlists" -> playlists
         "my" -> my
+        "settings" -> settings
         else -> null
     }
 }
@@ -285,8 +288,8 @@ private fun Modifier.focusGlow(
 
 private const val FULL_CATALOG_PAGE_SIZE = 12
 
-/** 顶栏一级导航的三个入口（注意与导航胶囊单个按钮的 LibraryTab 组件区分）。 */
-internal enum class LibraryNavTab { Home, Albums, Playlists, My }
+/** 顶栏一级导航的入口（注意与导航胶囊单个按钮的 LibraryTab 组件区分）。 */
+internal enum class LibraryNavTab { Home, Albums, Playlists, My, Settings }
 
 // 首页歌单区的列数不再写死：由 FnGrid.columnsFor(可用宽度) 计算（960 画布下为 5 列），
 // 首页展示「列数 × 2 行」个，其余收进「全部歌单」。
@@ -294,8 +297,7 @@ internal enum class LibraryNavTab { Home, Albums, Playlists, My }
 @Composable
 internal fun AuthenticatedApp(
     // 用 AppUiDependencies（它是 AuthenticatedAppDependencies 的子接口）而不是基接口：
-    // 应用内的飞牛登录页要直接调 sessionRepository 登录，
-    // 不能再走「先 logout 再弹顶层登录页」那条路。
+    // 应用内的飞牛登录页要直接调 sessionRepository 登录，不能再走"先 logout 再弹顶层登录页"那条路。
     container: com.yueyin.tv.AppUiDependencies,
     session: SessionState.SignedIn,
     playback: PlaybackUiState,
@@ -328,17 +330,20 @@ internal fun AuthenticatedApp(
         tabSwitchBlocked.value = true
         stack = stack + it
         navDirection = 1
+        android.util.Log.d("YueyinNav", "open ${it::class.simpleName} -> depth=${stack.size} top=${stack.lastOrNull()?.let { r -> r::class.simpleName }}")
     }
     val root: (LibraryRoute) -> Unit = {
         tabSwitchBlocked.value = true
         stack = listOf(it)
         navDirection = 0
+        android.util.Log.d("YueyinNav", "root ${it::class.simpleName}")
     }
     val back: () -> Unit = {
         if (stack.size > 1) {
             tabSwitchBlocked.value = true
             stack = stack.dropLast(1)
             navDirection = -1
+            android.util.Log.d("YueyinNav", "back -> depth=${stack.size} top=${stack.lastOrNull()?.let { r -> r::class.simpleName }}")
         }
     }
     // 打开 App / 回到前台时自动同步服务器歌单（只读，不反向写入服务器）。
@@ -371,29 +376,58 @@ internal fun AuthenticatedApp(
     // 不清的话回到首页/我的还是上一个平台的歌，看起来像"切了没反应"。
     val connectState by com.yueyin.tv.ui.connect.ConnectRuntime.store.state.collectAsStateWithLifecycle()
     val activePlatformId = connectState.activeId
-    // 有没有可用数据源：登录了真飞牛，或激活了某个协议平台
+    // 有没有可用数据源：登录了真飞牛、激活了某个协议平台、或导入了能用的音源。
+    // 三者只要有一个，用户就已经能听歌，不该再被拦在引导页。
     val hasFnSession = session.server.guid.value != "local"
-    val hasDataSource = activePlatformId != null || hasFnSession
-    // 平台相关页面在"没有数据源"时也必须能进（否则用户无处添加平台）
+    val musicSourceState by com.yueyin.tv.ui.source.MusicSourceRuntime.state.collectAsStateWithLifecycle()
+    val hasMusicSource = musicSourceState.hasUsable
+    // 音源脚本自动识别：新增的、以及以前导入但从没检测过的，进应用后静默补一次。
+    // 检测只影响「支持哪几家」的展示和取链排序，不影响能不能用，所以失败也绝不打扰用户。
+    val sourceCheckScope = retainedScope
+    val sourcesBeingChecked = remember { mutableSetOf<String>() }
+    LaunchedEffect(musicSourceState.sources.map { it.id to it.lastCheckAt }) {
+        musicSourceState.sources
+            .filter { it.lastCheckAt == 0L && sourcesBeingChecked.add(it.id) }
+            .forEach { source ->
+                // 派到独立作用域：这个 LaunchedEffect 会因为状态变化被重启，
+                // 直接在里面跑会把检测打断在半路。
+                sourceCheckScope.launch {
+                    runCatching { com.yueyin.tv.ui.source.checkMusicSource(context, source) }
+                    sourcesBeingChecked.remove(source.id)
+                }
+            }
+    }
+    val hasLibrarySource = activePlatformId != null || hasFnSession
+    val hasDataSource = hasLibrarySource || hasMusicSource
+    // 平台 / 音源相关页面在"没有数据源"时也必须能进（否则用户无处添加）
     val isPlatformRoute = route is LibraryRoute.PlatformManage ||
         route == LibraryRoute.PlatformPicker ||
         route == LibraryRoute.PlatformFnLogin ||
         route is LibraryRoute.PlatformForm ||
-        route is LibraryRoute.PlatformLibrary
+        route == LibraryRoute.MusicSources ||
+        route == LibraryRoute.MusicSourceReceive
     var boundPlatformId by remember(session.user.guid) { mutableStateOf<String?>(null) }
+    // 切平台：先在组合阶段同步清空保留状态。必须早于下面 key(activePlatformId) 重建出的新子树
+    // 执行——否则新子树 getOrPut 会拿到上一个平台的 state 对象，继续显示旧曲库（这正是
+    // 「切平台后内容不刷新、要退出重进才变」的根因：clearAll 只清了 map，没清各页手里握着的 live 对象）。
+    if (boundPlatformId != activePlatformId) {
+        boundPlatformId = activePlatformId
+        retainedState.clearAll()
+    }
     LaunchedEffect(activePlatformId) {
-        if (boundPlatformId != activePlatformId) {
-            boundPlatformId = activePlatformId
-            retainedState.clearAll()
-            // 切平台必须停掉当前播放并清空队列：否则上一平台的歌还在播/还在队列里，
-            // 用户会以为"切了没反应"。
-            // 注意：这里必须用 stopAndClearQueue 而不是 clearSession——clearSession 会把
-            // 播放命名空间一起清空，而换平台不会触发新的会话凭据下发，namespace 就永久为 null，
-            // 之后 playQueue 拿不到快照命名空间直接返回 null，表现为"任何歌都播不了"。
-            runCatching { container.playbackController.stopAndClearQueue() }
-        }
+        // 切平台必须停掉当前播放并清空队列：否则上一平台的歌还在播/还在队列里，
+        // 用户会以为"切了没反应"。
+        // 注意：这里必须用 stopAndClearQueue 而不是 clearSession——clearSession 会把
+        // 播放命名空间一起清空，而换平台不会触发新的会话凭据下发，namespace 就永久为 null，
+        // 之后 playQueue 拿不到快照命名空间直接返回 null，表现为"任何歌都播不了"。
+        runCatching { container.playbackController.stopAndClearQueue() }
     }
     LaunchedEffect(stack) {
+        android.util.Log.d(
+            "YueyinNav",
+            "stack changed depth=${stack.size} chain=" +
+                stack.joinToString(">") { it::class.simpleName ?: "?" },
+        )
         routeStateLifecycle.update(stack).forEach { removedRoute ->
             stateHolder.removeState(removedRoute.storageKey())
             retainedState.remove(removedRoute.retainedStateKeys())
@@ -406,9 +440,10 @@ internal fun AuthenticatedApp(
                 stack = stack.dropLast(1)
                 navDirection = -1
             }
-            // 一级 tab 页按返回回到首页（四个 Tab 互为平级，不再有二级页的回退语义）
+            // 一级 tab 页按返回回到首页（五个 Tab 互为平级，不再有二级页的回退语义）
             route == LibraryRoute.My || route == LibraryRoute.AllPlaylists ||
-                route == LibraryRoute.Albums -> root(LibraryRoute.Home)
+                route == LibraryRoute.Albums || route == LibraryRoute.Settings ->
+                root(LibraryRoute.Home)
             route == LibraryRoute.Home -> {
                 val now = SystemClock.elapsedRealtime()
                 if (isHomeBackConfirmed(lastHomeBackAt, now)) {
@@ -419,6 +454,9 @@ internal fun AuthenticatedApp(
                     Toast.makeText(context, "再按一次退出", Toast.LENGTH_SHORT).show()
                 }
             }
+            // 兜底：栈底停在搜索页、详情页这类非一级页时（正常路径下不该出现），
+            // 以前这里不消费返回事件，事件会冒泡到 Activity 直接 finish()——表现为「莫名其妙退出 App」。
+            else -> root(LibraryRoute.Home)
         }
     }
     LaunchedEffect(playback.error) {
@@ -440,56 +478,37 @@ internal fun AuthenticatedApp(
     }
     // 常驻导航条的焦点锚点：全 App 唯一，随 AuthenticatedApp 生命周期存活。
     val navRequesters = remember { NavRequesters() }
-    // 当前路由对应的一级导航项；null 表示这一页不显示导航条（详情页 / 搜索 / 播放页 / 设置）。
+    // 当前路由对应的一级导航项；null 表示这一页不显示导航条（详情页 / 搜索 / 播放页）。
     val navTab = when (route) {
         LibraryRoute.Home -> LibraryNavTab.Home
         LibraryRoute.Albums -> LibraryNavTab.Albums
         LibraryRoute.AllPlaylists -> LibraryNavTab.Playlists
         LibraryRoute.My -> LibraryNavTab.My
+        LibraryRoute.Settings -> LibraryNavTab.Settings
         else -> null
     }
-    // 焦点保底（闪退根治）：
-    // 切页会销毁旧内容里的焦点节点。若新页面还在加载、迟迟没人接焦点，
-    // Compose 焦点树就处于「无焦点」状态；此时按方向键，系统会执行 restoreDefaultFocus，
+    // 焦点保底：切页会销毁旧内容里的焦点节点。若新页面还在加载、迟迟没人接焦点，
+    // Compose 焦点树就会处于「无焦点」状态；此时按方向键，系统会执行 restoreDefaultFocus，
     // 在 Compose 内部命中一个已 detach 的节点并抛
     // "visitAncestors called on an unattached node"，直接崩掉整个进程
     // （用户看到的就是"闪退 + 声音立刻停"）。
-    //
-    // 判据必须直接问「整棵 View 树此刻有没有焦点节点」——这正是系统 restoreDefaultFocus
-    // 自己的前提条件，不能用 Compose 侧缓存的任何状态去推断：
-    // 焦点方位没变化时 onFocusChanged 不会再回调，所以「先把标记清零、再等回调置回 true」
-    // 这类写法一定会误判成「没有焦点」，然后去抢焦——1.0.5 的
-    // 「在『专辑』Tab 按右键跳回首页」就是这么来的：换页瞬间清零后焦点仍停在
-    // 「专辑」Tab 上（没有变化就没有回调），保底读到 false，8 帧后把焦点扔到屏幕外的
-    // 救援锚点上；用户再按右键，就是从锚点(左上角之外)搜最近的节点，命中「首页」Tab。
-    // 现在只做三件事：等几帧 → 有焦点就立刻退出、绝不干预 → 真没焦点才挂到导航条当前 Tab。
-    val view = LocalView.current
-    val rescueAnchor = remember { FocusRequester() }
-    // 救援锚点自己是否正持有焦点。它在屏幕外，一旦被选中，用户看到的就是
-    // 「画面上一个焦点框都没有、方向键到处乱跳」，所以换页时要主动把它交还出去。
-    val anchorFocused = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
-    var firstComposition by remember { mutableStateOf(true) }
-    LaunchedEffect(route.storageKey()) {
-        val first = firstComposition
-        firstComposition = false
-        // 冷启动首屏给内容更长的自取焦窗口（4K 首页封面多），普通换页 3 帧足够。
-        repeat(if (first) 45 else 3) { withFrameNanos { } }
-        // 焦点若还挂在屏幕外的救援锚点上（上一次救急留下的），先交还给导航条当前 Tab，
-        // 让用户重新看见焦点。必须在「有焦点就退出」之前处理，否则会一直卡在锚点上。
-        if (anchorFocused.get()) {
-            navTab?.let { tab -> navRequesters.forTab(tab.name.lowercase()) }
-                ?.let { requester -> runCatching { requester.requestFocus() } }
-            repeat(2) { withFrameNanos { } }
+    // 这里在切页后等几帧，若内容区仍然没有焦点，就先把焦点交给常驻的导航条 Tab，
+    // 让焦点树里始终有一个 attached 的节点。
+    // 用 AtomicBoolean 而不是 Compose State：焦点每次移动都写 State 会让整个
+    // AuthenticatedApp 重组，代价太大，这里只需要读一个瞬时值。
+    val contentFocused = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    val firstRouteSeen = remember { mutableStateOf(true) }
+    LaunchedEffect(route, navTab) {
+        // 首次组合不干预：刚启动时不存在"被销毁的焦点节点"，让首页按原逻辑抢焦点。
+        if (firstRouteSeen.value) {
+            firstRouteSeen.value = false
+            return@LaunchedEffect
         }
-        // 有焦点就什么都不做。焦点停在导航条上同样是合法状态，用户按方向键自然能继续走。
-        if (view.findFocus() != null) return@LaunchedEffect
-        // 真·空焦点树：先交给常驻导航条当前 Tab。
-        navTab?.let { tab -> navRequesters.forTab(tab.name.lowercase()) }
-            ?.let { requester -> runCatching { requester.requestFocus() } }
         repeat(3) { withFrameNanos { } }
-        // 仍为空（详情页 / 播放页 / 设置页没有导航条）：交给常驻救援锚点，
-        // 保证 View 树里永远有一个 attached 的焦点节点，系统就不会走 restoreDefaultFocus。
-        if (view.findFocus() == null) runCatching { rescueAnchor.requestFocus() }
+        if (contentFocused.get()) return@LaunchedEffect
+        // 详情页/播放页/设置页不显示导航条，没有常驻锚点可用，只能靠进程级兜底。
+        val anchor = navTab?.let { navRequesters.forTab(it.name.lowercase()) } ?: return@LaunchedEffect
+        runCatching { anchor.requestFocus() }
     }
     CompositionLocalProvider(
         LocalAuthenticatedDependencies provides container,
@@ -510,20 +529,17 @@ internal fun AuthenticatedApp(
                     if (isDirection && event.type == KeyEventType.KeyDown) {
                         tabSwitchBlocked.value = false
                     }
+                    // 遥控器「菜单键」直接打开设置（对标酷狗 TV：菜单键呼出设置）。
+                    // 已经在设置页时忽略，避免重复切页；播放页/详情页也能一键呼出。
+                    if (key == Key.Menu && event.type == KeyEventType.KeyUp) {
+                        if (route != LibraryRoute.Settings) {
+                            root(LibraryRoute.Settings)
+                        }
+                        return@onPreviewKeyEvent true
+                    }
                     false
                 },
         ) {
-            // 常驻焦点锚点：1dp、透明、被移到布局边界之外（方向键永远搜不到它），
-            // 只在「整棵树都没有焦点」时被程序夺焦。它的唯一职责是让 View 树里
-            // 始终存在一个 attached 的焦点节点——这是不触发 restoreDefaultFocus 的硬条件。
-            Box(
-                Modifier
-                    .offset(x = (-200).dp, y = (-200).dp)
-                    .size(1.dp)
-                    .focusRequester(rescueAnchor)
-                    .onFocusChanged { anchorFocused.set(it.isFocused) }
-                    .focusable(),
-            )
             // 全局氛围背景：所有路由共用一层缓慢漂移的光斑，避免大面积纯黑显得沉闷。
             // 播放页自带整屏沉浸背景（不透明，会把这层完全盖住），因此直接不画——
             // 省掉一整屏 24fps 的径向渐变填充，是这轮最划算的一处优化。
@@ -548,6 +564,7 @@ internal fun AuthenticatedApp(
                             onAlbums = { root(LibraryRoute.Albums) },
                             onPlaylists = { root(LibraryRoute.AllPlaylists) },
                             onMy = { root(LibraryRoute.My) },
+                            onSettings = { root(LibraryRoute.Settings) },
                             onSearch = { open(LibraryRoute.Search) },
                             onPlayer = { open(LibraryRoute.Player(null)) },
                         )
@@ -556,14 +573,25 @@ internal fun AuthenticatedApp(
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .weight(1f),
+                        .weight(1f)
+                        // 只观察、不参与：记录内容区（含子节点）当前是否有焦点，供上面的焦点保底判断。
+                        .onFocusChanged { contentFocused.set(it.hasFocus) },
                 ) {
                     if (!hasDataSource && !isPlatformRoute) {
-                        // 首次安装 / 平台全被删掉时的空态：一张大卡引导去连接平台。
-                        // 连上任意平台后它就永久消失，正常情况下只会看到一次。
+                        // 三样都没有时才出现的空态：一张卡，两行选项（连平台 / 加音源）。
+                        // 只要有其中一样，用户就已经能听歌，不该再被拦在这里。
                         ConnectFirstScreen(
                             savedPlatforms = connectState.profiles,
+                            sourceSummary = musicSourceState.summaryText(),
+                            hasSource = musicSourceState.count > 0,
                             onConnect = { open(LibraryRoute.PlatformManage) },
+                            onManageSources = {
+                                if (musicSourceState.count > 0) {
+                                    open(LibraryRoute.PlatformManage)
+                                } else {
+                                    open(LibraryRoute.MusicSourceReceive)
+                                }
+                            },
                             onPickSaved = {
                                 com.yueyin.tv.ui.connect.ConnectRuntime.activate(it)
                             },
@@ -599,18 +627,51 @@ internal fun AuthenticatedApp(
                             },
                             label = "route",
                         ) { targetRoute ->
+                            // 平台管理的内容回调：设置页「平台」分组内联平台列表，与独立平台管理页共用。
+                            val platformOnRelogin = {
+                                open(LibraryRoute.PlatformFnLogin)
+                            }
+                            val platformOnEdit: (com.yueyin.tv.core.data.connect.ConnectProfile) -> Unit = { profile ->
+                                open(LibraryRoute.PlatformForm(profile.type, profile.id))
+                            }
+                            val platformOnDelete: (com.yueyin.tv.core.data.connect.ConnectProfile) -> Unit = { profile ->
+                                val wasActive = com.yueyin.tv.ui.connect.ConnectRuntime.store.state.value.activeId == profile.id
+                                com.yueyin.tv.ui.connect.ConnectRuntime.store.remove(profile.id)
+                                if (wasActive) {
+                                    val next = com.yueyin.tv.ui.connect.ConnectRuntime.store.state.value.profiles.firstOrNull()
+                                    com.yueyin.tv.ui.connect.ConnectRuntime.activate(next)
+                                }
+                            }
+                            val platformOnSignOutFn: () -> Unit = {
+                                retainedScope.launch { container.authenticatedActions.signOutFnSession() }
+                                Unit
+                            }
+                            val platformOnAddSource = { open(LibraryRoute.MusicSourceReceive) }
+                            // 按当前平台身份给内容子树加 key：切平台时整棵子树重建，各页重新拉取数据
+                            // （配合上面组合阶段同步执行的 clearAll，新子树拿到的是空状态）。
+                            key(activePlatformId) {
                             when (targetRoute) {
-            LibraryRoute.Home -> BrowseHome(
-                container,
-                playback,
-                onAlbums = { open(LibraryRoute.Albums) },
-                onMy = { root(LibraryRoute.My) },
-                onSearch = { open(LibraryRoute.Search) },
-                onPlaylist = { open(LibraryRoute.PlaylistDetail(it)) },
-                onFavorites = { open(LibraryRoute.Favorites) },
-                onAll = { open(LibraryRoute.AllPlaylists) },
-                onPlayer = { open(LibraryRoute.Player(null)) },
-            )
+            LibraryRoute.Home -> if (hasLibrarySource) {
+                BrowseHome(
+                    container,
+                    playback,
+                    onAlbums = { open(LibraryRoute.Albums) },
+                    onMy = { root(LibraryRoute.My) },
+                    onSearch = { open(LibraryRoute.Search) },
+                    onPlaylist = { open(LibraryRoute.PlaylistDetail(it)) },
+                    onFavorites = { open(LibraryRoute.Favorites) },
+                    onAll = { open(LibraryRoute.AllPlaylists) },
+                    onPlayer = { open(LibraryRoute.Player(null)) },
+                )
+            } else {
+                // 只加了音源、没连曲库：首页不能是空的，否则用户找不到入口。
+                // 搜索卡置顶（默认焦点），曲库区降级成一块占位说明。
+                HomeWithoutLibrary(
+                    sourceSummary = musicSourceState.summaryText(),
+                    onConnect = { open(LibraryRoute.PlatformManage) },
+                    onManageSources = { open(LibraryRoute.PlatformManage) },
+                )
+            }
             LibraryRoute.My -> BrowseMy(
                 container,
                 session,
@@ -624,36 +685,34 @@ internal fun AuthenticatedApp(
                 onPlaylist = { open(LibraryRoute.PlaylistDetail(it)) },
                 onArtist = { open(LibraryRoute.ArtistDetail(it)) },
                 onAlbum = { open(LibraryRoute.AlbumDetail(it)) },
-                onSettings = { open(LibraryRoute.Settings) },
-                onManagePlatforms = { open(LibraryRoute.PlatformManage) },
                 onPlayer = { open(LibraryRoute.Player(null)) },
             )
             // 平台管理走正式路由：AnimatedContent 会用新的子树替换旧页面，
             // 因此不会出现「覆盖层里有下层页面在抢焦点」的问题（这也是之前"点不动"的根因）。
             LibraryRoute.PlatformManage -> PlatformManageScreen(
                 onAdd = { open(LibraryRoute.PlatformPicker) },
-                onBrowse = { open(LibraryRoute.PlatformLibrary(it)) },
-                onRelogin = {
-                    // 换飞牛账号：走应用内登录页，不 logout。
-                    // 以前这里是 switchAccount()（先注销再弹顶层登录页），
-                    // 用户点错了就只能杀掉 App 才能回来。
-                    open(LibraryRoute.PlatformFnLogin)
-                },
-                onEdit = { open(LibraryRoute.PlatformForm(it.type, it.id)) },
-                onSignOutFn = {
-                    retainedScope.launch { container.authenticatedActions.signOutFnSession() }
-                },
-                onDelete = { profile ->
-                    val wasActive = com.yueyin.tv.ui.connect.ConnectRuntime.store.state.value.activeId == profile.id
-                    com.yueyin.tv.ui.connect.ConnectRuntime.store.remove(profile.id)
-                    // 删掉的正是当前平台：自动切到剩下的第一个；一个都不剩就回飞牛（无会话则回空态）
-                    if (wasActive) {
-                        val next = com.yueyin.tv.ui.connect.ConnectRuntime.store.state.value.profiles.firstOrNull()
-                        com.yueyin.tv.ui.connect.ConnectRuntime.activate(next)
-                    }
-                },
+                onRelogin = platformOnRelogin,
+                onEdit = platformOnEdit,
+                onSignOutFn = platformOnSignOutFn,
+                onDelete = platformOnDelete,
                 fnSessionActive = hasFnSession,
+                onAddSource = platformOnAddSource,
                 onBack = back,
+            )
+            LibraryRoute.MusicSources -> com.yueyin.tv.ui.source.MusicSourceScreen(
+                onAdd = { open(LibraryRoute.MusicSourceReceive) },
+                onBack = back,
+            )
+            LibraryRoute.MusicSourceReceive -> com.yueyin.tv.ui.source.SourceReceiveScreen(
+                onDone = {
+                    // 收完退回平台页（音源脚本已平铺进平台管理页）
+                    if (stack.size >= 2) {
+                        stack = stack.dropLast(1)
+                    } else {
+                        stack = listOf(LibraryRoute.PlatformManage)
+                    }
+                    navDirection = -1
+                },
             )
             LibraryRoute.PlatformPicker -> PlatformPickerScreen(
                 onPick = { type ->
@@ -667,6 +726,18 @@ internal fun AuthenticatedApp(
                         } else {
                             open(LibraryRoute.PlatformFnLogin)
                         }
+                    } else if (type == ConnectType.ONLINE) {
+                        // 在线音乐：无需账号表单，点即激活。用固定 id 保证重复点不会重复落库。
+                        val store = com.yueyin.tv.ui.connect.ConnectRuntime.store
+                        val existing = store.state.value.ofType(ConnectType.ONLINE)
+                            ?: com.yueyin.tv.core.data.connect.ConnectProfile(
+                                id = "online-music",
+                                type = ConnectType.ONLINE,
+                                displayName = "在线音乐",
+                                host = "",
+                            ).also { store.upsert(it) }
+                        com.yueyin.tv.ui.connect.ConnectRuntime.activate(existing)
+                        back()
                     } else {
                         open(LibraryRoute.PlatformForm(type))
                     }
@@ -683,9 +754,8 @@ internal fun AuthenticatedApp(
                 LaunchedEffect(fnLoginOk) {
                     if (fnLoginOk) {
                         fnLoginOk = false
-                        // 成功那一刻会话已经换成真飞牛账号，路由栈会随 session.user.guid 重置回首页，
-                        // 这里只是兜住「栈还没重置」的那一帧，避免登录页多留一帧。
                         if (stack.lastOrNull() == LibraryRoute.PlatformFnLogin) {
+                            com.yueyin.tv.ui.connect.ConnectRuntime.activate(null)
                             stack = stack.dropLast(1)
                             navDirection = -1
                         }
@@ -699,17 +769,8 @@ internal fun AuthenticatedApp(
                         initialSelectedProfileId = snapshot.selectedProfileId,
                         initialError = snapshot.error,
                         onLogin = { server, https, user, password, remember, accessCode ->
-                            container.sessionRepository.login(
-                                server,
-                                https,
-                                user,
-                                password,
-                                remember,
-                                accessCode,
-                            )
-                            // login() 失败会抛异常、由 LoginScreen 自己兜住；走得到这一行就是真登进来了。
-                            // 数据源指回飞牛要放在这里：登录成功后路由栈会随 guid 变化重置，外层 LaunchedEffect 可能来不及跑。
-                            com.yueyin.tv.ui.connect.ConnectRuntime.activate(null)
+                            container.sessionRepository.login(server, https, user, password, remember, accessCode)
+                            // login() 失败会抛异常，走不到这一行；所以这里等价于「真的登进来了」
                             fnLoginOk = true
                         },
                         onHistoryLogin = container.sessionRepository::loginWithHistory,
@@ -725,9 +786,9 @@ internal fun AuthenticatedApp(
                         fontSize = FnType.Caption,
                         modifier = Modifier
                             .align(Alignment.TopCenter)
-                            .padding(top = 10.dp)
+                            .padding(top = 14.dp)
                             .background(FnColors.SurfaceAlt, RoundedCornerShape(50))
-                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                            .padding(horizontal = 16.dp, vertical = 7.dp),
                     )
                 }
             }
@@ -745,11 +806,6 @@ internal fun AuthenticatedApp(
                 },
                 onBack = back,
             )
-            is LibraryRoute.PlatformLibrary -> PlatformLibraryScreen(
-                profile = targetRoute.profile,
-                playbackController = container.playbackController,
-                onBack = back,
-            )
             LibraryRoute.AllPlaylists -> AllPlaylists(
                 container = container,
                 playback = playback,
@@ -762,7 +818,58 @@ internal fun AuthenticatedApp(
             )
             LibraryRoute.Search -> SearchScreen(
                 container,
-                onPlayTrack = { open(LibraryRoute.Player(it)) },
+                // 搜索结果点歌要真的把歌推进播放队列再打开播放页。
+                // 以前这里是 open(LibraryRoute.Player(it))——路由里的 track 全程没人读，
+                // 于是播放页队列是空的、标题落到「尚未选择歌曲」，返回时还要连按好几下才退得出去。
+                onPlayTrack = { resultTracks, index ->
+                    val target = resultTracks.getOrNull(index)?.takeIf(::isTrackPlayable)
+                    if (target == null) {
+                        Toast.makeText(context, "这首暂时无法播放", Toast.LENGTH_SHORT).show()
+                    } else {
+                        val playable = resultTracks.filter(::isTrackPlayable)
+                        val startIndex = playable.indexOfFirst { it.guid == target.guid }.coerceAtLeast(0)
+                        retainedScope.launch {
+                            val prepared = runCatching {
+                                container.musicRepository.prepareQueue(playable, startIndex, 2)
+                            }.getOrNull()
+                            val playIndex = prepared?.indexOfFirst { it.track.guid == target.guid } ?: -1
+                            when {
+                                prepared.isNullOrEmpty() || playIndex < 0 ->
+                                    Toast.makeText(context, "取播放地址失败，请稍后重试", Toast.LENGTH_SHORT).show()
+                                // 在线歌曲的直链要靠用户导入的音源脚本现取；没导入时地址是空的。
+                                // 这时候别打开一个什么都播不了的播放页，直接说清楚缺什么。
+                                prepared[playIndex].streamUrl.isBlank() -> {
+                                    // 区分「压根没装脚本」和「装了但没换出地址」：两种情况用户该做的事完全不同。
+                                    val hasSource = runCatching {
+                                        com.yueyin.tv.ui.source.MusicSourceRuntime.store.state.value
+                                            .sources.any { it.enabled }
+                                    }.getOrDefault(false)
+                                    val hint = if (hasSource) {
+                                        "音源脚本没取到可播放地址，换一首或换个音源试试"
+                                    } else {
+                                        "还没有导入音源脚本，先去 设置 → 曲库与音源"
+                                    }
+                                    Toast.makeText(context, hint, Toast.LENGTH_LONG).show()
+                                }
+                                else -> {
+                                    val transition = runCatching {
+                                        container.playbackController.playQueue(prepared, playIndex)
+                                    }.getOrNull()
+                                    if (transition == null) {
+                                        Toast.makeText(context, "播放失败，请稍后重试", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        open(LibraryRoute.Player(null))
+                                        // 其余直链后台补齐，保证播放页里按「下一首」不会落在空地址上。
+                                        if (prepared.any { it.streamUrl.isBlank() }) {
+                                            retainedScope.launch { fillQueueUrlsInBackground(container, prepared, playIndex) }
+                                        }
+                                        runCatching { transition.awaitCommitted() }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
                 onOpenPlaylist = { open(LibraryRoute.PlaylistDetail(it)) },
                 onOpenArtist = { open(LibraryRoute.ArtistDetail(it)) },
                 onOpenAlbum = { open(LibraryRoute.AlbumDetail(it)) },
@@ -846,6 +953,9 @@ internal fun AuthenticatedApp(
                 container = container,
                 playback = playback,
                 visualContinuity = playerVisualContinuity,
+                // 播放页自己吃掉返回键后由这里退栈：只弹这一层，绝不冒泡到首页的「再按一次退出」。
+                // 栈里只剩播放页这种异常情况也要有去处，否则返回键会被白白吃掉。
+                onBack = { if (stack.size > 1) back() else root(LibraryRoute.Home) },
                 onExitRoam = {
                     retainedScope.launch {
                         stack = if (container.playbackController.exitRoamDurably()) {
@@ -856,7 +966,17 @@ internal fun AuthenticatedApp(
                     }
                 },
             )
-                            LibraryRoute.Settings -> SettingsScreen(container)
+                            LibraryRoute.Settings -> SettingsScreen(
+                                container,
+                                onAddPlatform = { open(LibraryRoute.PlatformPicker) },
+                                onRelogin = platformOnRelogin,
+                                onEdit = platformOnEdit,
+                                onDelete = platformOnDelete,
+                                onSignOutFn = platformOnSignOutFn,
+                                onAddSource = platformOnAddSource,
+                                fnSessionActive = hasFnSession,
+                            )
+                            }
                             }
                         }
                     }
@@ -883,6 +1003,7 @@ private fun LibraryTopBar(
     onAlbums: () -> Unit,
     onPlaylists: () -> Unit,
     onMy: () -> Unit,
+    onSettings: () -> Unit,
     onSearch: () -> Unit,
     onPlayer: () -> Unit,
     modifier: Modifier = Modifier,
@@ -904,6 +1025,7 @@ private fun LibraryTopBar(
                     onAlbums = onAlbums,
                     onPlaylists = onPlaylists,
                     onMy = onMy,
+                    onSettings = onSettings,
                 )
                 // 搜索：只有一个放大镜，不套任何外圈/底色（TV 上越干净越好认）。
                 // 焦点反馈靠「变白 + 轻微放大」，而不是加框。
@@ -913,7 +1035,7 @@ private fun LibraryTopBar(
                     modifier = Modifier
                         .size(48.dp)
                         .focusProperties {
-                            left = navRequesters.my
+                            left = navRequesters.settings
                             right = if (playback.hasMedia) navRequesters.nowPlaying else FocusRequester.Cancel
                         }
                         .focusRequester(navRequesters.search)
@@ -998,6 +1120,7 @@ private fun SegmentedLibraryTabs(
     onAlbums: () -> Unit,
     onPlaylists: () -> Unit,
     onMy: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     val navFocus = LocalNavFocusController.current
     val view = LocalView.current
@@ -1013,6 +1136,7 @@ private fun SegmentedLibraryTabs(
             LibraryNavTab.Albums -> onAlbums()
             LibraryNavTab.Playlists -> onPlaylists()
             LibraryNavTab.My -> onMy()
+            LibraryNavTab.Settings -> onSettings()
         }
     }
     var queuedTab by remember { mutableStateOf<LibraryNavTab?>(null) }
@@ -1053,7 +1177,7 @@ private fun SegmentedLibraryTabs(
     val containerShape = CircleShape
     val tabWidth = 78.dp
     val pillInset = 3.dp
-    val containerWidth = tabWidth * 4 + pillInset * 2
+    val containerWidth = tabWidth * 5 + pillInset * 2
     // 滑动指示器：随选中项平滑滑动
     val indicatorX by animateDpAsState(
         targetValue = pillInset + tabWidth * selectedTab.ordinal,
@@ -1121,13 +1245,27 @@ private fun SegmentedLibraryTabs(
                 modifier = Modifier
                     .focusProperties {
                         left = navRequesters.playlists
-                        right = navRequesters.search
+                        right = navRequesters.settings
                     }
                     .focusRequester(navRequesters.my)
                     .onFocusChanged {
                         if (it.isFocused) onTabFocused(LibraryNavTab.My)
                     },
                 onClick = { if (selectedTab != LibraryNavTab.My) onMy() },
+            )
+            LibraryTab(
+                label = "设置",
+                selected = selectedTab == LibraryNavTab.Settings,
+                modifier = Modifier
+                    .focusProperties {
+                        left = navRequesters.my
+                        right = navRequesters.search
+                    }
+                    .focusRequester(navRequesters.settings)
+                    .onFocusChanged {
+                        if (it.isFocused) onTabFocused(LibraryNavTab.Settings)
+                    },
+                onClick = { if (selectedTab != LibraryNavTab.Settings) onSettings() },
             )
         }
         // 滑动指示器：选中项下方一段渐变亮条（比 tab 略窄、居中）
@@ -2121,8 +2259,6 @@ private fun BrowseMy(
     onPlaylist: (Playlist) -> Unit,
     onArtist: (Artist) -> Unit,
     onAlbum: (Album) -> Unit,
-    onSettings: () -> Unit,
-    onManagePlatforms: () -> Unit,
     onPlayer: () -> Unit,
 ) {
     val retainedStore = LocalLibraryRetainedState.current
@@ -2141,8 +2277,6 @@ private fun BrowseMy(
     var initialFocusRequested by remember { mutableStateOf(false) }
     val contentFocus = remember { FocusRequester() }
     val nav = LocalNavRequesters.current
-    val settingsFocus = remember { FocusRequester() }
-    val switchAccountFocus = remember { FocusRequester() }
     val artistRowFocus = remember { FocusRequester() }
     val albumRowFocus = remember { FocusRequester() }
     val playlistRowFocus = remember { FocusRequester() }
@@ -2171,8 +2305,7 @@ private fun BrowseMy(
             return@LaunchedEffect
         }
         val allContentLoaded = artistsLoaded && albumsLoaded
-        val restoringChrome = focusedKey == "settings" || focusedKey == "switch-account"
-        if (!allContentLoaded && !restoringChrome) return@LaunchedEffect
+        if (!allContentLoaded) return@LaunchedEffect
         val availableKeys = buildList {
             if (allContentLoaded) {
                 addAll(artists.take(8).map { "artist:${it.guid.value}" })
@@ -2184,8 +2317,6 @@ private fun BrowseMy(
                 add("sync-playlists")
                 add("all-tracks")
             }
-            add("settings")
-            add("switch-account")
         }
         focusedKey = focusedKey?.takeIf(availableKeys::contains) ?: availableKeys.firstOrNull()
         yield()
@@ -2219,21 +2350,6 @@ private fun BrowseMy(
             serverName = platformLabel,
             platformType = activeProfile.active?.type
                 ?: if (session.server.guid.value != "local") ConnectType.FEINIU else null,
-            focusedKey = focusedKey,
-            restoredFocus = contentFocus,
-            settingsFocus = settingsFocus,
-            switchAccountFocus = switchAccountFocus,
-            nav = nav,
-            artistRowFocus = artistRowFocus,
-            onFocused = { focusedKey = it },
-            onSettings = {
-                focusedKey = "settings"
-                onSettings()
-            },
-            onSwitchAccount = {
-                focusedKey = "switch-account"
-                onManagePlatforms()
-            },
         )
         Spacer(Modifier.height(10.dp))
         LazyColumn(state = listState) {
@@ -2254,7 +2370,7 @@ private fun BrowseMy(
                     focusedKey,
                     contentFocus,
                     rowFocusRequester = artistRowFocus,
-                    upFocusRequester = settingsFocus,
+                    upFocusRequester = nav.my,
                     downFocusRequester = albumRowFocus,
                     onFocused = { focusedKey = it },
                     borderless = true,
@@ -2349,15 +2465,6 @@ private fun ProfileStrip(
     username: String,
     serverName: String,
     platformType: ConnectType?,
-    focusedKey: String?,
-    restoredFocus: FocusRequester,
-    settingsFocus: FocusRequester,
-    switchAccountFocus: FocusRequester,
-    nav: NavRequesters,
-    artistRowFocus: FocusRequester,
-    onFocused: (String) -> Unit,
-    onSettings: () -> Unit,
-    onSwitchAccount: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -2380,38 +2487,6 @@ private fun ProfileStrip(
             Spacer(Modifier.height(4.dp))
             PlatformChip(serverName, platformType)
         }
-        Spacer(Modifier.width(16.dp))
-        ProfileActionButton(
-            label = "设置",
-            width = 96.dp,
-            modifier = Modifier
-                .focusProperties {
-                    left = FocusRequester.Cancel
-                    right = switchAccountFocus
-                    up = nav.home
-                    down = artistRowFocus
-                }
-                .focusRequester(settingsFocus)
-                .then(if (focusedKey == "settings") Modifier.focusRequester(restoredFocus) else Modifier)
-                .onFocusChanged { if (it.isFocused) onFocused("settings") },
-            onClick = onSettings,
-        )
-        Spacer(Modifier.width(12.dp))
-        ProfileActionButton(
-            label = "平台",
-            width = 124.dp,
-            modifier = Modifier
-                .focusProperties {
-                    left = settingsFocus
-                    right = FocusRequester.Cancel
-                    up = nav.my
-                    down = artistRowFocus
-                }
-                .focusRequester(switchAccountFocus)
-                .then(if (focusedKey == "switch-account") Modifier.focusRequester(restoredFocus) else Modifier)
-                .onFocusChanged { if (it.isFocused) onFocused("switch-account") },
-            onClick = onSwitchAccount,
-        )
     }
 }
 
@@ -3717,28 +3792,59 @@ private fun TrackCollection(
         }
     }
     fun play(index: Int) {
-        val target = tracks.getOrNull(index)?.takeIf(::isTrackPlayable) ?: return
+        android.util.Log.d("YueyinPlay", "play(index=$index) trackCount=${tracks.size} playableIndex=${tracks.indexOfFirst(::isTrackPlayable)}")
+        val target = tracks.getOrNull(index)?.takeIf(::isTrackPlayable) ?: run {
+            android.util.Log.d("YueyinPlay", "play aborted: target not playable")
+            return
+        }
         val window = exactTrackQueueWindow(loadedPages, index) ?: run {
+            android.util.Log.d("YueyinPlay", "play aborted: exactTrackQueueWindow null")
             setError(AppError.CollectionChanged)
             return
         }
-        val queue = container.musicRepository.prepareQueue(window.items)
-        val queueIds = queue.map { it.track.guid.value }
         val segmentIds = window.segments.flatMap(QueuePageSegment::mediaIds)
-        val queueIndex = queue.indexOfFirst { it.track.guid == target.guid }
-        if (queueIds != segmentIds || queueIndex < 0) {
-            setError(AppError.TranscodeUnavailable)
-            return
-        }
-        if (queue.isEmpty()) {
-            setError(AppError.TranscodeUnavailable)
-            return
-        }
         val sort = expectedSort ?: run {
             setError(AppError.CollectionChanged)
             return
         }
+        // 无论后面取链顺不顺利，播放页都必须"点了就出来"：
+        // 正常情况下 playQueue 一提交就打开；取链太慢时由这个兜底在 1.2s 后先打开。
+        var playerOpened = false
+        fun openPlayerOnce() {
+            if (playerOpened) return
+            playerOpened = true
+            onPlayer(target)
+        }
         actionScope.launch {
+            android.util.Log.d("YueyinPlay", "preparing queue items=${window.items.size}")
+            val earlyOpen = launch {
+                delay(1_200)
+                if (!playerOpened) {
+                    android.util.Log.d("YueyinPlay", "queue still preparing, opening player early")
+                    openPlayerOnce()
+                }
+            }
+            val eagerIndex = window.items.indexOfFirst { it.guid == target.guid }.coerceAtLeast(0)
+            // 只把「要立刻播的那首 + 后面一首」的直链取出来，其余先空着。
+            // 在线音源每首要过 WebView 脚本 + 1KB 探活（~300ms），整页 100 首要 30 秒以上，
+            // 用户点完「播放全部」要干等半分钟才出声、播放页也不弹 —— 这就是那个 bug 的根因。
+            val queue = runCatching { container.musicRepository.prepareQueue(window.items, eagerIndex, 2) }
+                .getOrElse {
+                    android.util.Log.d("YueyinPlay", "prepareQueue failed: ${it.message}")
+                    setError(AppError.Unknown(it.message))
+                    return@launch
+                }
+            android.util.Log.d("YueyinPlay", "prepared ${queue.size} urls, blank=${queue.count { p -> p.streamUrl.isBlank() }}")
+            val queueIds = queue.map { it.track.guid.value }
+            val queueIndex = queue.indexOfFirst { it.track.guid == target.guid }
+            if (queueIds != segmentIds || queueIndex < 0) {
+                setError(AppError.TranscodeUnavailable)
+                return@launch
+            }
+            if (queue.isEmpty()) {
+                setError(AppError.TranscodeUnavailable)
+                return@launch
+            }
             val transition = runCatching {
                 container.playbackController.playQueue(
                     tracks = queue,
@@ -3758,15 +3864,44 @@ private fun TrackCollection(
                 setError(AppError.TranscodeUnavailable)
                 return@launch
             }
-            runCatching { transition.awaitCommitted() }
-                .onSuccess {
-                    setError(null)
-                    onPlayer(target)
+            // 播放队列已提交（ExoPlayer 已经开始播放），这里立即打开播放页；
+            // 不要等 awaitCommitted()（它依赖快照持久化的 acknowledgement，可能延迟或失败），
+            // 否则会出现「已经在播，但播放页没弹出、要手动去点底部播放胶囊」的 bug。
+            earlyOpen.cancel()
+            openPlayerOnce()
+            // 剩余的直链在后台按顺序补齐，不阻塞播放与页面切换。
+            // 用 retainedStore.scope（跟着登录态走）而不是本页的 actionScope：
+            // 用户点完播放立刻跳到播放页，本页作用域会被取消，链路只补一半就停了。
+            if (queue.any { it.streamUrl.isBlank() }) {
+                retainedStore.scope.launch {
+                    val order = buildList {
+                        for (i in (queueIndex + 1) until queue.size) if (queue[i].streamUrl.isBlank()) add(i)
+                        for (i in 0 until queueIndex) if (queue[i].streamUrl.isBlank()) add(i)
+                    }
+                    for (i in order) {
+                        val item = queue.getOrNull(i) ?: continue
+                        val prepared = runCatching {
+                            container.musicRepository.prepareQueue(listOf(item.track), 0, 1).firstOrNull()
+                        }.getOrNull() ?: continue
+                        if (prepared.streamUrl.isNotBlank()) {
+                            container.playbackController.patchStreamUrl(item.track.guid.value, prepared.streamUrl)
+                        }
+                    }
+                    android.util.Log.d("YueyinPlay", "background url fill done")
                 }
-                .onFailure { setError(AppError.Unknown(it.message)) }
+            }
+            // 快照落盘只是「下次冷启动还能接着播」的保障，失败不代表这次播放有问题：
+            // 以前这里失败会 setError，用户听完歌返回列表就看到一条「加载失败，请重试」。
+            runCatching { transition.awaitCommitted() }
+                .onSuccess { setError(null) }
+                .onFailure {
+                    android.util.Log.d("YueyinPlay", "awaitCommitted failed: ${it.message}")
+                }
         }
     }
+
     fun runPrimaryAction() {
+        android.util.Log.d("YueyinPlay", "runPrimaryAction action=$primaryAction tracks=${tracks.size}")
         when (val action = primaryAction) {
             TrackCollectionPrimaryAction.PlayAll -> play(tracks.indexOfFirst(::isTrackPlayable))
             is TrackCollectionPrimaryAction.StartRoam -> {
@@ -3821,12 +3956,17 @@ private fun TrackCollection(
             return@LaunchedEffect
         }
         if (targetKey != null) {
-            repeat(3) {
+            // 只在「头 3 帧」里试 3 次是不够的：榜单/歌单详情是「先出空壳、再回填行」，
+            // 目标行可能几百毫秒后才 attach，三次都落空就再没人接焦点——
+            // 用户看到的就是「进了页面，第一次按确定没反应，得先按一下方向键」。
+            // 这里改成在 1.6 秒内反复请求，一旦成功立刻停下。
+            repeat(20) {
                 withFrameNanos { }
                 if (runCatching { restoredFocus.requestFocus() }.getOrDefault(false)) {
                     initialFocusRequested = true
                     return@LaunchedEffect
                 }
+                delay(80)
             }
         }
     }
@@ -4377,6 +4517,33 @@ internal fun exactTrackQueueWindow(
 
 private fun isTrackPlayable(track: Track): Boolean =
     !track.isCue && (track.accessStatus == null || track.accessStatus == 0)
+
+/**
+ * 搜索结果点播只预取「当前 + 下一首」的直链，其余在后台按顺序补齐。
+ *
+ * 在线音源每取一条链要过一次 WebView 里的脚本 + 一次探活（约 300ms/首），
+ * 30 首一次性取完要 9 秒以上——用户点完歌就得干等。所以先保证能立刻出声，
+ * 剩下的补进已提交的队列（patchStreamUrl），播放页里连续切歌不会落在空地址上。
+ */
+private suspend fun fillQueueUrlsInBackground(
+    container: AuthenticatedAppDependencies,
+    queue: List<PlaybackTrack>,
+    playIndex: Int,
+) {
+    val order = buildList {
+        for (i in (playIndex + 1) until queue.size) if (queue[i].streamUrl.isBlank()) add(i)
+        for (i in 0 until playIndex) if (queue[i].streamUrl.isBlank()) add(i)
+    }
+    for (i in order) {
+        val item = queue.getOrNull(i) ?: continue
+        val prepared = runCatching {
+            container.musicRepository.prepareQueue(listOf(item.track), 0, 1).firstOrNull()
+        }.getOrNull() ?: continue
+        if (prepared.streamUrl.isNotBlank()) {
+            container.playbackController.patchStreamUrl(item.track.guid.value, prepared.streamUrl)
+        }
+    }
+}
 
 @Composable
 internal fun PlaylistTile(
@@ -5183,7 +5350,8 @@ private const val SEARCH_TIMEOUT_MS = 120_000L
 @Composable
 private fun SearchScreen(
     container: AuthenticatedAppDependencies,
-    onPlayTrack: (Track) -> Unit,
+    // 必须把整段结果和点中的下标一起传出去：单曲进不了队列，只有「列表 + 起点」才能连续播放。
+    onPlayTrack: (List<Track>, Int) -> Unit,
     onOpenPlaylist: (Playlist) -> Unit,
     onOpenArtist: (Artist) -> Unit,
     onOpenAlbum: (Album) -> Unit,
@@ -5456,7 +5624,7 @@ private fun SearchField(
 @Composable
 private fun SearchResultsContent(
     results: SearchResults,
-    onPlayTrack: (Track) -> Unit,
+    onPlayTrack: (List<Track>, Int) -> Unit,
     onOpenPlaylist: (Playlist) -> Unit,
     onOpenArtist: (Artist) -> Unit,
     onOpenAlbum: (Album) -> Unit,
@@ -5469,13 +5637,15 @@ private fun SearchResultsContent(
     ) {
         if (results.tracks.isNotEmpty()) {
             item { SearchSectionTitle("歌曲") }
-            itemsIndexed(results.tracks.take(30), key = { _, track -> track.guid.value }) { index, track ->
+            // 点中的是「这 30 首里的第几首」，连同一整段结果交给上层去组队列——单曲传出去组不了队列。
+            val trackHits = results.tracks.take(30)
+            itemsIndexed(trackHits, key = { _, track -> track.guid.value }) { index, track ->
                 DetailTrackRow(
                     index = index,
                     track = track,
                     enabled = isTrackPlayable(track),
                     modifier = Modifier.padding(vertical = 2.dp),
-                    onClick = { onPlayTrack(track) },
+                    onClick = { onPlayTrack(trackHits, index) },
                 )
             }
         }
