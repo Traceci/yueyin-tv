@@ -478,6 +478,9 @@ internal fun AuthenticatedApp(
     }
     // 常驻导航条的焦点锚点：全 App 唯一，随 AuthenticatedApp 生命周期存活。
     val navRequesters = remember { NavRequesters() }
+    // 导航条「设置」标签按下键的落点：设置页左栏第一项「播放界面」。
+    // 设置页不再自己抢焦点，焦点可以留在导航条上继续向右走到「搜索 / 播放胶囊」。
+    val settingsEntryFocus = remember { FocusRequester() }
     // 当前路由对应的一级导航项；null 表示这一页不显示导航条（详情页 / 搜索 / 播放页）。
     val navTab = when (route) {
         LibraryRoute.Home -> LibraryNavTab.Home
@@ -560,6 +563,7 @@ internal fun AuthenticatedApp(
                             playback = playback,
                             selectedTab = navTab,
                             navRequesters = navRequesters,
+                            settingsEntryFocus = settingsEntryFocus,
                             onHome = { root(LibraryRoute.Home) },
                             onAlbums = { root(LibraryRoute.Albums) },
                             onPlaylists = { root(LibraryRoute.AllPlaylists) },
@@ -975,6 +979,8 @@ internal fun AuthenticatedApp(
                                 onSignOutFn = platformOnSignOutFn,
                                 onAddSource = platformOnAddSource,
                                 fnSessionActive = hasFnSession,
+                                firstFocus = settingsEntryFocus,
+                                navTabFocus = navRequesters.settings,
                             )
                             }
                             }
@@ -999,6 +1005,7 @@ private fun LibraryTopBar(
     playback: PlaybackUiState,
     selectedTab: LibraryNavTab,
     navRequesters: NavRequesters,
+    settingsEntryFocus: FocusRequester,
     onHome: () -> Unit,
     onAlbums: () -> Unit,
     onPlaylists: () -> Unit,
@@ -1021,6 +1028,7 @@ private fun LibraryTopBar(
                 SegmentedLibraryTabs(
                     selectedTab = selectedTab,
                     navRequesters = navRequesters,
+                    settingsEntryFocus = settingsEntryFocus,
                     onHome = onHome,
                     onAlbums = onAlbums,
                     onPlaylists = onPlaylists,
@@ -1116,6 +1124,7 @@ private fun LibraryTopBar(
 private fun SegmentedLibraryTabs(
     selectedTab: LibraryNavTab,
     navRequesters: NavRequesters,
+    settingsEntryFocus: FocusRequester,
     onHome: () -> Unit,
     onAlbums: () -> Unit,
     onPlaylists: () -> Unit,
@@ -1264,6 +1273,13 @@ private fun SegmentedLibraryTabs(
                     .focusRequester(navRequesters.settings)
                     .onFocusChanged {
                         if (it.isFocused) onTabFocused(LibraryNavTab.Settings)
+                    }
+                    // 焦点停在「设置」时按一下下键：进设置页左栏第一项「播放界面」。
+                    // 设置页自己不再抢焦点，这样导航条上仍能向右走到「搜索 / 播放胶囊」。
+                    .onPreviewKeyEvent { event ->
+                        event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown &&
+                            selectedTab == LibraryNavTab.Settings &&
+                            runCatching { settingsEntryFocus.requestFocus() }.isSuccess
                     },
                 onClick = { if (selectedTab != LibraryNavTab.Settings) onSettings() },
             )

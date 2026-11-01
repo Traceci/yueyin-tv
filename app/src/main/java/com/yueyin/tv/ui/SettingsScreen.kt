@@ -70,8 +70,6 @@ import com.yueyin.tv.core.model.preferences.UiScale
 import com.yueyin.tv.update.UpdateCheckSource
 import com.yueyin.tv.update.UpdateUiState
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.yield
-
 // 面板与控件统一走全局 FnColors（蓝黑系）。
 // 原来这里有一套独立的绿灰配色（#151A19 / #292D31 / #2A302F / #303735），
 // 色相与主界面完全不同，从首页点进设置会像换了一套皮肤——现已全部对齐。
@@ -111,6 +109,11 @@ internal fun SettingsScreen(
     onSignOutFn: () -> Unit = {},
     onAddSource: () -> Unit = {},
     fnSessionActive: Boolean = false,
+    // 顶部导航条「设置」标签按「下键」时用：焦点从导航条直接落进左栏第一项，
+    // 而不是设置页一打开就自己抢走焦点（那样导航条上就永远到不了「搜索 / 播放胶囊」）。
+    firstFocus: FocusRequester? = null,
+    // 左栏第一项按「上键」时的出口：回到顶部导航条的「设置」标签。
+    navTabFocus: FocusRequester? = null,
 ) {
     val preferences by container.appPreferences.state.collectAsStateWithLifecycle()
     val updateState by container.updateController.state.collectAsStateWithLifecycle()
@@ -122,8 +125,13 @@ internal fun SettingsScreen(
     // 此时当前分组用「选中浅底」继续标记，用户仍知道自己在哪个分组里。
     var focusedNav by remember { mutableStateOf<SettingsSection?>(null) }
 
-    // 左栏导航项的焦点。
-    val navRequesters = remember { SettingsSection.entries.associateWith { FocusRequester() } }
+    // 左栏导航项的焦点。「播放界面」这一项用外部传入的 requester（导航条下键的落点），
+    // 其余自建；firstFocus 为空（独立预览等场景）时全部自建。
+    val navRequesters = remember(firstFocus) {
+        SettingsSection.entries.associateWith { section ->
+            if (section == SettingsSection.PLAYER && firstFocus != null) firstFocus else FocusRequester()
+        }
+    }
 
     // 右栏任意分组「最左边那个控件」按左键的出口：回到左栏对应分组，而不是把左键吞掉。
     fun navFocusOf(section: SettingsSection): FocusRequester = navRequesters.getValue(section)
@@ -177,10 +185,10 @@ internal fun SettingsScreen(
         refreshUsage()
         refreshSongCacheUsage()
     }
-    LaunchedEffect(Unit) {
-        yield()
-        runCatching { navRequesters.getValue(SettingsSection.PLAYER).requestFocus() }
-    }
+    // 不再在进入页面时自动抢焦点：
+    // 1) 焦点从导航条「设置」标签落进来时，必须留在导航条上——否则用户永远按不到右侧的
+    //    「搜索 / 播放胶囊」；想进设置内容，按一下「下键」即可（见 firstFocus 的注释）。
+    // 2) 经菜单键从播放页等无焦点页面呼出时，AuthenticatedApp 的保底逻辑会把焦点交给导航条。
 
     // 左栏上下切换分组；右键把焦点交给当前分组右栏的第一个控件。
     fun moveNav(delta: Int) {
@@ -313,7 +321,16 @@ internal fun SettingsScreen(
                                     if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent known
                                     when (event.key) {
                                         Key.DirectionDown -> { moveNav(+1); true }
-                                        Key.DirectionUp -> { moveNav(-1); true }
+                                        Key.DirectionUp -> {
+                                            // 已经在第一项：上键回顶部导航条（别在五个分组里绕圈），
+                                            // 保住「设置 → 右 → 搜索 / 播放胶囊」这条路。
+                                            // 请求失败（导航条未挂载等）就退回原来的循环移动。
+                                            val exited = section == SettingsSection.entries.first() &&
+                                                navTabFocus != null &&
+                                                runCatching { navTabFocus.requestFocus() }.isSuccess
+                                            if (!exited) moveNav(-1)
+                                            true
+                                        }
                                         Key.DirectionRight -> { enterContent(); true }
                                         // 确定/OK 也能直接展开右侧内容（与右键同效），不用再按右键。
                                         Key.Enter, Key.DirectionCenter -> { enterContent(); true }
