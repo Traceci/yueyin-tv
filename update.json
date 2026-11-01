@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
   "packageName": "com.yueyin.tv",
-  "versionName": "2.0.2",
-  "versionCode": 24,
-  "title": "悦音 2.0.2",
-  "notes": "2.0.0 之后的补丁版本，集中收口焦点相关的两个问题。\n\n## 退出播放页后按键闪退\n- 播完歌退出播放页，回到列表或进设置按方向键会闪退，已修复\n- 焦点交接改为逐帧重试，并把「无焦点时按键」拦在崩溃之前\n\n## 导航条到设置页的焦点衔接\n- 焦点停在导航条「设置」上时留在导航条，按方向键下才进入设置页\n- 设置页左栏第一项按方向键上，回到导航条「设置」\n\n## 版本信息\n- 2.0.2，签名与 2.0.0 一致，可直接覆盖安装，配置保留",
+  "versionName": "2.0.3",
+  "versionCode": 27,
+  "title": "悦音 2.0.3",
+  "notes": "把「随心听」从点到响的整条链路重做，并把在线音源导入后的一轮问题收口。\n\n## 随心听\n- 点了十几秒没反应、要按别的键才弹播放页：不再等 50 首地址全取完，只同步取第一首，其余后台补\n- 起播两三秒后闪退：后台线程只负责取地址，拿到后回主线程再写播放队列\n- 每次点都要等：补链任务统一收口、首页提前备好全部曲目索引，十分钟内重复点不再重新随机\n\n## 在线音源\n- 补齐歌曲信息里缺失的 source 字段，QQ / 咪咕整条链路可用，同一首歌取链 9.5 秒降到 0.9 秒\n- 首曲取不到不再静默跳歌；取链超时 35 秒收到 12 秒，单首预算 9 秒\n- 单平台连续失败 3 次熔断 3 分钟；探活失败直接换脚本；失败过的脚本自动排后\n- 修「网页上传成功后列表仍显示没有文件」；主动点歌不再排在后台预取后面\n\n## 图标\n- 珊瑚渐变底 + 米白唱片 + 外圈珊瑚弧，自适应图标与电视横幅重做\n\n## 版本信息\n- 2.0.3，签名与 2.0.0 / 2.0.2 一致，可直接覆盖安装，配置保留",
   "apk": {
-    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v2.0.2/yueyin-tv-2.0.2.apk",
-    "size": 7251460,
-    "sha256": "887dfcb4d62cd089c4d0a93cadedc7c4f3892df1cfe27305a2097c8f1b7e514f"
+    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v2.0.3/yueyin-tv-2.0.3.apk",
+    "size": 7815496,
+    "sha256": "e8a96840712e68187d940435c204db6fe0f996556ababcd436b9ac48089ebc89"
   },
-  "publishedAt": "2026-11-01T08:55:00Z",
-  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v2.0.2"
+  "publishedAt": "2026-11-01T23:10:00Z",
+  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v2.0.3"
 }
