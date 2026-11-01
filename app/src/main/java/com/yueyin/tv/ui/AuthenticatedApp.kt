@@ -1602,27 +1602,46 @@ private fun BrowseHome(
             roamActionRunning = true
             scope.launch {
                 try {
-                    val picked = runCatching {
-                        container.musicRepository.allTracks(1).items.shuffled().take(50)
-                    }.getOrDefault(emptyList())
+                    // 取曲目列表要真走一次网络（在线平台还要拉榜单/曲库索引），放 IO 上。
+                    val picked = withContext(Dispatchers.IO) {
+                        runCatching {
+                            container.musicRepository.allTracks(1).items.shuffled().take(50)
+                        }.getOrDefault(emptyList())
+                    }
                     val fallback = if (picked.isEmpty()) {
                         // 有些平台（或权限受限的账号）拿不到全量曲目，退一步用第一个歌单
-                        runCatching {
-                            container.musicRepository.playlists().firstOrNull()?.let { playlist ->
-                                container.musicRepository.playlistTracks(playlist.guid.value, 1)
-                                    .items.shuffled().take(50)
-                            }
-                        }.getOrNull().orEmpty()
+                        withContext(Dispatchers.IO) {
+                            runCatching {
+                                container.musicRepository.playlists().firstOrNull()?.let { playlist ->
+                                    container.musicRepository.playlistTracks(playlist.guid.value, 1)
+                                        .items.shuffled().take(50)
+                                }
+                            }.getOrNull().orEmpty()
+                        }
                     } else {
                         emptyList()
                     }
-                    val queued = container.musicRepository.prepareQueue(if (picked.isEmpty()) fallback else picked)
+                    // 只同步取「第一首 + 下一首」的直链。在线音源每首都要过一次 WebView 脚本
+                    // 加一次 1KB 探活（约 300ms），50 首全取要 15 秒以上——用户点完毫无反应，
+                    // 过一会儿按别的键时播放页才突然弹出来，根因就是这里取了全队列。
+                    val queued = withContext(Dispatchers.IO) {
+                        container.musicRepository.prepareQueue(
+                            if (picked.isEmpty()) fallback else picked,
+                            0,
+                            2,
+                        )
+                    }
                     if (queued.isEmpty()) {
                         actionError = AppError.Empty
                     } else {
                         actionError = null
                         container.playbackController.playQueue(queued, 0)
                         onPlayer()
+                        // 剩下的直链在后台按顺序补齐，不挡播放页弹出。
+                        // 用 retainedStore.scope：跳播放页后本页 scope 会被取消。
+                        retainedStore.scope.launch {
+                            fillQueueUrlsInBackground(container, queued, 0)
+                        }
                     }
                 } finally {
                     roamActionRunning = false
@@ -4575,13 +4594,17 @@ private suspend fun fillQueueUrlsInBackground(
         for (i in (playIndex + 1) until queue.size) if (queue[i].streamUrl.isBlank()) add(i)
         for (i in 0 until playIndex) if (queue[i].streamUrl.isBlank()) add(i)
     }
-    for (i in order) {
-        val item = queue.getOrNull(i) ?: continue
-        val prepared = runCatching {
-            container.musicRepository.prepareQueue(listOf(item.track), 0, 1).firstOrNull()
-        }.getOrNull() ?: continue
-        if (prepared.streamUrl.isNotBlank()) {
-            container.playbackController.patchStreamUrl(item.track.guid.value, prepared.streamUrl)
+    // 取链里既有同步 OkHttp 探活、也有 WebView 脚本调用，必须离开主线程，
+    // 否则补链期间遥控器会"按了没反应"。
+    withContext(Dispatchers.IO) {
+        for (i in order) {
+            val item = queue.getOrNull(i) ?: continue
+            val prepared = runCatching {
+                container.musicRepository.prepareQueue(listOf(item.track), 0, 1).firstOrNull()
+            }.getOrNull() ?: continue
+            if (prepared.streamUrl.isNotBlank()) {
+                container.playbackController.patchStreamUrl(item.track.guid.value, prepared.streamUrl)
+            }
         }
     }
 }

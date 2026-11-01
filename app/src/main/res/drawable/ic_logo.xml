@@ -14,13 +14,12 @@
         android:pathData="M18.5,54a35.5,35.5 0 1,0 71,0a35.5,35.5 0 1,0 -71,0"
         android:strokeColor="#F5F1E8"
         android:strokeWidth="4" />
-    <!-- 珊瑚高光弧（右上四分之一圆） -->
+    <!-- 外圈上的珊瑚色弧：12 点 → 3 点 -->
     <path
         android:fillColor="@android:color/transparent"
         android:pathData="M54,18.5A35.5,35.5 0 0,1 89.5,54"
         android:strokeColor="#FF684D"
-        android:strokeLineCap="round"
-        android:strokeWidth="4.6" />
+        android:strokeWidth="4" />
     <!-- 珊瑚纹圈 r=27 -->
     <path
         android:fillColor="@android:color/transparent"

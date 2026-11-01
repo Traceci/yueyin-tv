@@ -10,6 +10,8 @@ import okhttp3.Request
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** 在线歌曲取链结果。 */
 sealed interface PlaybackResolution {
@@ -118,21 +120,23 @@ class OnlinePlaybackResolver(context: Context) {
     }
 
     /** 校验直链；返回 null 表示可用，否则返回一句失败原因。 */
-    private fun verify(url: String): String? = runCatching {
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .header("Range", "bytes=0-1023")
-            .build()
-        probeClient.newCall(request).execute().use { response ->
-            val bytes = response.body?.bytes()?.size ?: 0
-            when {
-                response.code >= 400 -> "HTTP ${response.code}"
-                bytes < 256 -> "返回内容为空"
-                else -> null
+    private suspend fun verify(url: String): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .header("Range", "bytes=0-1023")
+                .build()
+            probeClient.newCall(request).execute().use { response ->
+                val bytes = response.body?.bytes()?.size ?: 0
+                when {
+                    response.code >= 400 -> "HTTP ${response.code}"
+                    bytes < 256 -> "返回内容为空"
+                    else -> null
+                }
             }
-        }
-    }.getOrElse { "连接失败" }
+        }.getOrElse { "连接失败" }
+    }
 
     private fun extractUrl(value: String?): String? {
         if (value.isNullOrBlank()) return null
