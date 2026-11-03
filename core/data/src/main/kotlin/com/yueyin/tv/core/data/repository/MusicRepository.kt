@@ -625,7 +625,19 @@ class MusicRepository internal constructor(
         return result
     }
 
-    suspend fun toggleFavorite(trackGuid: String, fallbackFavorite: Boolean): Result<Boolean> =
+    /**
+     * 切换收藏。
+     *
+     * [snapshot] 是调用方手上的完整曲目。没有服务端收藏的平台要把曲目信息写进本机 Room，
+     * 以前靠 `trackMetadata(trackGuid)` 反查，而在线音源在这条路上经常拿不到东西
+     * （曲目缓存池为空、按 id 搜索无结果），于是收藏列表里会出现一条「未知曲目」。
+     * 调用方本来就知道这首叫什么，直接传进来最可靠；不传时仍走原来的反查，行为不变。
+     */
+    suspend fun toggleFavorite(
+        trackGuid: String,
+        fallbackFavorite: Boolean,
+        snapshot: Track? = null,
+    ): Result<Boolean> =
         favoriteMutationMutex.withLock {
             val namespace = session.cacheNamespace()
             bindFavoriteNamespace(namespace)
@@ -647,7 +659,7 @@ class MusicRepository internal constructor(
                         source.setFavorite(trackGuid, mutation.desired)
                     } else {
                         // 文件类协议没有服务端收藏：写本机 Room，按钮照常可用
-                        applyLocalFavorite(namespace, trackGuid, mutation.desired)
+                        applyLocalFavorite(namespace, trackGuid, mutation.desired, snapshot)
                     }
                 }
                 if (!accepted) {
@@ -668,9 +680,16 @@ class MusicRepository internal constructor(
         }
 
     /** 本地收藏兜底（无服务端收藏接口的平台）：收藏时把曲目信息一并落库，供收藏页展示。 */
-    private suspend fun applyLocalFavorite(namespace: String, trackGuid: String, favorite: Boolean): Boolean {
+    private suspend fun applyLocalFavorite(
+        namespace: String,
+        trackGuid: String,
+        favorite: Boolean,
+        snapshot: Track? = null,
+    ): Boolean {
         if (favorite) {
-            val track = runCatching { trackMetadata(trackGuid) }.getOrNull()
+            // 优先用调用方给的快照；拿不到才反查一次。反查在在线音源上失败率不低，
+            // 一旦失败，收藏列表里就只有一条没有名字、没有封面的「未知曲目」。
+            val track = snapshot ?: runCatching { trackMetadata(trackGuid) }.getOrNull()
             localStore.addFavorite(
                 FavoriteTrackEntity(
                     namespace = namespace,

@@ -4,11 +4,11 @@
 
 <h1 align="center">悦音</h1>
 
-<p align="center">给电视做的自托管音乐客户端</p>
+<p align="center">自托管的音乐客户端，电视和手机都能装</p>
 
 <p align="center">
-  <img alt="Platform" src="https://img.shields.io/badge/Android-6.0%2B%20%7C%20Android%20TV-3DDC84?logo=android&logoColor=white">
-  <img alt="Version" src="https://img.shields.io/badge/version-2.0.3-orange">
+  <img alt="Platform" src="https://img.shields.io/badge/Android%206.0%2B-Android%20TV%20%7C%20Phone-3DDC84?logo=android&logoColor=white">
+  <img alt="Version" src="https://img.shields.io/badge/version-2.0.4-orange">
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue">
 </p>
 
@@ -16,11 +16,23 @@
 
 ## 这是什么
 
-悦音是一个 **Android TV 音乐客户端**。它本身不提供任何音乐内容，只负责把你自己的音乐服务器上的曲库，用适合大屏和遥控器的方式呈现出来。
+悦音是一个 **自托管的音乐客户端，一套代码两端可用**：装到电视上是给遥控器设计的大屏界面，装到手机上是给手指设计的触屏界面，同一个安装包。
 
-装好、填上自己服务器的地址，就能在客厅电视上听 NAS 里的音乐。
+它本身不提供任何音乐内容，只负责把你自己的音乐服务器上的曲库，用合适的界面呈现出来。
+
+装好、填上自己服务器的地址，就能在客厅电视或手机上听 NAS 里的音乐。
 
 > **悦音不提供、不存储、不分发任何音乐内容，不内置任何音源脚本与音频文件。** 在线内容的播放依赖你自己导入的音源脚本。详见 [免责声明](DISCLAIMER.md)。
+
+## 两端怎么区分
+
+同一个 APK，由 App 自己判断：系统上报电视（`UI_MODE_TYPE_TELEVISION`）或设备没有触摸屏，就进入电视界面；否则按最小宽度 600dp 分为手机与平板。
+
+- 不需要在设置里选，也不会装错
+- 两端的曲库、平台配置、音源脚本、收藏与歌单共用同一份数据
+- 两套界面互不引用：电视端不会加载手机界面的代码，反之亦然
+
+**电视端**保留原来的大屏宫格、遥控器快捷键、三种播放页样式与 4K 密度补偿。**手机端**是独立的触屏界面：竖屏底部三档导航，横屏收成左侧图标栏，曲库按专辑 / 歌手 / 歌单 / 歌曲 / 收藏分段，播放页横屏自动分栏。
 
 ## 界面
 
@@ -40,7 +52,7 @@
   <img src="docs/images/search.png" width="60%" alt="搜索">
 </p>
 
-<p align="center"><sub>截图中的歌手、专辑与歌曲均为演示数据</sub></p>
+<p align="center"><sub>以上为电视端截图，手机端截图稍后补充；截图中的歌手、专辑与歌曲均为演示数据</sub></p>
 
 ## 支持的数据源
 
@@ -79,8 +91,11 @@
 
 **手机、平板也能用**
 
-- 播放控制、音效面板、启动引导都支持触屏点击，遥控器和手指两种方式并存
-- 拿手机横过来就是一套完整的播放器界面
+- 同一个安装包，装到手机上自动进入触屏界面，不用另下版本
+- 竖屏底部三档导航（首页 / 曲库 / 我的），横屏收成左侧图标栏 + 迷你播放条
+- 曲库按专辑 / 歌手 / 歌单 / 歌曲 / 收藏分段；列数按屏幕宽度自动计算，横屏手机上专辑 5 列、歌手 3 列
+- 播放页横屏自动切左右分栏，进度条、歌词都能手指拖动
+- 横屏自动隐藏状态栏，从顶部下滑可临时唤出
 
 **播放**
 
@@ -105,10 +120,11 @@
 
 ## 安装
 
-**直接下载**：到 [Releases](../../releases) 下载最新的 APK，拷到电视上用文件管理器装上即可。
+**直接下载**：到 [Releases](../../releases) 下载最新的 `yueyin-<版本>-release.apk`，拷到电视或手机上，用文件管理器装上即可。同一个包装哪端都会自动适配。
 
-- 最低 Android 6.0，推荐 Android TV 9 及以上
+- 最低 Android 6.0；电视推荐 Android TV 9 及以上，手机推荐 Android 9 及以上
 - universal 包已包含 `arm64-v8a / armeabi-v7a / x86 / x86_64`，不用挑架构
+- 从 2.0.3 及更早版本升级可直接覆盖安装，签名一致，平台配置与收藏保留
 
 **自己构建**（需要 JDK 17 与 Android SDK platform 36）：
 

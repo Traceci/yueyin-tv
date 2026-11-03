@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import androidx.tv.material3.LocalContentColor
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.darkColorScheme
+import com.yueyin.tv.ui.device.FormFactor
 
 /**
  * 「午夜流光」配色体系：深蓝黑底 + 珊瑚金主色 + 青绿辅助色。
@@ -507,7 +508,11 @@ fun FnSkeleton(
 }
 
 @Composable
-fun YueYinTheme(uiScale: Float = 1f, content: @Composable () -> Unit) {
+fun YueYinTheme(
+    uiScale: Float = 1f,
+    formFactor: FormFactor = FormFactor.Tv,
+    content: @Composable () -> Unit,
+) {
     // 4K 电视（如 TCK65K）画布为 1920×1080dp，若按原密度渲染所有元素会显得只有
     // 1080p 电视的一半。这里做全局密度补偿：宽画布按 2× 折算，有效画布回到
     // 960×540dp，与 1080p 电视视觉完全一致；1080p 及以下设备不受影响。
@@ -516,7 +521,17 @@ fun YueYinTheme(uiScale: Float = 1f, content: @Composable () -> Unit) {
     // 例：4K 电视若上报 320dpi → 画布 1920×1080dp → 倍率 2.0（有效画布回到 960×540）；
     // 1080p 电视上报 320dpi → 画布 960×540dp → 倍率 1.0（不缩放）；
     // 若厂商上报 213dpi → 画布 1442dp → 倍率 1.5（旧逻辑会因 <1400…> 判断失真）。
-    val scale = FnAdaptive.canvasScale(configuration.screenWidthDp, configuration.screenHeightDp)
+    //
+    // 手持设备**一律不折算**，这是手机版能看的前提：
+    // 手机竖屏画布约 390×844dp，按电视公式算出的倍率是 min(390/960, 844/540)=0.406，
+    // 再被 coerceIn 兜到 0.5 —— 有效画布变成 780×1688dp，正文 19sp 实际只剩 9.5sp 的物理大小，
+    // 整屏字小到看不清，而且因为画布被撑大一倍，所有按 960dp 设计的容器在竖屏里都放不下。
+    // 手机端必须 scale = 1f：1sp 就是 1sp，系统的字体大小设置也能正常生效（无障碍要求）。
+    val scale = if (formFactor.isHandheld) {
+        1f
+    } else {
+        FnAdaptive.canvasScale(configuration.screenWidthDp, configuration.screenHeightDp)
+    }
     // uiScale 是用户在设置页选的整体缩放档位（紧凑 0.92 / 标准 1.0 / 宽松 1.08）。
     // 先按分辨率把设备折算回 960×540 设计画布，再套用用户的个性化偏好。
     val density = Density(original.density * scale * uiScale, original.fontScale)

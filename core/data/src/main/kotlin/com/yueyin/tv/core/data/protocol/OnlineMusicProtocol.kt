@@ -43,6 +43,13 @@ class OnlineMusicProtocol(
     private val repository: OnlineMusicRepository = OnlineMusicRepository.shared,
     private val discover: OnlineDiscoverApi = OnlineDiscoverApi(OnlineMusicApi()),
     private val lyricProvider: (suspend (OnlineSong) -> String?)? = null,
+    /**
+     * 是否已导入至少一个音源脚本。在线音乐只是个壳，没导入任何脚本时，
+     * 榜单 / 歌单 / 新歌 / 新碟 / 搜索这些「内置」内容一律不返回，UI 自然走空态，
+     * 由「导入音源脚本」提示引导用户，而不是凭空塞一堆内置歌单。
+     * 由 App 层注入（core 不反向依赖 app 的 MusicSourceRuntime）。
+     */
+    private val hasSources: () -> Boolean = { true },
 ) : MusicProtocol {
 
     override val type: ConnectType = ConnectType.ONLINE
@@ -87,6 +94,7 @@ class OnlineMusicProtocol(
      * 按歌手名去重、取一张代表封面。组合名（"A / B"）拆成单人，保证点进去按名搜索能命中。
      */
     override suspend fun artists(profile: ConnectProfile): List<RemoteArtist> {
+        if (!hasSources()) return emptyList()
         val byName = LinkedHashMap<String, RemoteArtist>()
         fun addArtist(rawName: String, cover: String?) {
             val cleaned = OnlineText.cleanArtist(rawName)
@@ -112,6 +120,7 @@ class OnlineMusicProtocol(
     }
 
     override suspend fun albums(profile: ConnectProfile): List<RemoteAlbum> {
+        if (!hasSources()) return emptyList()
         val part = runCatching { discover.newAlbums(48) }.getOrNull() ?: return emptyList()
         return part.items.map { album ->
             RemoteAlbum(
@@ -125,6 +134,7 @@ class OnlineMusicProtocol(
     }
 
     override suspend fun songs(profile: ConnectProfile): List<RemoteSong> {
+        if (!hasSources()) return emptyList()
         val part = runCatching { discover.newSongs(60) }.getOrNull() ?: return emptyList()
         val songs = part.items
         indexSongs(songs)
@@ -133,6 +143,7 @@ class OnlineMusicProtocol(
     }
 
     override suspend fun playlists(profile: ConnectProfile): List<RemotePlaylist> {
+        if (!hasSources()) return emptyList()
         val ranks = runCatching { discover.rankGroups() }.getOrNull()?.items.orEmpty()
         val pls = runCatching { discover.playlists(36) }.getOrNull()?.items.orEmpty()
         val result = mutableListOf<RemotePlaylist>()
@@ -175,6 +186,7 @@ class OnlineMusicProtocol(
     }
 
     override suspend fun search(profile: ConnectProfile, query: String): List<RemoteSong> {
+        if (!hasSources()) return emptyList()
         val result = runCatching { repository.search(query, useCache = true) }.getOrNull()
             ?: return emptyList()
         val songs = result.songs
@@ -188,6 +200,7 @@ class OnlineMusicProtocol(
      * id 里编码了歌手名（见 [artistIdOf]），这里还原出来当搜索词。
      */
     override suspend fun artistSongs(profile: ConnectProfile, artistId: String): List<RemoteSong> {
+        if (!hasSources()) return emptyList()
         val name = parseArtistName(artistId)
         if (name.isBlank()) return emptyList()
         val result = runCatching { repository.search(name, useCache = true) }.getOrNull()

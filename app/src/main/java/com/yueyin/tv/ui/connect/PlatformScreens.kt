@@ -97,6 +97,10 @@ object ConnectRuntime {
                         lyricProvider = { song ->
                             playbackResolver.resolveLyric(song)
                         },
+                        // 没导入任何音源脚本时，榜单/歌单/新歌/搜索一律返回空，避免「内置音源」。
+                        hasSources = {
+                            com.yueyin.tv.ui.source.MusicSourceRuntime.state.value.sources.isNotEmpty()
+                        },
                     ),
                 ),
             )

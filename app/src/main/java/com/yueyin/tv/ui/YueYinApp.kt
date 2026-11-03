@@ -91,6 +91,9 @@ import com.yueyin.tv.core.data.server.ServerUrlNormalizer
 import com.yueyin.tv.core.data.server.ServerUrlResult
 import com.yueyin.tv.core.model.AppError
 import com.yueyin.tv.core.model.AppException
+import com.yueyin.tv.phone.PhoneApp
+import com.yueyin.tv.ui.device.FormFactor
+import com.yueyin.tv.ui.device.rememberFormFactor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -99,6 +102,8 @@ private const val STARTUP_SPLASH_HOLD_MS = 620L
 
 @Composable
 internal fun YueYinApp(container: AppUiDependencies, onExitApplication: () -> Unit) {
+    // 形态判定只在这里做一次，向下用参数传递，避免各页面各自读 Configuration 判断出错。
+    val formFactor = rememberFormFactor()
     val session by container.sessionRepository.state.collectAsStateWithLifecycle()
     val playback by container.playbackController.state.collectAsStateWithLifecycle()
     val updateState by container.updateController.state.collectAsStateWithLifecycle()
@@ -118,13 +123,17 @@ internal fun YueYinApp(container: AppUiDependencies, onExitApplication: () -> Un
         splashDismissed = true
     }
     // 首次安装（首次登录成功）后展示一次遥控器按键说明，之后不再自动弹出。
+    // 手持设备直接跳过：没有遥控器，弹出来只会让人困惑。
     var guideVisible by remember { mutableStateOf(false) }
-    LaunchedEffect(session) {
-        if (session is SessionState.SignedIn && !container.appPreferences.remoteControlGuideSeen()) {
+    LaunchedEffect(session, formFactor) {
+        if (formFactor == FormFactor.Tv &&
+            session is SessionState.SignedIn &&
+            !container.appPreferences.remoteControlGuideSeen()
+        ) {
             guideVisible = true
         }
     }
-    YueYinTheme(uiScale = preferences.uiScale.factor) {
+    YueYinTheme(uiScale = preferences.uiScale.factor, formFactor = formFactor) {
         Box(Modifier.fillMaxSize().background(FnColors.Background)) {
             val contentAlpha by animateFloatAsState(
                 targetValue = if (splashDismissed) 1f else 0f,
@@ -164,7 +173,14 @@ internal fun YueYinApp(container: AppUiDependencies, onExitApplication: () -> Un
                         )
                     }
                     is SessionState.SignedIn -> {
-                        AuthenticatedApp(container, current, playback, onExitApplication)
+                        // 形态分流：电视走原有电视壳，手持设备走手机壳。
+                        // 两套壳**并列**——手机壳从不调用电视壳里的任何 Composable，
+                        // 电视那 5900 行布局因此一行都不用改，手机适配出问题也不会传染到电视。
+                        if (formFactor.isHandheld) {
+                            PhoneApp(container, current, playback, onExitApplication)
+                        } else {
+                            AuthenticatedApp(container, current, playback, onExitApplication)
+                        }
                     }
                 }
             }

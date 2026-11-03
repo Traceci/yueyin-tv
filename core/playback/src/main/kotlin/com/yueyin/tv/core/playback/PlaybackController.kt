@@ -542,6 +542,18 @@ class PlaybackController(
         player.seekTo((player.currentPosition + offsetMs).coerceIn(0L, upperBound))
     }
 
+    /**
+     * 绝对定位。
+     *
+     * 手机播放页的进度条是「拖着走」的：拖动过程中界面显示手指位置、松手才真正 seek。
+     * 如果松手时用 [seekBy] 传「目标 − 当时位置」，那是两个时间点的差值，播放器早已前进了一截，
+     * 落点会偏。目标位置是用户亲眼选定的，必须按绝对值落。
+     */
+    fun seekTo(positionMs: Long) = controller?.let { player ->
+        val upperBound = player.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
+        player.seekTo(positionMs.coerceIn(0L, upperBound))
+    }
+
     fun selectQueueItem(queueIndex: Int): PlaybackTransition? {
         val player = controller ?: return null
         if (queueKind != QueueKind.Normal || queueIndex !in 0 until player.mediaItemCount) return null

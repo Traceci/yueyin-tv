@@ -120,12 +120,13 @@ android {
         }
     }
 
-    // 发布产物统一命名 yueyin-tv-<versionName>.apk，不带 flavor / buildType 尾缀。
+    // 发布产物统一命名 yueyin-<versionName>.apk，不带 flavor / buildType 尾缀。
+    // 2.0.4 起同一个包装电视和手机两端，文件名不再带 tv / phone 区分。
     applicationVariants.all {
         if (buildType.name == "release") {
             outputs.all {
                 (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
-                    .outputFileName = "yueyin-tv-${managedVersionName}.apk"
+                    .outputFileName = "yueyin-${managedVersionName}.apk"
             }
         }
     }
@@ -153,23 +154,23 @@ android {
 }
 
 base {
-    archivesName.set("yueyin-tv-$managedVersionName")
+    archivesName.set("yueyin-$managedVersionName")
 }
 
 /**
  * 把侧载 release APK 导出到项目外层 `dist/`，文件名去掉渠道后缀：
- * `yueyin-tv-<versionName>-release.apk`。对外分发统一用这个名字，
+ * `yueyin-<versionName>-release.apk`。对外分发统一用这个名字，
  * 避免用户看到 `-sideload-` 这类内部渠道标记。
  */
 val exportReleaseApk by tasks.registering(Copy::class) {
     group = "distribution"
-    description = "Exports the sideload release APK as yueyin-tv-<version>-release.apk."
+    description = "Exports the sideload release APK as yueyin-<version>-release.apk."
     dependsOn("assembleSideloadRelease")
     from(layout.buildDirectory.dir("outputs/apk/sideload/release")) {
         include("*.apk")
     }
     into(rootProject.layout.projectDirectory.dir("../dist"))
-    rename { "yueyin-tv-$managedVersionName-release.apk" }
+    rename { "yueyin-$managedVersionName-release.apk" }
 }
 
 val verifyReleaseSigning by tasks.registering {
