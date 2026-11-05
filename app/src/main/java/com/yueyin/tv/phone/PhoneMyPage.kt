@@ -76,8 +76,6 @@ internal fun PhoneMyPage(
     val favoriteLibrary by deps.musicRepository.favoriteState.collectAsStateWithLifecycle()
     val connectState by ConnectRuntime.store.state.collectAsStateWithLifecycle()
 
-    var confirmLogout by remember { mutableStateOf(false) }
-    var loggingOut by remember { mutableStateOf(false) }
 
     // 只补第一页：这里要的是「有多少」与「入口是否为空」，不是把整本目录拉下来。
     LaunchedEffect(Unit) {
@@ -174,52 +172,6 @@ internal fun PhoneMyPage(
             }
             Spacer(Modifier.height(PhoneSpace.xl))
 
-            // 手机端的账号只有一种：飞牛 NAS 会话（本地会话不算）。
-            //
-            // 以前这里无条件放一个「退出登录」，本地会话下点它会 logout → 会话变未登录 →
-            // 顶层落到电视端那个 NAS 登录页，等于在手机上被踢去重新登录一次。
-            // 现在本地会话干脆不显示这个按钮，页面到设置组就结束；
-            // 真飞牛会话下文案也改成「断开飞牛音乐」——它只断开这一条数据源，不是退出 App。
-            if (onFnSession) {
-                if (confirmLogout) {
-                    LogoutConfirmCard(
-                        busy = loggingOut,
-                        onCancel = { if (!loggingOut) confirmLogout = false },
-                        onConfirm = {
-                            if (!loggingOut) {
-                                loggingOut = true
-                                scope.launch {
-                                    // 失败也要收起确认条：留着一个永远转圈的框比断开失败更难解释。
-                                    runCatching { deps.sessionRepository.logout() }
-                                    // 断开后立刻回到本地会话：手机壳因此原地留着，
-                                    // 不会把用户扔去登录页（那是电视端的账号语义）。
-                                    runCatching { deps.sessionRepository.enterLocalMode() }
-                                    loggingOut = false
-                                    confirmLogout = false
-                                }
-                            }
-                        },
-                    )
-                } else {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(PhoneSize.PrimaryButton)
-                            .background(FnColors.Surface, RoundedCornerShape(14.dp))
-                            .border(1.dp, FnColors.Coral.copy(alpha = 0.24f), RoundedCornerShape(14.dp))
-                            .phoneTap { confirmLogout = true },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            "断开飞牛音乐",
-                            color = FnColors.Coral,
-                            fontSize = PhoneType.Row,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                        )
-                    }
-                }
-            }
         }
     }
 
@@ -538,60 +490,6 @@ private fun MyRow(
     }
 }
 
-// ---------------------------------------------------------------------------
-// 退出确认
-// ---------------------------------------------------------------------------
-
-/**
- * 退出登录确认卡（就地展开，不是弹窗）。
- *
- * 为什么不用弹窗：手机壳没有套 material3 主题，`AlertDialog` 会取到默认紫色调；
- * 自绘 `Dialog` 又要另开一个 Window，实测在模拟器上点不动（点完界面没有任何变化）。
- * 就地展开既没有窗口问题，也保留了「二次确认」这一层保护——危险操作不该一点就走。
- */
-@Composable
-private fun LogoutConfirmCard(busy: Boolean, onCancel: () -> Unit, onConfirm: () -> Unit) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(FnColors.Surface, RoundedCornerShape(14.dp))
-            .border(1.dp, FnColors.Coral.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
-            .padding(PhoneSpace.lg),
-    ) {
-        Text(
-            "断开飞牛音乐？",
-            color = FnColors.Text,
-            fontSize = PhoneType.Row,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-        )
-        Spacer(Modifier.height(PhoneSpace.xs))
-        Text(
-            "断开后飞牛曲库不再显示，App 不会退出；其它平台与本地曲库照常可用。" +
-                "想再连回来：平台管理 → ＋ 新增平台 → 飞牛音乐。",
-            color = FnColors.Muted,
-            fontSize = PhoneType.Caption,
-            lineHeight = 18.sp,
-        )
-        Spacer(Modifier.height(PhoneSpace.md))
-        Row(horizontalArrangement = Arrangement.spacedBy(PhoneSpace.md)) {
-            DialogButton(
-                label = "取消",
-                primary = false,
-                enabled = !busy,
-                onClick = onCancel,
-                modifier = Modifier.weight(1f),
-            )
-            DialogButton(
-                label = if (busy) "正在断开…" else "确认断开",
-                primary = true,
-                enabled = !busy,
-                onClick = onConfirm,
-                modifier = Modifier.weight(1f),
-            )
-        }
-    }
-}
 
 @Composable
 private fun DialogButton(

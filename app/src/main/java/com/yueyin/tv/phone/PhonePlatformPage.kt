@@ -72,7 +72,6 @@ internal fun PhonePlatformManagePage(
     fnSessionActive: Boolean,
     onBack: () -> Unit,
     onAdd: () -> Unit,
-    onEdit: (ConnectProfile) -> Unit,
     onOpenSources: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -80,13 +79,28 @@ internal fun PhonePlatformManagePage(
     val state by store.state.collectAsState()
     val sources by MusicSourceRuntime.state.collectAsState()
 
-    var expandedId by remember { mutableStateOf<String?>(null) }
-    var pendingDeleteId by remember { mutableStateOf<String?>(null) }
-
     fun activate(profile: ConnectProfile?, label: String) {
         ConnectRuntime.activate(profile)
-        expandedId = null
         Toast.makeText(context, "已切换到「$label」", Toast.LENGTH_SHORT).show()
+    }
+
+    fun delete(profile: ConnectProfile) {
+        val wasActive = state.activeId == profile.id
+        store.remove(profile.id)
+        if (wasActive) {
+            val next = store.state.value.profiles.firstOrNull()
+            ConnectRuntime.activate(next)
+        }
+        val keepSources = profile.type == ConnectType.ONLINE && sources.count > 0
+        Toast.makeText(
+            context,
+            if (keepSources) {
+                "已删除「${profile.displayName}」，${sources.count} 个音源脚本仍保留"
+            } else {
+                "已删除「${profile.displayName}」"
+            },
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 
     Column(
@@ -104,39 +118,13 @@ internal fun PhonePlatformManagePage(
             modifier = Modifier.padding(horizontal = 4.dp, vertical = PhoneSpace.sm),
         )
 
-        val fnOsActive = fnSessionActive && state.activeId == null
-        // 飞牛只在**确实登录着飞牛**时占一行：它没有 ConnectProfile 可存，
-        // 唯一的「添加」动作就是登录，所以会话里 server 不是 local 就等于「添加过」。
-        // 没登录时这一行不画，入口统一走下面的「＋ 新增平台 → 飞牛音乐」。
-        if (fnSessionActive) {
-            PlatformRow(
-                icon = { PlatformIcon(ConnectType.FEINIU, 34.dp) },
-                title = "飞牛音乐",
-                subtitle = "与登录账号同一个曲库",
-                active = fnOsActive,
-                expanded = expandedId == FN_OS_ROW_ID,
-                onToggleExpand = { expandedId = if (expandedId == FN_OS_ROW_ID) null else FN_OS_ROW_ID },
-                actions = {
-                    if (!fnOsActive) {
-                        PlatformActionChip("设为当前") { activate(null, "飞牛音乐") }
-                    }
-                    // 不在这里做「退出飞牛账号」：它会结束会话并把用户带回登录页，
-                    // 这是账号级动作，混在平台列表里点错代价太大。
-                    PlatformActionChip("重新登录在「我的」页", enabled = false) {}
-                },
-            )
-            Spacer(Modifier.height(PhoneSpace.sm))
-        }
-
         state.profiles.forEach { profile ->
             PlatformRow(
                 icon = { PlatformIcon(profile.type, 34.dp) },
                 title = profile.displayName,
                 subtitle = when {
-                    // 在线音乐是个「壳」，真正干活的是它下面挂的音源脚本。
-                    // 这里直接把脚本数写出来，用户不必点进去才知道自己加没加过。
                     profile.type == ConnectType.ONLINE -> if (sources.count == 0) {
-                        "还没有音源脚本 · 展开可添加"
+                        "还没有音源脚本 · 点「音源」添加"
                     } else {
                         "${sources.count} 个音源脚本 · 五平台聚合"
                     }
@@ -144,62 +132,13 @@ internal fun PhonePlatformManagePage(
                     else -> "${profile.username.ifBlank { profile.type.displayName }} · ${profile.host}"
                 },
                 active = profile.id == state.activeId,
-                expanded = expandedId == profile.id,
-                onToggleExpand = {
-                    expandedId = if (expandedId == profile.id) null else profile.id
-                    pendingDeleteId = null
-                },
-                actions = {
-                    if (profile.id != state.activeId) {
-                        PlatformActionChip("设为当前") { activate(profile, profile.displayName) }
-                    }
-                    if (profile.type != ConnectType.ONLINE) {
-                        PlatformActionChip("编辑") {
-                            expandedId = null
-                            onEdit(profile)
-                        }
-                    }
-                    val deleting = pendingDeleteId == profile.id
-                    PlatformActionChip(
-                        label = if (deleting) "确认删除" else "删除",
-                        danger = deleting,
-                    ) {
-                        if (!deleting) {
-                            pendingDeleteId = profile.id
-                        } else {
-                            val wasActive = state.activeId == profile.id
-                            store.remove(profile.id)
-                            pendingDeleteId = null
-                            expandedId = null
-                            if (wasActive) {
-                                val next = store.state.value.profiles.firstOrNull()
-                                ConnectRuntime.activate(next)
-                            }
-                            // 删掉「在线音乐」不等于删掉脚本：脚本存在自己的库里，
-                            // 重新添加平台时还认得回来。这句话省掉「我的音源白导了」的误判。
-                            val keepSources = profile.type == ConnectType.ONLINE && sources.count > 0
-                            Toast.makeText(
-                                context,
-                                if (keepSources) {
-                                    "已删除「${profile.displayName}」，${sources.count} 个音源脚本仍保留"
-                                } else {
-                                    "已删除「${profile.displayName}」"
-                                },
-                                Toast.LENGTH_SHORT,
-                            ).show()
-                        }
-                    }
-                },
-                // 音源入口常驻在行尾：不用展开、不用进二级页，一点就是脚本列表。
-                // 之前藏在「管理 → 音源脚本」里，用户根本找不到。
+                onActivate = { activate(profile, profile.displayName) },
+                onDelete = { delete(profile) },
                 trailing = if (profile.type == ConnectType.ONLINE) {
                     {
                         Box(
                             Modifier
-                                .phoneTap {
-                                    expandedId = null
-                                    onOpenSources()
-                                }
+                                .phoneTap { onOpenSources() }
                                 .padding(horizontal = 4.dp, vertical = 6.dp)
                                 .background(
                                     FnColors.Coral.copy(alpha = 0.14f),
@@ -223,33 +162,6 @@ internal fun PhonePlatformManagePage(
             Spacer(Modifier.height(PhoneSpace.sm))
         }
 
-        if (state.profiles.isEmpty() && !fnSessionActive) {
-            // 空态要回答「那我该点什么」。只有一句「还没有接入平台」的时候，
-            // 用户的下一步其实是在猜；顺手把能加的东西列出来，比单纯的提示有用。
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .background(FnColors.Surface, RoundedCornerShape(PhoneRadius.md))
-                    .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(PhoneRadius.md))
-                    .padding(PhoneSpace.xl),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("还没有添加任何平台", color = FnColors.Text, fontSize = PhoneType.Body)
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "飞牛音乐、在线音乐、Navidrome / Jellyfin 等 NAS 服务，" +
-                            "都在下面逐个添加，加一个才多一行。",
-                        color = FnColors.Muted,
-                        fontSize = PhoneType.Caption,
-                        lineHeight = 18.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    )
-                }
-            }
-            Spacer(Modifier.height(PhoneSpace.md))
-        }
-
         AddRow(label = "＋ 新增平台", onClick = onAdd)
 
         Spacer(Modifier.height(PhoneSpace.xxl))
@@ -265,15 +177,18 @@ internal fun PhonePlatformManagePage(
  * [trailing] 是收起状态下也常驻的快捷动作（目前只有「在线音乐」用：行尾一个「音源 N」）。
  * 音源入口原来藏在「管理 → 展开 → 音源脚本」里，等于三层，用户找不到；现在一步就到。
  */
+/**
+ * 一行平台。点整行 = 切换为该平台（选那个直接生效）；行尾「删除」直接删除。
+ * 旧的「管理 / 设为当前 / 收起」展开交互已去掉，平台管理回归「列表 + 即时切换 + 删除」。
+ */
 @Composable
 private fun PlatformRow(
     icon: @Composable () -> Unit,
     title: String,
     subtitle: String,
     active: Boolean,
-    expanded: Boolean,
-    onToggleExpand: () -> Unit,
-    actions: @Composable () -> Unit,
+    onActivate: () -> Unit,
+    onDelete: () -> Unit,
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val shape = RoundedCornerShape(PhoneRadius.md)
@@ -285,7 +200,8 @@ private fun PlatformRow(
                 1.dp,
                 if (active) FnColors.Coral.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.05f),
                 shape,
-            ),
+            )
+            .phoneTap(onActivate),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 6.dp),
@@ -334,75 +250,21 @@ private fun PlatformRow(
             Box(
                 Modifier
                     .size(PhoneSize.TouchTarget)
-                    .phoneTap(onToggleExpand),
+                    .phoneTap(onDelete),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    if (expanded) "收起" else "管理",
-                    color = if (expanded) FnColors.Coral else FnColors.Muted,
+                    "删除",
+                    color = FnColors.Coral,
                     fontSize = PhoneType.Label,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
                 )
             }
         }
-        if (expanded) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(start = 14.dp, end = 14.dp, bottom = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(PhoneSpace.sm),
-            ) {
-                actions()
-            }
-        }
     }
 }
 
-@Composable
-private fun PlatformActionChip(
-    label: String,
-    enabled: Boolean = true,
-    danger: Boolean = false,
-    onClick: () -> Unit,
-) {
-    val shape = RoundedCornerShape(9.dp)
-    Box(
-        Modifier
-            .height(34.dp)
-            .background(
-                when {
-                    danger -> FnColors.Coral.copy(alpha = 0.18f)
-                    !enabled -> FnColors.SurfaceAlt.copy(alpha = 0.5f)
-                    else -> FnColors.SurfaceAlt
-                },
-                shape,
-            )
-            .border(
-                1.dp,
-                when {
-                    danger -> FnColors.Coral
-                    enabled -> Color.White.copy(alpha = 0.08f)
-                    else -> Color.White.copy(alpha = 0.04f)
-                },
-                shape,
-            )
-            .then(if (enabled) Modifier.phoneTap(onClick) else Modifier)
-            .padding(horizontal = 12.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            label,
-            color = when {
-                danger -> FnColors.Coral
-                !enabled -> FnColors.Muted.copy(alpha = 0.55f)
-                else -> FnColors.Text
-            },
-            fontSize = PhoneType.Label,
-            maxLines = 1,
-        )
-    }
-}
 
 @Composable
 internal fun AddRow(label: String, onClick: () -> Unit) {

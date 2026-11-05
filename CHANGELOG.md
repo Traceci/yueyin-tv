@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.0.5 - 2026-11-05
+
+2.0.5 在 2.0.4 基础上继续做手机端打磨，分两轮合入，最终一个 tag 出包：
+
+### 手机横屏全屏沉浸（第一轮）
+
+- 横屏下内容区与导航栏的 `safeDrawing` 安全区被叠加两次（内容区对所有非播放页加了 Top+Horizontal，导航栏自身又加了 Top+Start），导致横屏左侧多出一整条留白、内容被挤到中间。`PhoneShell.kt` 改为仅竖屏 / 非播放页才加 inset（`!window.isLandscape` 才避让），横屏与播放页一致边到边。
+- `version.properties` 升至 2.0.5 / 29。
+
+### 平台管理改版 + 移除断开飞牛音乐（第二轮）
+
+- `PhoneMyPage.kt`：移除「断开飞牛音乐」整块（`confirmLogout` / `loggingOut` 状态、`onFnSession` 红按钮区块、`LogoutConfirmCard` 组件）。
+- `PhonePlatformPage.kt`：`PlatformRow` 改为整行 `.phoneTap(onActivate)` 切换当前音源、行尾「删除」`.phoneTap(onDelete)` 直接删除（无二次确认）；删除 `PlatformActionChip`；`PhonePlatformManagePage` 移除飞牛行 / `onEdit` / `expandedId` / `pendingDeleteId` 展开逻辑与空状态卡片；新增 `delete(profile)`（`store.remove` → 若删的是当前则激活下一个 → toast）。
+- `PhoneShell.kt`：`PlatformManage` 调用处移除 `onEdit` 参数。
+- 以上仅手机壳文件，TV 壳未引用，无需共用告警；改动同步到 01_源码 与 ASCII 副本 src204。
+
+
 ## 2.0.4 - 2026-11-04
 
 从这一版起，**同一个安装包同时是电视版和手机版**。装到电视上是原来那套遥控器界面，装到手机上是独立的触屏界面，两端共用同一份数据层、播放链路与曲库配置。产物文件名不再带 `tv` / `phone` 前缀，统一为 `yueyin-<version>-release.apk`。
