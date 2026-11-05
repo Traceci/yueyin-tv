@@ -1008,7 +1008,7 @@ private fun PhoneNavRail(
         modifier
 
 
-            .width(PhoneSize.NavRail)
+            .width(LocalCarProfile.current.navRailWidth)
 
 
             .background(FnColors.Surface),
@@ -1104,7 +1104,7 @@ private fun PhoneNavRailItem(
         modifier
 
 
-            .height(PhoneSize.NavRailItem)
+            .height(LocalCarProfile.current.navRailItem)
 
 
             .clickable(interactionSource = interaction, indication = null, onClick = onClick),
@@ -2762,7 +2762,7 @@ private fun MiniBarButton(
     label: String,
 
 
-    size: androidx.compose.ui.unit.Dp = PhoneSize.TouchTarget,
+    size: androidx.compose.ui.unit.Dp? = null,
 
 
 ) {
@@ -2780,7 +2780,7 @@ private fun MiniBarButton(
         Modifier
 
 
-            .size(size)
+            .size(size ?: LocalCarProfile.current.touchTarget)
 
 
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)

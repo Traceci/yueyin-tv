@@ -185,7 +185,7 @@ internal fun PhoneMyPage(
             title = "我的",
             trailing = {
                 Box(
-                    Modifier.size(PhoneSize.TouchTarget).phoneTap(onOpenSearch),
+                    Modifier.size(LocalCarProfile.current.touchTarget).phoneTap(onOpenSearch),
                     contentAlignment = Alignment.Center,
                 ) {
                     PhoneIcon(PhoneGlyph.Search, FnColors.Muted, Modifier.size(21.dp))

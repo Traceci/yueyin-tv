@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -30,6 +31,7 @@ import com.yueyin.tv.core.model.playback.SlidingQueueReducer
 import com.yueyin.tv.core.model.playback.SlidingQueueState
 import com.yueyin.tv.core.model.playback.mapping
 import com.yueyin.tv.core.model.playback.next
+import com.yueyin.tv.core.model.stream.StreamUrlCache
 import java.util.ArrayList
 import java.util.Random
 import java.io.File
@@ -39,6 +41,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -121,6 +124,20 @@ class PlaybackController(
     private var consecutivePlaybackFailures = 0
     private var lastFailedMediaId: String? = null
 
+    /** 最近一次提交的队列快照：播放失败要重试时，按 mediaId 找回 Track 重新取链。 */
+    private var submittedTracks: List<PlaybackTrack> = emptyList()
+
+    /**
+     * 当前首还没拿到直链时的「等链开播」状态。
+     *
+     * 在线音源取链有失败率，[mediaItem] 会把空串塞进 `setUri`。ExoPlayer 拿到空 URI 会
+     * 直接抛 `MalformedURLException: no protocol`，再被自动跳过逻辑带成一串连环失败。
+     * 所以空链时先停在未 prepare 的状态，记下 id，由 [patchStreamUrl] 补到链后统一启动。
+     */
+    private var pendingStreamId: String? = null
+    private var pendingStreamAutoPlay = false
+    private var streamResolveJob: Job? = null
+
     private val listener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             forceNextPresentationProjection = forceNextPresentationProjection ||
@@ -148,10 +165,34 @@ class PlaybackController(
          * 以前这种情况会一直停在「播放失败：ERROR_CODE_IO_NETWORK_CONNECTION_FAILED」，
          * 用户得手动点下一首。这里改成自动跳过：
          * 连续失败 2 首以内直接跳下一首，到第 3 首才把错误留在界面上（说明是真断网了）。
+         *
+         * 但「空 URI」是另一回事：那是当前首还没补到链，不是音源连不上。
+         * 自动跳过去只会撞上队列里下一首同样空的占位项，变成一首接一首的连环报错。
          */
         override fun onPlayerError(error: PlaybackException) {
             val player = controller ?: return
             val failingId = player.currentMediaItem?.mediaId
+            val failedUri = player.currentMediaItem?.localConfiguration?.uri
+            val uriText = failedUri?.toString().orEmpty()
+            Log.w(
+                "YueyinPlayback",
+                "onPlayerError id=$failingId code=${error.errorCode} name=${error.errorCodeName} " +
+                    "host=${failedUri?.host} scheme=${failedUri?.scheme} " +
+                    "cause=${error.cause?.javaClass?.simpleName}",
+            )
+            // 音源直链带签名/时效：失败即作废缓存，否则换音源、点重试都会命中同一条死链。
+            if (!failingId.isNullOrBlank()) StreamUrlCache.invalidate(failingId)
+            if (failedUri == null || uriText.isBlank() || failedUri.scheme.isNullOrBlank()) {
+                Log.w("YueyinPlayback", "onPlayerError id=$failingId 空 URI，等待重新取链")
+                if (!failingId.isNullOrBlank()) {
+                    // 起播时已经发起过一次重取的就不再重复发起，只把「补到链要开播」标记补齐。
+                    val alreadyResolving = pendingStreamId == failingId && streamResolveJob?.isActive == true
+                    pendingStreamId = failingId
+                    pendingStreamAutoPlay = true
+                    if (!alreadyResolving) requestStreamUrl(failingId)
+                }
+                return
+            }
             if (failingId == null || failingId == lastFailedMediaId) return
             lastFailedMediaId = failingId
             if (consecutivePlaybackFailures >= MAX_AUTO_SKIP_FAILURES) return
@@ -274,6 +315,7 @@ class PlaybackController(
     ): PlaybackTransition? {
         val player = controller ?: return null
         if (tracks.isEmpty()) return null
+        submittedTracks = tracks
         beginStructuralTransition()
         val selected = startIndex.coerceIn(tracks.indices)
         val activeIds = tracks.map { track -> track.track.guid.value }
@@ -305,10 +347,28 @@ class PlaybackController(
         }
         failedDirection = null
         queueError = null
+        val selectedReady = tracks[selected].streamUrl.isNotBlank()
+        // 空 URI 绝不能进加载路径：ExoPlayer 会把 "" 当 URL 去发请求，
+        // 抛 MalformedURLException: no protocol。
+        // 只 pause 不够：播放器已经处于 prepared 状态（例如启动时恢复了上次队列）时，
+        // setMediaItems 仍会立刻加载当前项。先 clearMediaItems 强制回到 IDLE 再装新队列，
+        // 此时不 prepare 就不会去碰空 URI；等补链成功后由 patchStreamUrl 统一启动。
+        if (!selectedReady) {
+            player.pause()
+            player.clearMediaItems()
+        }
         player.setMediaItems(tracks.map(::mediaItem), selected, 0L)
         applyModeLocally(player, playMode)
-        player.prepare()
-        if (autoPlay) player.play() else player.pause()
+        pendingStreamId = if (selectedReady) null else tracks[selected].track.guid.value
+        pendingStreamAutoPlay = !selectedReady && autoPlay
+        if (selectedReady) {
+            player.prepare()
+            if (autoPlay) player.play() else player.pause()
+        } else {
+            // 当前首取链失败：立刻就地重取（早于后台补链那几十首，避免被串行取链排队堵住），
+            // 拿到链后由 patchStreamUrl 统一 prepare/play。
+            requestStreamUrl(tracks[selected].track.guid.value)
+        }
         PlaybackTransportBridge.setOwnership(PlaybackTransportOwnership.Normal)
         project(player)
         val transition = structuralSnapshot(player)
@@ -1208,6 +1268,11 @@ class PlaybackController(
     private fun beginStructuralTransition(cancelRoam: Boolean = true) {
         generation++
         pendingShuffle = null
+        // 换了队列/换了会话，上一首的补链任务必须作废，否则会把旧链 patch 到新队列上。
+        streamResolveJob?.cancel()
+        streamResolveJob = null
+        pendingStreamId = null
+        pendingStreamAutoPlay = false
         queuePageJob?.cancel()
         queuePageJob = null
         if (cancelRoam) {
@@ -1251,15 +1316,105 @@ class PlaybackController(
      * 「播放全部」时只同步取开头几首（否则要等几十秒），其余项先以空 uri 入队；
      * 由调用方在后台逐首取链后调这里补回去。已经有 uri 的项直接跳过，不打断播放。
      */
-    fun patchStreamUrl(mediaId: String, streamUrl: String) {
+    fun patchStreamUrl(mediaId: String, streamUrl: String, force: Boolean = false) {
         if (streamUrl.isBlank()) return
         val player = controller ?: return
         val index = (0 until player.mediaItemCount).firstOrNull { player.getMediaItemAt(it).mediaId == mediaId }
             ?: return
         val item = player.getMediaItemAt(index)
         val existing = item.localConfiguration?.uri?.toString().orEmpty()
-        if (existing.isNotBlank()) return
+        // force 用于播放失败后的「换新链」：旧链还在队列里，但已经失效了。
+        if (!force && existing.isNotBlank()) return
         player.replaceMediaItem(index, item.buildUpon().setUri(streamUrl).build())
+        // 这首正是「等链开播」的当前首：补到链就立刻启动，不再停在未 prepare 的状态。
+        if (pendingStreamId == mediaId && player.currentMediaItemIndex == index) {
+            val autoPlay = pendingStreamAutoPlay
+            pendingStreamId = null
+            pendingStreamAutoPlay = false
+            player.prepare()
+            if (autoPlay) player.play() else player.pause()
+            Log.i("YueyinPlayback", "patchStreamUrl: id=$mediaId 已补到直链，启动播放")
+        }
+    }
+
+    /**
+     * 当前首没直链时就地重取。
+     *
+     * 在线音源只有一个隐藏 WebView、取链严格串行，所以必须在起播当下就发起（早于后台
+     * 补链那几十首），且全局只留一条在跑；`beginStructuralTransition` 会把旧任务掐掉。
+     * 每次先作废 [StreamUrlCache]，否则会一直命中刚才那条失败的空结果。
+     */
+    private fun requestStreamUrl(id: String) {
+        streamResolveJob?.cancel()
+        val track = submittedTracks.firstOrNull { it.track.guid.value == id }?.track
+        if (track == null) {
+            Log.w("YueyinPlayback", "requestStreamUrl: 找不到 id=$id 的曲目快照")
+            return
+        }
+        streamResolveJob = scope.launch {
+            repeat(MAX_STREAM_RESOLVE_ATTEMPTS) { attempt ->
+                StreamUrlCache.invalidate(id)
+                val url = runCatching {
+                    withContext(Dispatchers.IO) { contentSource.prepare(track).streamUrl }
+                }.getOrDefault("")
+                if (url.isNotBlank()) {
+                    patchStreamUrl(id, url, force = true)
+                    return@launch
+                }
+                if (attempt < MAX_STREAM_RESOLVE_ATTEMPTS - 1) delay(STREAM_RESOLVE_DELAY_MS)
+            }
+            Log.w("YueyinPlayback", "requestStreamUrl: id=$id 重取直链仍失败，等待用户点重试")
+        }
+    }
+
+    /**
+     * 「重试」真正该做的事：把当前这首的过期直链作废、现场重取一条新的，
+     * 替换队列里的 uri 后重新 prepare/play。
+     *
+     * 以前播放页的重试只调 playPause()，对已经报 IO 错误的 MediaItem 什么都不会改变；
+     * 换音源也只是命中同一份无 TTL 缓存。这两条一起造成「怎么试都连不上音源」。
+     */
+    fun retryCurrentPlayback() {
+        val player = controller ?: return
+        val id = player.currentMediaItem?.mediaId ?: return
+        // 用户主动点「重试」时，取消后台那条重取任务，避免两条取链互相抢 WebView、
+        // 也避免旧的 patch 把这次刚换好的链又覆盖回去。
+        streamResolveJob?.cancel()
+        streamResolveJob = null
+        pendingStreamId = null
+        pendingStreamAutoPlay = false
+        val track = submittedTracks.firstOrNull { it.track.guid.value == id }?.track
+        StreamUrlCache.invalidate(id)
+        if (track == null) {
+            Log.w("YueyinPlayback", "retryCurrentPlayback: 找不到 id=$id 的曲目快照，回退到下一首")
+            if (player.hasNextMediaItem()) {
+                runCatching {
+                    player.seekToNextMediaItem()
+                    player.prepare()
+                    player.play()
+                }
+            }
+            return
+        }
+        scope.launch {
+            val prepared = runCatching {
+                withContext(Dispatchers.IO) { contentSource.prepare(track) }
+            }.getOrNull()
+            val url = prepared?.streamUrl.orEmpty()
+            if (url.isBlank()) {
+                Log.w("YueyinPlayback", "retryCurrentPlayback: id=$id 重新取链失败")
+                return@launch
+            }
+            val current = controller ?: return@launch
+            val index = (0 until current.mediaItemCount).firstOrNull {
+                current.getMediaItemAt(it).mediaId == id
+            } ?: return@launch
+            current.replaceMediaItem(index, current.getMediaItemAt(index).buildUpon().setUri(url).build())
+            current.prepare()
+            current.play()
+            val host = runCatching { java.net.URI(url).host }.getOrNull()
+            Log.i("YueyinPlayback", "retryCurrentPlayback: id=$id 已换新链 host=$host")
+        }
     }
 
     private fun applyModeLocally(player: Player, mode: PlayMode) {
@@ -1458,6 +1613,10 @@ class PlaybackController(
         /** 坏链接自动跳过的上限：连续这么多次失败就认为是真的断网，把错误留在界面上。 */
         const val MAX_AUTO_SKIP_FAILURES = 2
         const val AUTO_SKIP_DELAY_MS = 400L
+
+        /** 当前首空链时的重取次数与间隔：三次约 2 秒，够脚本换一组 API，又不至于久等。 */
+        const val MAX_STREAM_RESOLVE_ATTEMPTS = 3
+        const val STREAM_RESOLVE_DELAY_MS = 500L
     }
 }
 

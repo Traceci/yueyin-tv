@@ -12,6 +12,7 @@ import com.yueyin.tv.core.data.online.OnlineSong
 import com.yueyin.tv.core.data.online.OnlineText
 import com.yueyin.tv.core.model.connect.ConnectType
 import com.yueyin.tv.core.model.connect.ServerCapabilities
+import com.yueyin.tv.core.model.stream.StreamUrlCache
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -57,8 +58,8 @@ class OnlineMusicProtocol(
     // 在线内容没有服务端收藏接口，收藏走本地兜底
     override val supportsServerFavorites: Boolean = false
 
-    // 播放链缓存：key = RemoteSong.id（即 "platform:songId"），value = 可播直链
-    private val streamCache = ConcurrentHashMap<String, String>()
+    // 播放链缓存统一交给带 TTL 的 StreamUrlCache：音源直链带签名/时效，
+    // 永不过期的本地 Map 会让队列后半段整批失效（见 StreamUrlCache 注释）。
 
     // 平台 + 歌曲 id → OnlineSong 的还原表，取链/歌词时用
     private val songIndex = ConcurrentHashMap<String, OnlineSong>()
@@ -221,14 +222,14 @@ class OnlineMusicProtocol(
     // ---------------------------------------------------------------- 播放 / 封面 / 歌词
 
     override fun streamUrl(profile: ConnectProfile, songId: String): String =
-        streamCache[songId].orEmpty()
+        StreamUrlCache.get(songId).orEmpty()
 
     /**
      * 播放前取链：缓存命中直接返回；未命中则现场取链（suspend，可阻塞等待）。
      * 这是解决"点播放即出声"的关键——预取是尽力而为，这里兜底保证能播。
      */
     override suspend fun resolveStreamUrl(profile: ConnectProfile, songId: String): String {
-        streamCache[songId]?.let { return it }
+        StreamUrlCache.get(songId)?.let { return it }
         // 用户真的要点播了：先把后台预取停掉，别让这一首要排在二十首之后。
         if (prefetchJob != null) {
             prefetchJob?.cancel()
@@ -242,7 +243,7 @@ class OnlineMusicProtocol(
             "YueyinOnline",
             "resolve $songId ${System.currentTimeMillis() - startedAt}ms ${if (url.isNullOrBlank()) "fail" else "ok"}",
         )
-        if (!url.isNullOrBlank()) streamCache[songId] = url
+        if (!url.isNullOrBlank()) StreamUrlCache.put(songId, url)
         return url.orEmpty()
     }
 
@@ -291,9 +292,9 @@ class OnlineMusicProtocol(
                 // 被用户点播取消后要立刻收手（runCatching 会把取消异常吞掉，这里显式判活）
                 if (!isActive) return@launch
                 val key = songIdOf(song.platform, song.id)
-                if (streamCache.containsKey(key)) continue
+                if (StreamUrlCache.get(key) != null) continue
                 val url = runCatching { resolveUrl(song) }.getOrNull()
-                if (!url.isNullOrBlank()) streamCache[key] = url
+                if (!url.isNullOrBlank()) StreamUrlCache.put(key, url)
             }
         }
     }

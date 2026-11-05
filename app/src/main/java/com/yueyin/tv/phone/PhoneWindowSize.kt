@@ -7,6 +7,8 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
+import com.yueyin.tv.ui.device.FormFactor
+import com.yueyin.tv.ui.device.rememberFormFactor
 
 /**
  * 手机壳的宽度档位。
@@ -38,6 +40,8 @@ internal enum class PhoneWidthClass {
 internal data class PhoneWindow(
     val widthDp: Int,
     val heightDp: Int,
+    /** 车机档：仅影响网格密度与侧栏宽度，不改变手机/平板任何既有断点。 */
+    val isCar: Boolean = false,
 ) {
     val widthClass: PhoneWidthClass = when {
         widthDp >= 900 -> PhoneWidthClass.Expanded
@@ -59,7 +63,7 @@ internal data class PhoneWindow(
      */
     val contentWidthDp: Int
         get() = widthDp -
-            (if (usesNavRail) PhoneSize.NavRail.value.toInt() else 0) -
+            (if (usesNavRail) (if (isCar) CAR_NAV_RAIL_DP else PhoneSize.NavRail.value.toInt()) else 0) -
             2 * PhoneSpace.screenHorizontal.value.toInt()
 
     /**
@@ -73,7 +77,12 @@ internal data class PhoneWindow(
      * 8 个中文字的宽度，截断会比列数少更难看。按 150dp 算，910dp 横屏得 5 列（卡 152dp）。
      */
     val gridColumns: Int
-        get() = ((contentWidthDp + GRID_GAP_DP) / (GRID_MIN_ITEM_DP + GRID_GAP_DP)).coerceIn(2, 6)
+        get() {
+            // 车机用更大的最小卡宽：卡更大 → 封面显示像素更大 → 配合 P3 按显示像素取档，
+            // 不会拿小图放大；同时超宽屏也不会密密麻麻排 6 列。
+            val minItem = if (isCar) CAR_GRID_MIN_ITEM_DP else GRID_MIN_ITEM_DP
+            return ((contentWidthDp + GRID_GAP_DP) / (minItem + GRID_GAP_DP)).coerceIn(2, 6)
+        }
 
     /**
      * 歌手格子的列数上限。
@@ -103,6 +112,8 @@ internal data class PhoneWindow(
      * 两半，谁都看不全。所以再加一道高度门槛：只有「够宽且够高」（典型是平板，而非横屏手机）
      * 才开双栏。
      */
+    // 高度门槛对车机尤其关键：1920x720 的超宽屏约 1200x450dp，宽度早已跨过 Expanded 线，
+    // 但高度不足 600dp，开双栏只会把列表和详情挤成两半，所以这里继续禁用。
     val usesSplitPane: Boolean = widthClass == PhoneWidthClass.Expanded && heightDp >= 600
 }
 
@@ -127,11 +138,23 @@ private const val GRID_GAP_DP = 12
  */
 @Composable
 internal fun ProvidePhoneWindow(content: @Composable (PhoneWindow) -> Unit) {
+    // LocalFormFactor 目前没有任何调用点 provide（默认值恒为 Tv），
+    // 所以这里直接用纯函数判一次形态：只有车机给 Car 档，手机/平板走原逻辑。
+    // 继续用 BoxWithConstraints 实测约束，不假设固定宽高比，分屏/自由窗口一样正确。
+    val isCar = rememberFormFactor() == FormFactor.Car
+    val carProfile = if (isCar) CarProfile.Enabled else CarProfile.Disabled
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val window = remember(maxWidth, maxHeight) {
-            PhoneWindow(widthDp = maxWidth.value.toInt(), heightDp = maxHeight.value.toInt())
+        val window = remember(maxWidth, maxHeight, isCar) {
+            PhoneWindow(
+                widthDp = maxWidth.value.toInt(),
+                heightDp = maxHeight.value.toInt(),
+                isCar = isCar,
+            )
         }
-        CompositionLocalProvider(LocalPhoneWindow provides window) {
+        CompositionLocalProvider(
+            LocalPhoneWindow provides window,
+            LocalCarProfile provides carProfile,
+        ) {
             content(window)
         }
     }

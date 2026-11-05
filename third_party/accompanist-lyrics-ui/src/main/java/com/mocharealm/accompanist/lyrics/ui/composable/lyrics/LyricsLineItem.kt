@@ -32,6 +32,8 @@ fun LyricsLineItem(
     inactiveAlpha: Float = 0.4f,
     blendMode: BlendMode = BlendMode.SrcOver,
     isInteractive: Boolean = true,
+    /** 行内容水平居中时，缩放动画的锚点也要跟着挪到中线，否则高亮句会从左/右角"长"出来。 */
+    centerHorizontally: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val scaleState by animateFloatAsState(
@@ -56,7 +58,14 @@ fun LyricsLineItem(
                 scaleX = scaleState
                 scaleY = scaleState
                 alpha = alphaState
-                transformOrigin = TransformOrigin(if (isRightAligned) 1f else 0f, 1f)
+                transformOrigin = TransformOrigin(
+                    when {
+                        centerHorizontally -> 0.5f
+                        isRightAligned -> 1f
+                        else -> 0f
+                    },
+                    1f,
+                )
                 this.blendMode = blendMode
                 compositingStrategy = CompositingStrategy.Offscreen
 

@@ -1,6 +1,7 @@
 package com.yueyin.tv.source
 
 import android.content.Context
+import com.yueyin.tv.core.model.stream.PlaybackHttp
 import com.yueyin.tv.core.data.online.OnlineSong
 import com.yueyin.tv.core.data.source.MusicSource
 import com.yueyin.tv.ui.source.MusicSourceRuntime
@@ -208,21 +209,35 @@ class OnlinePlaybackResolver(context: Context) {
 
     /** 校验直链；返回 null 表示可用，否则返回一句失败原因。 */
     private suspend fun verify(url: String): String? = withContext(Dispatchers.IO) {
-        runCatching {
+        val reason = runCatching {
             val request = Request.Builder()
                 .url(url)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                // 必须与播放器的 DefaultHttpDataSource 用同一个 UA，否则会出现
+                // 「探活拿得到 1KB、ExoPlayer 却被 CDN 拒掉」的假成功。
+                .header("User-Agent", PlaybackHttp.USER_AGENT)
                 .header("Range", "bytes=0-1023")
                 .build()
             probeClient.newCall(request).execute().use { response ->
-                val bytes = response.body?.bytes()?.size ?: 0
+                val bytes = response.body.bytes().size
+                val contentType = response.header("Content-Type").orEmpty()
                 when {
                     response.code >= 400 -> "HTTP ${response.code}"
+                    // 音源代理接口常返回 HTML 错误页或 JSON 报错，长度轻松超过 256 字节。
+                    // 只验状态码与长度会把它们当成可用音频，最终交给播放器报 IO 错误。
+                    contentType.contains("text/html", true) ||
+                        contentType.contains("application/json", true) ||
+                        contentType.contains("text/plain", true) ->
+                        "返回的不是音频（${contentType.take(32)}）"
                     bytes < 256 -> "返回内容为空"
                     else -> null
                 }
             }
-        }.getOrElse { "连接失败" }
+        }.getOrElse { cause -> "连接失败：${cause.javaClass.simpleName}" }
+        if (reason != null) {
+            val host = runCatching { java.net.URI(url).host ?: "?" }.getOrDefault("?")
+            LxLog.add("直链探活失败 host=$host → $reason")
+        }
+        reason
     }
 
     private fun extractUrl(value: String?): String? {

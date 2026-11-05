@@ -133,7 +133,9 @@ fun KaraokeLyricsView(
     blurDelta: Float = 3f,
     showDebugRectangles: Boolean = false,
     /** 是否启用逐字卡拉OK填充（关：当前句整体点亮，不从左到右扫填）。 */
-    karaokeProgressEnabled: Boolean = true
+    karaokeProgressEnabled: Boolean = true,
+    /** 每行歌词水平居中。默认 false 保持原来的左/右对齐（电视端行为不变）。 */
+    centerLines: Boolean = false,
 ) {
     val density = LocalDensity.current
     val stableNormalTextStyle = remember(normalLineTextStyle) { normalLineTextStyle }
@@ -417,7 +419,11 @@ fun KaraokeLyricsView(
                                     isManualScrolling,
                                     stiffness = dynamicStiffness
                                 ),
-                            horizontalAlignment = if (isVisualRightAligned) Alignment.End else Alignment.Start
+                            horizontalAlignment = when {
+                                centerLines -> Alignment.CenterHorizontally
+                                isVisualRightAligned -> Alignment.End
+                                else -> Alignment.Start
+                            }
                         ) {
                             val animDuration = 600
 
@@ -459,10 +465,11 @@ fun KaraokeLyricsView(
                                             isRightAligned = isVisualRightAligned,
                                             onLineClicked = { onLineClicked(line) },
                                             onLinePressed = { onLinePressed(line) },
-                                            blurRadius = { blurRadiusState.value },
-                                            blendMode = stableBlendMode,
-                                        ) {
-                                            KaraokeLineText(
+                                        blurRadius = { blurRadiusState.value },
+                                        blendMode = stableBlendMode,
+                                        centerHorizontally = centerLines,
+                                    ) {
+                                        KaraokeLineText(
                                                 line = line,
                                                 currentTimeProvider = timeProvider,
                                                 normalLineTextStyle = stableNormalTextStyle,
@@ -474,7 +481,8 @@ fun KaraokeLyricsView(
                                                 showTranslation = showTranslation,
                                                 showPhonetic = showPhonetic,
                                                 precalculatedLayouts = layoutCache[index],
-                                                karaokeProgressEnabled = karaokeProgressEnabled
+                                                karaokeProgressEnabled = karaokeProgressEnabled,
+                                                centerHorizontally = centerLines,
                                             )
                                         }
                                     }
@@ -489,6 +497,7 @@ fun KaraokeLyricsView(
                                         onLinePressed = { onLinePressed(line) },
                                         blurRadius = { blurRadiusState.value },
                                         blendMode = stableBlendMode,
+                                        centerHorizontally = centerLines,
                                     ) {
                                         SyncedLineText(
                                             line = line,
@@ -496,6 +505,7 @@ fun KaraokeLyricsView(
                                             textStyle = stableNormalTextStyle.copy(lineHeight = 1.2.em),
                                             textColor = textColor,
                                             showTranslation = showTranslation,
+                                            centerHorizontally = centerLines,
                                         )
                                     }
                                 }

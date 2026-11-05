@@ -114,7 +114,7 @@ internal fun PhoneSheet(
                         )
                         Box(
                             Modifier
-                                .size(PhoneSize.TouchTarget)
+                                .size(LocalCarProfile.current.touchTarget)
                                 .phoneTap(onDismiss),
                             contentAlignment = Alignment.Center,
                         ) {

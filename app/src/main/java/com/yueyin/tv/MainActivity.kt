@@ -78,6 +78,7 @@ class MainActivity : ComponentActivity() {
             FormFactor.Tv -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
             FormFactor.Phone,
             FormFactor.Tablet,
+            FormFactor.Car,
             -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }

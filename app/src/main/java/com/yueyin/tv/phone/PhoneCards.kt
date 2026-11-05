@@ -23,16 +23,19 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -71,6 +74,9 @@ internal fun Modifier.phoneTap(onClick: () -> Unit): Modifier {
  * 没有封面时全部用同一个青绿会很单调（一个列表里 20 张一样的方块），
  * 按标题散列取一个强调色，同一个条目每次进入都是同一个颜色，不会闪。
  */
+/** 封面显示像素的分桶步长：同桶内复用同一档封面，避免缓存 key 无限膨胀。 */
+private const val ARTWORK_BUCKET_STEP = 160
+
 private fun accentFor(title: String): Color {
     val palette = listOf(FnColors.Teal, FnColors.Coral, FnColors.Amber, FnColors.Cyan, FnColors.Violet)
     if (title.isEmpty()) return palette[0]
@@ -82,12 +88,15 @@ private fun accentFor(title: String): Color {
 /**
  * 封面。
  *
- * 变体默认用 [CoverVariant.Grid]（400px）：手机两列网格的卡片在 3x 屏上约 510px，
+ * 变体默认下限是 [CoverVariant.Grid]（400px）：手机两列网格的卡片在 3x 屏上约 510px，
  * 400 略小但看不出差别；用 `Player`（800px）会让列表滚动时解码压力翻倍。
  * 兜底用 `Compact`（200px），先出小图再换大图，滚动时不会一片空白。
  *
  * 播放页封面在竖屏要铺到 ~1080px 宽，400px 放大后会明显糊，所以那里显式传
  * [CoverVariant.Player]（800px）并把兜底降到 Grid；黑胶盘心只占盘体一半，仍用 Grid 即可。
+ *
+ * 现在会实测这张封面最终渲染的像素并自动升档，车机大屏 / 高分屏不会再拿 400px 的图放大；
+ * 档位离散（160px 分桶），缓存 key 不会膨胀，显示仍用 ContentScale.Crop 不做拉伸。
  */
 @Composable
 internal fun PhoneArtwork(
@@ -102,17 +111,35 @@ internal fun PhoneArtwork(
     alignment: Alignment = Alignment.Center,
 ) {
     val deps = LocalPhoneDeps.current
-    val bitmap = rememberPhoneArtwork(deps, coverId, variant, fallback)
+    val displayPx = remember { mutableStateOf(0) }
+    val effectiveVariant = remember(variant, displayPx.value) {
+        val px = displayPx.value
+        if (px <= 0) variant
+        else {
+            val bucket = ARTWORK_BUCKET_STEP * ((px + ARTWORK_BUCKET_STEP - 1) / ARTWORK_BUCKET_STEP)
+            CoverVariant.forDisplay(bucket, variant)
+        }
+    }
+    val bitmap = rememberPhoneArtwork(deps, coverId, effectiveVariant, fallback)
+    val artworkModifier = modifier
+        .clip(shape)
+        .onSizeChanged { size -> displayPx.value = maxOf(size.width, size.height) }
     if (bitmap != null) {
         Image(
             bitmap = bitmap.asImageBitmap(),
             contentDescription = null,
-            modifier = modifier.clip(shape),
+            modifier = artworkModifier,
             contentScale = contentScale,
             alignment = alignment,
+            filterQuality = FilterQuality.High,
         )
     } else {
-        InitialArtworkPlaceholder(text = title, accent = accent, modifier = modifier, shape = shape)
+        InitialArtworkPlaceholder(
+            text = title,
+            accent = accent,
+            modifier = modifier.onSizeChanged { size -> displayPx.value = maxOf(size.width, size.height) },
+            shape = shape,
+        )
     }
 }
 
@@ -190,7 +217,7 @@ internal fun PhoneBackHeader(
         if (onBack != null) {
             Box(
                 Modifier
-                    .size(PhoneSize.TouchTarget)
+                    .size(LocalCarProfile.current.touchTarget)
                     .phoneTap(onBack),
                 contentAlignment = Alignment.Center,
             ) {

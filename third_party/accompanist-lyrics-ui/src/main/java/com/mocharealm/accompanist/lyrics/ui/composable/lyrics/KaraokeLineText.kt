@@ -432,7 +432,9 @@ fun KaraokeLineText(
     precalculatedLayouts: List<SyllableLayout>? = null,
     isDuoView: Boolean = false,
     textMeasurer: TextMeasurer = rememberTextMeasurer(),
-    karaokeProgressEnabled: Boolean = true
+    karaokeProgressEnabled: Boolean = true,
+    /** 水平居中模式。默认 false 保持原来的左/右对齐（电视端行为不变）。 */
+    centerHorizontally: Boolean = false,
 ) {
     val isLineRtl = remember(line.syllables) { line.syllables.any { it.content.isRtl() } }
 
@@ -443,13 +445,24 @@ fun KaraokeLineText(
         }
     }
 
-    val translationTextAlign = remember(isRightAligned) {
-        if (isRightAligned) TextAlign.End else TextAlign.Start
+    val translationTextAlign = remember(isRightAligned, centerHorizontally) {
+        when {
+            centerHorizontally -> TextAlign.Center
+            isRightAligned -> TextAlign.End
+            else -> TextAlign.Start
+        }
     }
 
-    val columnHorizontalAlignment = remember(isRightAligned) {
-        if (isRightAligned) Alignment.End else Alignment.Start
+    val columnHorizontalAlignment = remember(isRightAligned, centerHorizontally) {
+        when {
+            centerHorizontally -> Alignment.CenterHorizontally
+            isRightAligned -> Alignment.End
+            else -> Alignment.Start
+        }
     }
+
+    /** 居中时缩放/展开动画从中间起，否则从原来那侧起。 */
+    val pivotX = if (centerHorizontally) 0.5f else if (isRightAligned) 1f else 0f
 
     val mainLine = line as? KaraokeLine.MainKaraokeLine
     val accompanimentLinesBeforeMain =
@@ -472,7 +485,7 @@ fun KaraokeLineText(
                 visible = isAccompanimentVisible,
                 enter = scaleIn(
                     tween(600), transformOrigin = TransformOrigin(
-                        if (isRightAligned) 1f else 0f, if (isBefore) 1f else 0f
+                        pivotX, if (isBefore) 1f else 0f
                     )
                 ) + fadeIn(tween(600)) + slideInVertically(
                     tween(
@@ -481,7 +494,7 @@ fun KaraokeLineText(
                 ) + expandVertically(tween(600), if (isBefore) Alignment.Top else Alignment.Bottom),
                 exit = scaleOut(
                     tween(600), transformOrigin = TransformOrigin(
-                        if (isRightAligned) 1f else 0f, if (isBefore) 1f else 0f
+                        pivotX, if (isBefore) 1f else 0f
                     )
                 ) + fadeOut(tween(600)) + slideOutVertically(
                     tween(
@@ -497,7 +510,8 @@ fun KaraokeLineText(
                     blurRadius = { 0f },
                     blendMode = blendMode,
                     activeAlpha = 0.6f,
-                    inactiveAlpha = 0.2f
+                    inactiveAlpha = 0.2f,
+                    centerHorizontally = centerHorizontally,
                 ) {
                     KaraokeLineText(
                         line = bgLine,
@@ -511,7 +525,8 @@ fun KaraokeLineText(
                         showTranslation = showTranslation,
                         showPhonetic = showPhonetic,
                         textMeasurer = textMeasurer,
-                        karaokeProgressEnabled = karaokeProgressEnabled
+                        karaokeProgressEnabled = karaokeProgressEnabled,
+                        centerHorizontally = centerHorizontally,
                     )
                 }
             }
@@ -584,7 +599,8 @@ fun KaraokeLineText(
             }
 
             val finalLineLayouts = remember(
-                wrappedLines, availableWidthPx, lineHeight, isLineRtl, isRightAligned, showPhonetic
+                wrappedLines, availableWidthPx, lineHeight, isLineRtl, isRightAligned,
+                showPhonetic, centerHorizontally,
             ) {
                 calculateStaticLineLayout(
                     wrappedLines = wrappedLines,
@@ -592,7 +608,8 @@ fun KaraokeLineText(
                     canvasWidth = availableWidthPx,
                     lineHeight = lineHeight,
                     phoneticHeight = if (showPhonetic) phoneticHeight else 0f,
-                    isRtl = isLineRtl
+                    isRtl = isLineRtl,
+                    centerHorizontally = centerHorizontally,
                 )
             }
 
@@ -636,7 +653,7 @@ fun KaraokeLineText(
                 Text(
                     text = translation,
                     color = activeColor.copy(0.4f),
-                    modifier = Modifier.graphicsLayer {
+                    modifier = Modifier.fillMaxWidth().graphicsLayer {
                         this.blendMode = blendMode
                     },
                     textAlign = translationTextAlign
@@ -650,7 +667,7 @@ fun KaraokeLineText(
                     text = phonetic,
                     style = phoneticTextStyle,
                     color = activeColor.copy(alpha = 0.6f),
-                    modifier = Modifier.graphicsLayer {
+                    modifier = Modifier.fillMaxWidth().graphicsLayer {
                         this.blendMode = blendMode
                     },
                     textAlign = translationTextAlign

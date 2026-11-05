@@ -507,6 +507,9 @@ fun FnSkeleton(
     )
 }
 
+/** 车机字号倍率：仅在 FormFactor.Car 生效，系统字体缩放设置仍然正常叠加。 */
+private const val CAR_FONT_SCALE = 1.12f
+
 @Composable
 fun YueYinTheme(
     uiScale: Float = 1f,
@@ -534,7 +537,10 @@ fun YueYinTheme(
     }
     // uiScale 是用户在设置页选的整体缩放档位（紧凑 0.92 / 标准 1.0 / 宽松 1.08）。
     // 先按分辨率把设备折算回 960×540 设计画布，再套用用户的个性化偏好。
-    val density = Density(original.density * scale * uiScale, original.fontScale)
+    // 车机观看距离更远、且常在颠簸中扫一眼，字号整体放大一档。
+    // 只影响 FormFactor.Car；电视与手机的字体缩放一行不变。
+    val fontScale = if (formFactor == FormFactor.Car) original.fontScale * CAR_FONT_SCALE else original.fontScale
+    val density = Density(original.density * scale * uiScale, fontScale)
     MaterialTheme(
         colorScheme = darkColorScheme(
             primary = FnColors.Coral,

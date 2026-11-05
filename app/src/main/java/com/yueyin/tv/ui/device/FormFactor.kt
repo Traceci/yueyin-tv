@@ -25,7 +25,10 @@ enum class FormFactor {
     Phone,
 
     /** 平板 / 折叠屏展开态：大画布触屏。P0 暂与手机共用一套壳，P5 再拆双栏。 */
-    Tablet;
+    Tablet,
+
+    /** 车机：安卓车载设备（含不声明触摸屏的机型），复用手机壳但启用车机档位。 */
+    Car;
 
     /** 是否手持触屏形态。TV 之外都不做 960×540 折算，sp 与系统字体缩放正常生效。 */
     val isHandheld: Boolean get() = this != Tv
@@ -51,20 +54,28 @@ fun detectFormFactor(
     uiModeType: Int,
     smallestScreenWidthDp: Int,
     hasTouchscreen: Boolean,
+    isAutomotive: Boolean = false,
 ): FormFactor {
-    val isTv = uiModeType == Configuration.UI_MODE_TYPE_TELEVISION || !hasTouchscreen
-    if (isTv) return FormFactor.Tv
+    // 电视优先级最高：即使某块车机屏同时上报了 automotive，也不能把真电视认成车机。
+    if (uiModeType == Configuration.UI_MODE_TYPE_TELEVISION) return FormFactor.Tv
+    // 车机必须在「没有触摸屏」之前判：很多车机不声明 FEATURE_TOUCHSCREEN，
+    // 旧逻辑会因 !hasTouchscreen 把它们归进 TV 壳（遥控器引导 + 960x540 折算），
+    // 在车上既不像触屏也不像电视。UI_MODE_TYPE_CAR 与 FEATURE_AUTOMOTIVE 任一命中即可。
+    if (isAutomotive || uiModeType == Configuration.UI_MODE_TYPE_CAR) return FormFactor.Car
+    if (!hasTouchscreen) return FormFactor.Tv
     return if (smallestScreenWidthDp >= TABLET_SMALLEST_WIDTH_DP) FormFactor.Tablet else FormFactor.Phone
 }
 
 /** 从 Context 判定形态：供 `MainActivity` 在非 Compose 上下文里设置屏幕方向用。 */
 fun resolveFormFactor(context: Context): FormFactor {
     val configuration = context.resources.configuration
-    return detectFormFactor(
+    val detected = detectFormFactor(
         uiModeType = configuration.uiMode and Configuration.UI_MODE_TYPE_MASK,
         smallestScreenWidthDp = configuration.smallestScreenWidthDp,
         hasTouchscreen = context.packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN),
+        isAutomotive = context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE),
     )
+    return DeviceLayoutOverride.resolve(context, detected)
 }
 
 /**
@@ -80,11 +91,17 @@ fun rememberFormFactor(): FormFactor {
     val context = LocalContext.current
     val uiModeType = configuration.uiMode and Configuration.UI_MODE_TYPE_MASK
     val smallestWidthDp = configuration.smallestScreenWidthDp
-    return remember(context, uiModeType, smallestWidthDp) {
-        detectFormFactor(
-            uiModeType = uiModeType,
-            smallestScreenWidthDp = smallestWidthDp,
-            hasTouchscreen = context.packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN),
+    val isAutomotive = context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)
+    val layoutOverride = DeviceLayoutOverride.get(context)
+    return remember(context, uiModeType, smallestWidthDp, isAutomotive, layoutOverride) {
+        DeviceLayoutOverride.resolve(
+            context,
+            detectFormFactor(
+                uiModeType = uiModeType,
+                smallestScreenWidthDp = smallestWidthDp,
+                hasTouchscreen = context.packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN),
+                isAutomotive = isAutomotive,
+            ),
         )
     }
 }

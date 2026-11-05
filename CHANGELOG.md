@@ -1,5 +1,38 @@
 # Changelog
 
+## 2.0.6 - 2026-11-05
+
+车机适配、播放失败闭环、手机端 UI 收口三线并行，一个 tag 出包。
+
+### 车机适配（P1–P4-A）
+
+- `ui/device/FormFactor.kt` 新增 `Car`，判定顺序改为 电视优先 → `UI_MODE_TYPE_CAR` / `FEATURE_AUTOMOTIVE` 判车机 → `!hasTouchscreen` 判电视；修正「无触摸屏车机被误判成 TV 壳」。
+- `MainActivity.kt` 的 `when` 补 `Car → UNSPECIFIED`；`ui/Theme.kt` 仅车机字号 ×1.12。
+- 新增 `phone/CarProfile.kt`（触控 56dp / 侧栏 88dp / 项高 72dp / 最小卡宽 180dp），`PhoneWindowSize.kt` 按车机档提供 `LocalCarProfile`；`PhoneShell.kt` 与 6 个 phone 页改读该档位。
+- `core/model/Models.kt` 的 `CoverVariant` 增 `Hd(1200)` / `Ultra(1600)` 与 `forDisplay(px, minimum)` 离散取档（不改 cache Key）；`ArtworkBitmapCache.kt` 修 `inSampleSize` 过度降采样，缓存上限 40 → 64MB；`PhoneCards.kt` 用 `onSizeChanged` 实测像素按 160px 分桶升档 + `FilterQuality.High`。
+- `core/playback/PlaybackService.kt` 由 `MediaSessionService` 改 `MediaLibraryService`，实现 `onGetLibraryRoot/onGetChildren/onGetItem/onSearch/onGetSearchResult/onAddMediaItems`（队列分页 + 歌名模糊搜索 + mediaId 还原可播 item）；`onConnect` 下发命令改 `DEFAULT_SESSION_AND_LIBRARY_COMMANDS`（否则 library 命令被覆盖，车机拿不到浏览树）。
+- `AndroidManifest.xml` 增加 `MediaLibraryService` action 与 `com.google.android.gms.car.application` meta-data，新增 `res/xml/automotive_app_desc.xml`。
+- 新增 `ui/device/DeviceLayoutOverride.kt`（`LayoutOverride(Auto/Car/Phone)` + SharedPreferences）；`PhoneSettingsPanes.kt` 加「界面形态」三档手选，切换后 `recreate()`。
+
+### 播放失败闭环（P0–P2）
+
+- 新增 `core/model/stream/StreamUrlCache.kt`：带 TTL（默认 5 分钟）的直链缓存 + 统一 `PlaybackHttp.USER_AGENT`。
+- `OnlineMusicProtocol.kt`：删掉无 TTL 的 `streamCache`，`streamUrl/resolveStreamUrl/prefetch` 统一走 `StreamUrlCache`。
+- `PlaybackController.kt`：新增 `submittedTracks` 队列快照；`onPlayerError` 作废失败直链并写 `YueyinPlayback` 诊断；新增 `retryCurrentPlayback()`；空 URI 不再自动跳曲，改为 `requestStreamUrl()` 就地重取（3 次，每次先作废缓存）；`playQueue` 空链时 `clearMediaItems()` 回 IDLE 再装队列（避免已 prepared 时仍加载空 URI 项）。
+- `PlaybackService.kt`：`createPlaybackHttpDataSourceFactory` 统一 UA + `setAllowCrossProtocolRedirects(true)`；`onAddMediaItems` 加放行判断（本 App controller 或请求已带 URI 时原样返回，仅外部车机「仅 mediaId」请求才从队列补齐）——修复新直链被队列旧 item 覆盖导致的 `ERROR_CODE_IO_NETWORK_CONNECTION_FAILED`。
+- `OnlinePlaybackResolver.kt`：探活对齐 UA，`verify()` 排除 `text/html` / `application/json` / `text/plain`，失败写日志。
+
+### 手机端 UI
+
+- `phone/PhonePlayerPage.kt`：竖屏曲名 + 歌手移到封面上方、封面绝对位置不变、下方三行歌词；`FullLyricsPage` 增 `controlPanel` 与 `overlays`（全歌词页补齐常驻控制栏、队列 / 音效弹层）；`PlayerImmersiveBars(hide = landscape)` 与全局状态栏策略对齐；两处 `PlaybackErrorBar.onRetry` 改接 `retryCurrentPlayback()`。
+- `phone/PhoneLyrics.kt`：全歌词页改用 `KaraokeLyricsView`（`currentPosition` 用 `rememberUpdatedState` 按帧读），`karaokeProgressEnabled = karaokeFill`，点句 `onSeekLine`。
+- `phone/PhoneSettingsPanes.kt`：`StylePreviewCard` 改 `BoxWithConstraints` + `LocalConfiguration`，横屏按 `screenHeightDp * 0.46` 封顶并由 0.82 反推宽度居中。
+- `third_party/accompanist-lyrics-ui`：新增**默认关闭**的 `centerLines` / `centerHorizontally` 参数族，透传到 `LyricsLayoutCalculator`（startX 三态）、`LyricsLineItem`（缩放锚点 0.5f）、`SyncedLineText`、`KaraokeLineText`；TV 不传 → 行为不变。
+
+### 版本
+
+- `version.properties` → 2.0.6 / 30；`update.json` → v2.0.6。
+
 ## 2.0.5 - 2026-11-05
 
 2.0.5 在 2.0.4 基础上继续做手机端打磨，分两轮合入，最终一个 tag 出包：

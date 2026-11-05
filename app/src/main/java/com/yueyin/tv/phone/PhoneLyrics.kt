@@ -1,7 +1,6 @@
 package com.yueyin.tv.phone
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -11,34 +10,37 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import com.mocharealm.accompanist.lyrics.core.model.SyncedLyrics
+import com.mocharealm.accompanist.lyrics.ui.composable.lyrics.KaraokeBreathingDotsDefaults
+import com.mocharealm.accompanist.lyrics.ui.composable.lyrics.KaraokeLyricsView
 import com.yueyin.tv.core.lyrics.lyricText
 import com.yueyin.tv.ui.FnColors
 
 /**
  * 手机端歌词视图。
  *
- * 与电视端 `TvLyrics` 的差别只有排版，取数逻辑完全一致（都由 `NowPlayingPresenter` 提供）：
- * - 电视是横屏大画布，歌词要占满整块右侧区域；手机竖屏只有一列，行高必须固定，
- *   否则「当前行字号变大」会把下方的行整体推下去，滚动时一跳一跳；
- * - 电视靠遥控器，不能点歌词跳转；手机必须能点某句直接跳过去。
+ * 与电视端 `TvLyrics` 用同一个卡拉 OK 渲染器、同一份 `SyncedLyrics`（带逐字时间轴），
+ * 差别只在排版：电视是横屏大画布、字号更大；手机竖屏收紧字号与行距。
+ * 「逐字填充」开关在这里直接接到 `karaokeProgressEnabled`：关掉时当前句整体点亮，
+ * 打开时按逐字时间轴从左到右扫填——设置项不再是一个空开关。
  *
- * **行高固定 44dp 是有意的**：当前行用更大的字号显示，如果行高跟着字号走，
- * 每次换行都会引起 LazyColumn 重新测量，视觉上就是歌词在抖。
+ * 逐字进度只从 `currentPosition` 这个 lambda 读，不在重组里直接读 [positionMs]，
+ * 避免 250ms 的播放进度 tick 把整棵歌词树重排一遍。
  */
 @Composable
 internal fun PhoneLyrics(
@@ -49,29 +51,17 @@ internal fun PhoneLyrics(
     positionMs: Long,
     onSeekLine: (Long) -> Unit,
     modifier: Modifier = Modifier,
+    karaokeFill: Boolean = true,
 ) {
-    val lines = remember(syncedLyrics) {
-        syncedLyrics?.lines?.mapNotNull { line ->
-            val text = line.lyricText().takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            text to line.start.toLong()
-        }.orEmpty()
-    }
-
-    // 有歌词的时间轴时，当前行 = 最后一个「开始时间 <= 播放位置」的行。
-    // 只算到 0 不兜底成 -1：第一句之前（前奏）也应该把第一句高亮出来，
-    // 否则前奏阶段整屏都是灰的，用户会以为歌词没加载。
-    val currentIndex = remember(lines, positionMs) {
-        if (lines.isEmpty()) {
-            -1
-        } else {
-            lines.indexOfLast { it.second <= positionMs }.coerceAtLeast(0)
-        }
+    val hasTimedLines = remember(syncedLyrics) {
+        syncedLyrics?.lines.orEmpty().any { it.lyricText().isNotBlank() }
     }
 
     when {
-        lines.isNotEmpty() -> TimedLyrics(
-            lines = lines,
-            currentIndex = currentIndex,
+        syncedLyrics != null && hasTimedLines -> KaraokeTimedLyrics(
+            lyrics = syncedLyrics,
+            positionMs = positionMs,
+            karaokeFill = karaokeFill,
             onSeekLine = onSeekLine,
             modifier = modifier,
         )
@@ -88,73 +78,71 @@ internal fun PhoneLyrics(
 }
 
 /**
- * 带时间轴的歌词。
+ * 带时间轴的歌词：交给 `KaraokeLyricsView` 画，逐字扫填与电视端一致。
  *
- * 上下留出半屏的 `contentPadding`，让任意一行滚到列表顶部时正好落在视口中央——
- * 这比「算 offset 手动画」简单，也不会在最后几行滚不动（padding 是列表自身的一部分）。
+ * `currentPosition` 用 `rememberUpdatedState` 包一层，渲染器内部按帧读取即可拿到最新进度，
+ * 不必靠重组刷新；点某句仍然走 [onSeekLine] 跳转。
  */
 @Composable
-private fun TimedLyrics(
-    lines: List<Pair<String, Long>>,
-    currentIndex: Int,
+private fun KaraokeTimedLyrics(
+    lyrics: SyncedLyrics,
+    positionMs: Long,
+    karaokeFill: Boolean,
     onSeekLine: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val listState = rememberLazyListState()
+    // offset 在 KaraokeLyricsView 里的语义是「当前句被滚动到的距顶距离」，不是普通留白：
+    // 它同时用作 LazyColumn 首尾 contentPadding 与自动滚动的目标位置。写死 28.dp 会让
+    // 高亮句贴在头部歌名下面、歌词从顶部一路铺下来、下半屏留一大片空白。
+    // 取歌词区高度的一半：当前句落在正中，上面的歌词与下面的歌词对称展开。
     BoxWithConstraints(modifier.fillMaxSize()) {
-        // 视口高度的一半减去半行高，就是「让这一行居中」需要的上下留白。
-        val verticalPadding = (maxHeight / 2 - LYRIC_ROW_HEIGHT / 2).coerceAtLeast(0.dp)
-        LazyColumn(
-            state = listState,
-            contentPadding = PaddingValues(vertical = verticalPadding),
-            // 注意：这个滚动容器会把点击事件全部吃掉（连按下事件都在 Main 阶段被消费），
-            // 所以它外面的舞台层收不到「点空白」。控制层的唤出靠两处：
-            // 点上方头部（见 LyricsStage）、或点任意一句歌词——点歌词在跳转的同时
-            // 也会把控制层叫出来，理由见 PhonePlayerPage 里 onSeekLine 的注释。
-            modifier = Modifier.fillMaxSize(),
+        val centerOffset = maxHeight * 0.5f
+        val listState = rememberLazyListState()
+        val positionState = rememberUpdatedState(positionMs.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt())
+        val currentPosition = remember { { positionState.value } }
+        CompositionLocalProvider(
+            androidx.compose.material3.LocalTextStyle provides TextStyle(
+                color = FnColors.Text,
+                fontSize = 20.sp,
+                lineHeight = 26.sp,
+            ),
         ) {
-            itemsIndexed(lines) { index, line ->
-                LyricLine(
-                    text = line.first,
-                    active = index == currentIndex,
-                    onClick = { onSeekLine(line.second) },
-                )
-            }
+            KaraokeLyricsView(
+                listState = listState,
+                lyrics = lyrics,
+                currentPosition = currentPosition,
+                onLineClicked = { line -> onSeekLine(line.start.toLong()) },
+                onLinePressed = {},
+                modifier = Modifier.fillMaxSize(),
+                normalLineTextStyle = TextStyle(
+                    color = FnColors.Text,
+                    fontSize = 21.sp,
+                    lineHeight = 27.sp,
+                    fontWeight = FontWeight.Bold,
+                ),
+                accompanimentLineTextStyle = TextStyle(
+                    color = FnColors.Text,
+                    fontSize = 15.sp,
+                    lineHeight = 19.sp,
+                    fontWeight = FontWeight.SemiBold,
+                ),
+                textColor = FnColors.Text,
+                blendMode = BlendMode.SrcOver,
+                useBlurEffect = false,
+                showTranslation = true,
+                showPhonetic = false,
+                offset = centerOffset,
+                keepAliveZone = 0.dp,
+                breathingDotsDefaults = KaraokeBreathingDotsDefaults(
+                    number = 1,
+                    size = 0.dp,
+                    margin = 0.dp,
+                ),
+                karaokeProgressEnabled = karaokeFill,
+                // 手机全歌词页要求歌词整块居中；这个参数默认 false，电视端不传、版式不变。
+                centerLines = true,
+            )
         }
-        // 跟着当前行滚。用 animateScrollToItem 而不是 scrollToItem：一句一句滑过去，
-        // 而不是瞬移，用户能看清滚到了哪。
-        LaunchedEffect(currentIndex, lines.size) {
-            if (currentIndex >= 0) {
-                listState.animateScrollToItem(currentIndex)
-            }
-        }
-    }
-}
-
-@Composable
-private fun LyricLine(
-    text: String,
-    active: Boolean,
-    onClick: () -> Unit,
-) {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(LYRIC_ROW_HEIGHT)
-            .phoneTap(onClick)
-            .padding(horizontal = PhoneSpace.screenHorizontal),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text,
-            color = if (active) FnColors.Coral else Color.White.copy(alpha = 0.42f),
-            fontSize = if (active) PhoneType.Title else PhoneType.Body,
-            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
-        )
     }
 }
 
@@ -209,6 +197,3 @@ private fun LyricNotice(
         }
     }
 }
-
-/** 歌词行高：固定值，理由见 [PhoneLyrics] 注释。 */
-private val LYRIC_ROW_HEIGHT = 44.dp

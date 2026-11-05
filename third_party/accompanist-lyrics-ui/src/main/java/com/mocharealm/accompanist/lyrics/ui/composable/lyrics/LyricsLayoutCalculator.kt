@@ -331,7 +331,9 @@ fun calculateStaticLineLayout(
     canvasWidth: Float,
     lineHeight: Float,
     phoneticHeight: Float,
-    isRtl: Boolean
+    isRtl: Boolean,
+    /** 居中模式：每行按自身宽度在画布里水平居中。默认 false 保持原来的左/右对齐（电视端行为不变）。 */
+    centerHorizontally: Boolean = false,
 ): List<List<SyllableLayout>> {
     val layoutsByWord = mutableMapOf<Int, MutableList<SyllableLayout>>()
 
@@ -343,11 +345,11 @@ fun calculateStaticLineLayout(
         val rowHeight = lineHeight + if (hasPhoneticInBlock) (phoneticHeight * 0.7f) else 0f
         val rowTopY = lineIndex * rowHeight + if (hasPhoneticInBlock) (phoneticHeight * 0.7f) else 0f
 
-        // 核心逻辑：如果是右对齐，起始点 = 画布宽 - 行宽。否则为 0。
-        val startX = if (isLineRightAligned) {
-            canvasWidth - wrappedLine.totalWidth
-        } else {
-            0f
+        // 核心逻辑：右对齐起点 = 画布宽 - 行宽；居中起点 = 两边余量各一半；否则为 0。
+        val startX = when {
+            centerHorizontally -> (canvasWidth - wrappedLine.totalWidth) / 2f
+            isLineRightAligned -> canvasWidth - wrappedLine.totalWidth
+            else -> 0f
         }
 
         // 下面的逻辑处理 RTL 单词内的排列，保持不变

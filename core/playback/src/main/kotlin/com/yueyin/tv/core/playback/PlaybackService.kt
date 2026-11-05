@@ -19,11 +19,16 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionError
 import androidx.media3.session.SessionResult
+import com.yueyin.tv.core.model.stream.PlaybackHttp
+import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import java.io.File
@@ -35,6 +40,10 @@ internal const val SONG_CACHE_DIRECTORY = "song-cache"
 internal const val SONG_CACHE_MAX_BYTES = 512L * 1024L * 1024L
 private const val LEGACY_AUDIO_CACHE_DIRECTORY = "media"
 private const val TAG = "PlaybackService"
+
+// 车机浏览树只暴露当前播放队列：service 自己就有数据，不跨模块取曲库、不碰认证态。
+private const val LIBRARY_ROOT_ID = "yueyin-root"
+private const val LIBRARY_QUEUE_ID = "yueyin-queue"
 
 internal fun validatedShuffleIndices(
     canonicalIds: List<String>,
@@ -102,8 +111,10 @@ internal fun createPlaybackRenderersFactory(
 @androidx.annotation.OptIn(UnstableApi::class)
 internal fun createPlaybackHttpDataSourceFactory(): DefaultHttpDataSource.Factory =
     DefaultHttpDataSource.Factory()
-        .setAllowCrossProtocolRedirects(false)
-        .setUserAgent("YueYinTV/1.0")
+        // 音源代理链常把 http 直链 302 到 https；禁掉跨协议重定向会直接报「连接不上音源」。
+        .setAllowCrossProtocolRedirects(true)
+        // 与取链探活共用同一 UA：探活能过、播放器被拒是排查里最常见的一类假成功。
+        .setUserAgent(PlaybackHttp.USER_AGENT)
 
 internal fun playbackRequestHeaders(token: String, accessCode: String?, relayMode: Boolean): Map<String, String> =
     buildMap {
@@ -129,9 +140,9 @@ internal fun deleteLegacyAudioCache(cacheDirectory: File): Boolean = runCatching
 }.getOrDefault(false)
 
 @androidx.annotation.OptIn(UnstableApi::class)
-class PlaybackService : MediaSessionService() {
+class PlaybackService : MediaLibraryService() {
     private var player: ExoPlayer? = null
-    private var mediaSession: MediaSession? = null
+    private var mediaSession: MediaLibraryService.MediaLibrarySession? = null
     private var songCache: SimpleCache? = null
     private var fxProcessor: FxAudioProcessor? = null
 
@@ -170,75 +181,209 @@ class PlaybackService : MediaSessionService() {
             setHandleAudioBecomingNoisy(true)
         }
         player = exoPlayer
-        mediaSession = MediaSession.Builder(this, RoutingPlayer(exoPlayer))
-            .setCallback(object : MediaSession.Callback {
-                override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
-                    val available = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
-                        .add(PlaybackCommands.ConfigureAuthCommand)
-                        .add(PlaybackCommands.ClearAuthCommand)
-                        .add(PlaybackCommands.SetShuffleOrderCommand)
-                        .add(PlaybackCommands.ClearSongCacheCommand)
-                        .build()
-                    return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
-                        .setAvailableSessionCommands(available)
-                        .build()
-                }
+        val libraryCallback = object : MediaLibraryService.MediaLibrarySession.Callback {
+            override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
+                val available = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
+                    .add(PlaybackCommands.ConfigureAuthCommand)
+                    .add(PlaybackCommands.ClearAuthCommand)
+                    .add(PlaybackCommands.SetShuffleOrderCommand)
+                    .add(PlaybackCommands.ClearSongCacheCommand)
+                    .build()
+                return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                    .setAvailableSessionCommands(available)
+                    .build()
+            }
 
-                override fun onCustomCommand(
-                    session: MediaSession,
-                    controller: MediaSession.ControllerInfo,
-                    customCommand: SessionCommand,
-                    args: android.os.Bundle,
-                ): ListenableFuture<SessionResult> {
-                    if (customCommand.customAction == PlaybackCommands.ClearAuth) {
-                        httpFactory.setDefaultRequestProperties(emptyMap())
-                        return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
-                    }
-                    if (customCommand.customAction == PlaybackCommands.ClearSongCache) {
-                        // 逐条移除缓存的资源；正在播放中的片段可能无法移除，但不影响当前播放。
-                        runCatching {
-                            songCache?.keys?.forEach { key -> runCatching { songCache?.removeResource(key) } }
-                        }
-                        return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
-                    }
-                    if (customCommand.customAction == PlaybackCommands.ConfigureAuth) {
-                        val token = args.getString(PlaybackCommands.Token)
-                        val namespace = args.getString(PlaybackCommands.CacheNamespace)
-                        if (token.isNullOrBlank() || namespace.isNullOrBlank()) {
-                            return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
-                        }
-                        val relayMode = args.getBoolean(PlaybackCommands.RelayMode, false)
-                        val accessCode = args.getString(PlaybackCommands.AccessCode)
-                        val headers = playbackRequestHeaders(token, accessCode, relayMode)
-                        httpFactory.setDefaultRequestProperties(headers)
-                        return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
-                    }
-                    if (customCommand.customAction == PlaybackCommands.SetShuffleOrder) {
-                        val requested = args.getStringArrayList(PlaybackCommands.MediaIds).orEmpty()
-                        val revision = args.getLong(PlaybackCommands.SnapshotRevision, -1L)
-                        val canonical = List(exoPlayer.mediaItemCount) { index ->
-                            exoPlayer.getMediaItemAt(index).mediaId
-                        }
-                        val order = validatedShuffleIndices(canonical, requested)
-                        if (revision < 0L || order == null) {
-                            return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
-                        }
-                        exoPlayer.setShuffleOrder(DefaultShuffleOrder(order, revision))
-                        val acknowledgement = android.os.Bundle().apply {
-                            putLong(PlaybackCommands.SnapshotRevision, revision)
-                            putStringArrayList(PlaybackCommands.MediaIds, ArrayList(requested))
-                        }
-                        return Futures.immediateFuture(
-                            SessionResult(SessionResult.RESULT_SUCCESS, acknowledgement),
-                        )
-                    }
-                    return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
+            override fun onCustomCommand(
+                session: MediaSession,
+                controller: MediaSession.ControllerInfo,
+                customCommand: SessionCommand,
+                args: android.os.Bundle,
+            ): ListenableFuture<SessionResult> {
+                if (customCommand.customAction == PlaybackCommands.ClearAuth) {
+                    httpFactory.setDefaultRequestProperties(emptyMap())
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
-            })
-            .build()
+                if (customCommand.customAction == PlaybackCommands.ClearSongCache) {
+                    // 逐条移除缓存的资源；正在播放中的片段可能无法移除，但不影响当前播放。
+                    runCatching {
+                        songCache?.keys?.forEach { key -> runCatching { songCache?.removeResource(key) } }
+                    }
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                if (customCommand.customAction == PlaybackCommands.ConfigureAuth) {
+                    val token = args.getString(PlaybackCommands.Token)
+                    val namespace = args.getString(PlaybackCommands.CacheNamespace)
+                    if (token.isNullOrBlank() || namespace.isNullOrBlank()) {
+                        return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+                    }
+                    val relayMode = args.getBoolean(PlaybackCommands.RelayMode, false)
+                    val accessCode = args.getString(PlaybackCommands.AccessCode)
+                    val headers = playbackRequestHeaders(token, accessCode, relayMode)
+                    httpFactory.setDefaultRequestProperties(headers)
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                if (customCommand.customAction == PlaybackCommands.SetShuffleOrder) {
+                    val requested = args.getStringArrayList(PlaybackCommands.MediaIds).orEmpty()
+                    val revision = args.getLong(PlaybackCommands.SnapshotRevision, -1L)
+                    val canonical = List(exoPlayer.mediaItemCount) { index ->
+                        exoPlayer.getMediaItemAt(index).mediaId
+                    }
+                    val order = validatedShuffleIndices(canonical, requested)
+                    if (revision < 0L || order == null) {
+                        return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+                    }
+                    exoPlayer.setShuffleOrder(DefaultShuffleOrder(order, revision))
+                    val acknowledgement = android.os.Bundle().apply {
+                        putLong(PlaybackCommands.SnapshotRevision, revision)
+                        putStringArrayList(PlaybackCommands.MediaIds, ArrayList(requested))
+                    }
+                    return Futures.immediateFuture(
+                        SessionResult(SessionResult.RESULT_SUCCESS, acknowledgement),
+                    )
+                }
+                return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
+            }
+
+            override fun onAddMediaItems(
+                session: MediaSession,
+                controller: MediaSession.ControllerInfo,
+                mediaItems: List<MediaItem>,
+            ): ListenableFuture<List<MediaItem>> = Futures.immediateFuture(
+                mediaItems.map { requested ->
+                    // App 内提交队列（setMediaItems）与后台补直链（replaceMediaItem）都会走这里，
+                    // 而且请求里已经带着刚取到的直链。早期版本一律用 findQueueItem(id) 覆盖，
+                    // 结果命中队列里同 mediaId 的旧 item（uri 为空或已过期），新直链被顶掉，
+                    // 播到该首时 ExoPlayer 直接报 IO 网络错误——「播放失败：网络连接不上音源」。
+                    // 因此：本 App 的请求、以及任何已带 uri 的请求一律原样放行；
+                    // 只有外部控制器（车机浏览树点选）发来的「仅 mediaId」请求才补齐 uri。
+                    val fromApp = runCatching {
+                        controller.packageName == applicationContext.packageName
+                    }.getOrDefault(false)
+                    val hasUri = !requested.localConfiguration?.uri?.toString().isNullOrBlank()
+                    val id = requested.mediaId
+                    if (fromApp || hasUri || id.isBlank()) requested
+                    else (findQueueItem(id) ?: requested)
+                },
+            )
+
+            override fun onGetLibraryRoot(
+                session: MediaLibraryService.MediaLibrarySession,
+                controller: MediaSession.ControllerInfo,
+                params: MediaLibraryService.LibraryParams?,
+            ): ListenableFuture<LibraryResult<MediaItem>> = Futures.immediateFuture(
+                LibraryResult.ofItem(folderItem(LIBRARY_ROOT_ID, "悦音"), params),
+            )
+
+            override fun onGetChildren(
+                session: MediaLibraryService.MediaLibrarySession,
+                controller: MediaSession.ControllerInfo,
+                parentId: String,
+                page: Int,
+                pageSize: Int,
+                params: MediaLibraryService.LibraryParams?,
+            ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = Futures.immediateFuture(
+                runCatching {
+                    val children = when (parentId) {
+                        LIBRARY_ROOT_ID -> listOf(folderItem(LIBRARY_QUEUE_ID, "当前队列"))
+                        LIBRARY_QUEUE_ID -> pageOf(queueItems(), page, pageSize)
+                        else -> emptyList()
+                    }
+                    LibraryResult.ofItemList(children, params)
+                }.getOrDefault(
+                    LibraryResult.ofError<ImmutableList<MediaItem>>(LibraryResult.RESULT_ERROR_UNKNOWN),
+                ),
+            )
+
+            override fun onGetItem(
+                session: MediaLibraryService.MediaLibrarySession,
+                controller: MediaSession.ControllerInfo,
+                mediaId: String,
+            ): ListenableFuture<LibraryResult<MediaItem>> = Futures.immediateFuture(
+                runCatching {
+                    val item = when (mediaId) {
+                        LIBRARY_ROOT_ID -> folderItem(LIBRARY_ROOT_ID, "悦音")
+                        LIBRARY_QUEUE_ID -> folderItem(LIBRARY_QUEUE_ID, "当前队列")
+                        else -> findQueueItem(mediaId)
+                    }
+                    if (item != null) LibraryResult.ofItem(item, null)
+                    else LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE)
+                }.getOrDefault(LibraryResult.ofError(LibraryResult.RESULT_ERROR_UNKNOWN)),
+            )
+
+            override fun onSearch(
+                session: MediaLibraryService.MediaLibrarySession,
+                controller: MediaSession.ControllerInfo,
+                query: String,
+                params: MediaLibraryService.LibraryParams?,
+            ): ListenableFuture<LibraryResult<Void>> =
+                Futures.immediateFuture(LibraryResult.ofVoid())
+
+            override fun onGetSearchResult(
+                session: MediaLibraryService.MediaLibrarySession,
+                controller: MediaSession.ControllerInfo,
+                query: String,
+                page: Int,
+                pageSize: Int,
+                params: MediaLibraryService.LibraryParams?,
+            ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = Futures.immediateFuture(
+                runCatching {
+                    val needle = query.trim()
+                    val matched = if (needle.isEmpty()) {
+                        emptyList()
+                    } else {
+                        queueItems().filter { item ->
+                            item.mediaMetadata.title?.toString()
+                                ?.contains(needle, ignoreCase = true) == true
+                        }
+                    }
+                    LibraryResult.ofItemList(pageOf(matched, page, pageSize), params)
+                }.getOrDefault(
+                    LibraryResult.ofError<ImmutableList<MediaItem>>(LibraryResult.RESULT_ERROR_UNKNOWN),
+                ),
+            )
+        }
+        mediaSession = MediaLibraryService.MediaLibrarySession.Builder(
+            this,
+            RoutingPlayer(exoPlayer),
+            libraryCallback,
+        ).build()
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
+    /**
+     * 车机浏览树只暴露当前播放队列：数据就在 [player] 里，
+     * 不跨模块取曲库、不需要认证态，外部查询失败也只影响车机浏览，不影响 app 内播放。
+     */
+    private fun queueItems(): List<MediaItem> = runCatching {
+        val exoPlayer = player ?: return emptyList()
+        List(exoPlayer.mediaItemCount) { index -> exoPlayer.getMediaItemAt(index) }
+    }.getOrDefault(emptyList())
+
+    private fun findQueueItem(mediaId: String): MediaItem? =
+        queueItems().firstOrNull { it.mediaId == mediaId }
+
+    private fun folderItem(mediaId: String, title: String): MediaItem =
+        MediaItem.Builder()
+            .setMediaId(mediaId)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(title)
+                    .setIsBrowsable(true)
+                    .setIsPlayable(false)
+                    .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS)
+                    .build(),
+            )
+            .build()
+
+    private fun pageOf(items: List<MediaItem>, page: Int, pageSize: Int): List<MediaItem> = runCatching {
+        val from = (page.toLong() * pageSize.coerceAtLeast(0)).coerceAtMost(items.size.toLong()).toInt()
+        if (pageSize <= 0 || pageSize == Int.MAX_VALUE) items.drop(from)
+        else items.drop(from).take(pageSize)
+    }.getOrDefault(emptyList())
+
+    override fun onGetSession(
+        controllerInfo: MediaSession.ControllerInfo,
+    ): MediaLibraryService.MediaLibrarySession? = mediaSession
 
     override fun onDestroy() {
         fxProcessor?.let(AudioFxController::release)

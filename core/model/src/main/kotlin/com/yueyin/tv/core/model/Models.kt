@@ -102,5 +102,22 @@ enum class CoverVariant(val width: Int?) {
     Compact(200),
     Grid(400),
     Player(800),
-    Poster(null),
+    /** 车机 / 高分屏：按实际显示像素取档时用到，服务端按 width 出图。 */
+    Hd(1200),
+    Ultra(1600),
+    Poster(null);
+
+    companion object {
+        /**
+         * 按「实际显示像素」挑一个不小于目标的档位，避免小图放大导致模糊。
+         * 档位是离散的，天然起到缓存分桶作用（不会因像素级尺寸差异产生无限 key）。
+         * [minimum] 是调用方指定的下限（例如播放页要求 Player），不会被更小的档位覆盖。
+         */
+        fun forDisplay(targetPx: Int, minimum: CoverVariant = Grid): CoverVariant {
+            if (minimum == Poster) return Poster
+            val finite = values().filter { it.width != null }
+            val picked = finite.firstOrNull { it.width!! >= targetPx } ?: finite.last()
+            return if (picked.width!! >= (minimum.width ?: Int.MAX_VALUE)) picked else minimum
+        }
+    }
 }

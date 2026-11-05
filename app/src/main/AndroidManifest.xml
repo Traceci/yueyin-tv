@@ -25,6 +25,12 @@
         android:theme="@style/Theme.YueYinTV"
         android:usesCleartextTraffic="false"
         tools:targetApi="31">
+
+        <!-- Android Auto：声明为媒体应用，车机端用媒体模板展示；手机/电视上完全惰性。 -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
         <activity
             android:name=".MainActivity"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
@@ -43,6 +49,7 @@
             android:permission="android.permission.BIND_MEDIA_BROWSER_SERVICE">
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaSessionService" />
+                <action android:name="androidx.media3.session.MediaLibraryService" />
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>

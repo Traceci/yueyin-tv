@@ -249,7 +249,7 @@ private fun PlatformRow(
             trailing?.invoke()
             Box(
                 Modifier
-                    .size(PhoneSize.TouchTarget)
+                    .size(LocalCarProfile.current.touchTarget)
                     .phoneTap(onDelete),
                 contentAlignment = Alignment.Center,
             ) {

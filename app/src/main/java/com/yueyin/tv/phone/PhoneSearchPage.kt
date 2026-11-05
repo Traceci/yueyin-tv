@@ -278,7 +278,7 @@ private fun SearchTopBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            Modifier.size(PhoneSize.TouchTarget).phoneTap(onBack),
+            Modifier.size(LocalCarProfile.current.touchTarget).phoneTap(onBack),
             contentAlignment = Alignment.Center,
         ) {
             PhoneIcon(PhoneGlyph.Back, FnColors.Text, Modifier.size(22.dp))

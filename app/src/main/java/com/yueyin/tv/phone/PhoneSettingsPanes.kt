@@ -9,10 +9,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -37,6 +37,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -57,6 +58,9 @@ import com.yueyin.tv.core.model.preferences.CacheUsage
 import com.yueyin.tv.core.model.preferences.UiScale
 import com.yueyin.tv.core.playback.AudioFxController
 import com.yueyin.tv.ui.FnColors
+import com.yueyin.tv.ui.device.DeviceLayoutOverride
+import com.yueyin.tv.ui.device.LayoutOverride
+import com.yueyin.tv.ui.device.findHostActivity
 import com.yueyin.tv.ui.FnQrCode
 import com.yueyin.tv.ui.ISSUE_URL
 import com.yueyin.tv.update.UpdateUiState
@@ -100,6 +104,7 @@ internal fun PhonePlayerSettingsPane(onBack: () -> Unit) {
         // 海报已从手机端下线，歌词也不再是样式（播放页固定带歌词条）。
         val context = LocalContext.current
         var viewMode by remember { mutableStateOf(phoneViewMode(context)) }
+        var layoutOverride by remember { mutableStateOf(DeviceLayoutOverride.get(context)) }
         Row(horizontalArrangement = Arrangement.spacedBy(PhoneSpace.sm + 2.dp)) {
             PhoneViewMode.entries.forEach { mode ->
                 StylePreviewCard(
@@ -122,6 +127,20 @@ internal fun PhonePlayerSettingsPane(onBack: () -> Unit) {
                 selected = prefs.uiScale,
                 label = { it.scaleName() },
                 onSelect = { prefsController.setUiScale(it) },
+            )
+            PhoneSettingsDivider()
+            PhoneSettingsChoiceRow(
+                title = "界面形态",
+                subtitle = "车机未正确识别时可手动指定，切换后界面会刷新",
+                options = LayoutOverride.entries,
+                selected = layoutOverride,
+                label = { it.label },
+                onSelect = { value ->
+                    DeviceLayoutOverride.set(context, value)
+                    layoutOverride = value
+                    Toast.makeText(context, "已切换界面形态，正在刷新", Toast.LENGTH_SHORT).show()
+                    context.findHostActivity()?.recreate()
+                },
             )
             PhoneSettingsDivider()
             PhoneSettingsSwitchRow(
@@ -182,92 +201,104 @@ private fun StylePreviewCard(
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(PhoneRadius.md)
-    Column(
+    val configuration = LocalConfiguration.current
+    val landscape = configuration.screenWidthDp > configuration.screenHeightDp
+    BoxWithConstraints(
         modifier.phoneTap(onClick),
-        horizontalAlignment = Alignment.CenterHorizontally,
+        contentAlignment = Alignment.TopCenter,
     ) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .aspectRatio(0.82f)
-                .background(
-                    if (selected) FnColors.Coral.copy(alpha = 0.10f) else FnColors.SurfaceAlt,
-                    shape,
-                )
-                .border(
-                    if (selected) 1.5.dp else 1.dp,
-                    if (selected) FnColors.Coral else Color.White.copy(alpha = 0.06f),
-                    shape,
-                )
-                .padding(10.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            val tint = if (selected) FnColors.Coral else FnColors.Muted
-            Canvas(Modifier.fillMaxSize()) {
-                val w = size.width
-                val h = size.height
-                val line = size.minDimension * 0.055f
-                // 视图缩略图下方的两条线：上粗下细，代表曲名与歌手，两种样式共用。
-                fun drawTitleLines() {
-                    drawLine(
-                        color = tint.copy(alpha = 0.5f),
-                        start = Offset(w * 0.26f, h * 0.80f),
-                        end = Offset(w * 0.74f, h * 0.80f),
-                        strokeWidth = line,
+        // 竖屏：高度仍按「宽度 / 0.82」推导，保持原来的竖向预览比例。
+        // 横屏：这一页是 verticalScroll、高度不受限，按宽度算会把两张卡撑到近 500dp 高，
+        // 下面的「界面缩放 / 界面形态 / 视觉」全被推出屏外。所以按可视高度封顶，
+        // 再由 0.82 反推宽度并居中——卡片变窄但不掉比例，也不再占满整屏。
+        val naturalHeight = maxWidth / 0.82f
+        val cappedHeight = (configuration.screenHeightDp * 0.46f).dp
+        val previewHeight = if (landscape) minOf(naturalHeight, cappedHeight) else naturalHeight
+        val previewWidth = previewHeight * 0.82f
+        val tint = if (selected) FnColors.Coral else FnColors.Muted
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(
+                Modifier
+                    .width(previewWidth)
+                    .height(previewHeight)
+                    .background(
+                        if (selected) FnColors.Coral.copy(alpha = 0.10f) else FnColors.SurfaceAlt,
+                        shape,
                     )
-                    drawLine(
-                        color = tint.copy(alpha = 0.28f),
-                        start = Offset(w * 0.36f, h * 0.90f),
-                        end = Offset(w * 0.64f, h * 0.90f),
-                        strokeWidth = line,
+                    .border(
+                        if (selected) 1.5.dp else 1.dp,
+                        if (selected) FnColors.Coral else Color.White.copy(alpha = 0.06f),
+                        shape,
                     )
-                }
-                when (mode) {
-                    PhoneViewMode.Cover -> {
-                        // 封面：一个圆角方块（方形封面原图）+ 画面里的取景点。
-                        val side = size.minDimension * 0.54f
-                        val left = w / 2 - side / 2
-                        val top = h * 0.17f
-                        drawRoundRect(
-                            color = tint.copy(alpha = 0.12f),
-                            topLeft = Offset(left, top),
-                            size = Size(side, side),
-                            cornerRadius = CornerRadius(side * 0.14f),
+                    .padding(10.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val w = size.width
+                    val h = size.height
+                    val line = size.minDimension * 0.055f
+                    // 视图缩略图下方的两条线：上粗下细，代表曲名与歌手，两种样式共用。
+                    fun drawTitleLines() {
+                        drawLine(
+                            color = tint.copy(alpha = 0.5f),
+                            start = Offset(w * 0.26f, h * 0.80f),
+                            end = Offset(w * 0.74f, h * 0.80f),
+                            strokeWidth = line,
                         )
-                        drawRoundRect(
-                            color = tint,
-                            topLeft = Offset(left, top),
-                            size = Size(side, side),
-                            cornerRadius = CornerRadius(side * 0.14f),
-                            style = Stroke(width = line),
+                        drawLine(
+                            color = tint.copy(alpha = 0.28f),
+                            start = Offset(w * 0.36f, h * 0.90f),
+                            end = Offset(w * 0.64f, h * 0.90f),
+                            strokeWidth = line,
                         )
-                        drawCircle(
-                            color = tint.copy(alpha = 0.75f),
-                            radius = side * 0.13f,
-                            center = Offset(w / 2, top + side * 0.40f),
-                        )
-                        drawTitleLines()
                     }
+                    when (mode) {
+                        PhoneViewMode.Cover -> {
+                            // 封面：一个圆角方块（方形封面原图）+ 画面里的取景点。
+                            val side = size.minDimension * 0.54f
+                            val left = w / 2 - side / 2
+                            val top = h * 0.17f
+                            drawRoundRect(
+                                color = tint.copy(alpha = 0.12f),
+                                topLeft = Offset(left, top),
+                                size = Size(side, side),
+                                cornerRadius = CornerRadius(side * 0.14f),
+                            )
+                            drawRoundRect(
+                                color = tint,
+                                topLeft = Offset(left, top),
+                                size = Size(side, side),
+                                cornerRadius = CornerRadius(side * 0.14f),
+                                style = Stroke(width = line),
+                            )
+                            drawCircle(
+                                color = tint.copy(alpha = 0.75f),
+                                radius = side * 0.13f,
+                                center = Offset(w / 2, top + side * 0.40f),
+                            )
+                            drawTitleLines()
+                        }
 
-                    PhoneViewMode.Vinyl -> {
-                        // 唱片：一个圆环 + 圆心点（盘心 label），下面同样是曲名与歌手。
-                        val radius = size.minDimension * 0.30f
-                        val center = Offset(w / 2, h * 0.38f)
-                        drawCircle(color = tint, radius = radius, center = center, style = Stroke(width = line))
-                        drawCircle(color = tint.copy(alpha = 0.7f), radius = radius * 0.22f, center = center)
-                        drawTitleLines()
+                        PhoneViewMode.Vinyl -> {
+                            // 唱片：一个圆环 + 圆心点（盘心 label），下面同样是曲名与歌手。
+                            val radius = size.minDimension * 0.30f
+                            val center = Offset(w / 2, h * 0.38f)
+                            drawCircle(color = tint, radius = radius, center = center, style = Stroke(width = line))
+                            drawCircle(color = tint.copy(alpha = 0.7f), radius = radius * 0.22f, center = center)
+                            drawTitleLines()
+                        }
                     }
                 }
             }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                if (mode == PhoneViewMode.Cover) "封面" else "唱片",
+                color = if (selected) FnColors.Coral else FnColors.Muted,
+                fontSize = PhoneType.Caption,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
+            )
         }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            if (mode == PhoneViewMode.Cover) "封面" else "唱片",
-            color = if (selected) FnColors.Coral else FnColors.Muted,
-            fontSize = PhoneType.Caption,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            maxLines = 1,
-        )
     }
 }
 

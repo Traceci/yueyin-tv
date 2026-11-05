@@ -93,7 +93,8 @@ internal class ArtworkBitmapCache(
     }
 
     private companion object {
-        const val DEFAULT_MAX_BYTES = 40 * 1024 * 1024
+        // 车机/高分屏会按显示像素取更大的封面档，解码结果更大，缓存上限相应放宽。
+        const val DEFAULT_MAX_BYTES = 64 * 1024 * 1024
         const val DEFAULT_MAX_CONCURRENT_LOADS = 3
     }
 }
@@ -104,12 +105,13 @@ internal fun decodeArtwork(bytes: ByteArray, targetLongEdge: Int): Bitmap? {
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0 || bounds.outWidth > 8_192 || bounds.outHeight > 8_192) return null
     if (bounds.outWidth.toLong() * bounds.outHeight.toLong() > 16_000_000L) return null
+    // 采样后必须「不小于」目标长边。旧写法用 `> target` 判断，会在还剩一点时就再翻一倍：
+    // 例如 1200px 源图配 510px 目标会降到 300px，再放大回 510px 就是糊的。
+    // 改成「下一档仍能保持 >= 目标才继续降」，保证解码结果刚好覆盖显示尺寸。
+    // 原始像素 >16M 已在上面直接拒绝，降采样只会更小，无需再按像素上限反复翻倍。
+    val longEdge = maxOf(bounds.outWidth, bounds.outHeight)
     var sample = 1
-    while (
-        bounds.outWidth / sample > targetLongEdge ||
-        bounds.outHeight / sample > targetLongEdge ||
-        (bounds.outWidth.toLong() / sample) * (bounds.outHeight.toLong() / sample) > 16_000_000L
-    ) sample *= 2
+    while (sample < 64 && longEdge / (sample * 2) >= targetLongEdge) sample *= 2
     return BitmapFactory.decodeByteArray(
         bytes,
         0,
