@@ -745,6 +745,7 @@ private fun PlayerControlHarness(
     val modeFocus = remember { FocusRequester() }
     val queueFocus = remember { FocusRequester() }
     val exitRoamFocus = remember { FocusRequester() }
+    val fxFocus = remember { FocusRequester() }
     val statusRetryFocus = remember { FocusRequester() }
     var playMode by remember { mutableStateOf(PlayMode.ListRepeat) }
     LaunchedEffect(Unit) {
@@ -771,6 +772,9 @@ private fun PlayerControlHarness(
             modeFocus = modeFocus,
             queueFocus = queueFocus,
             exitRoamFocus = exitRoamFocus,
+            fxFocus = fxFocus,
+            fxLabel = "音效",
+            onOpenFx = {},
             statusRetryFocus = statusRetryFocus,
             statusRetryAvailable = false,
             playMode = playMode,
@@ -807,6 +811,7 @@ private fun PlayerRetryHarness(
     val modeFocus = remember { FocusRequester() }
     val queueFocus = remember { FocusRequester() }
     val exitRoamFocus = remember { FocusRequester() }
+    val fxFocus = remember { FocusRequester() }
     val retryFocus = remember { FocusRequester() }
     var retryVisible by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) {
@@ -840,6 +845,9 @@ private fun PlayerRetryHarness(
             modeFocus = modeFocus,
             queueFocus = queueFocus,
             exitRoamFocus = exitRoamFocus,
+            fxFocus = fxFocus,
+            fxLabel = "音效",
+            onOpenFx = {},
             statusRetryFocus = retryFocus,
             statusRetryAvailable = true,
             playMode = PlayMode.ListRepeat,

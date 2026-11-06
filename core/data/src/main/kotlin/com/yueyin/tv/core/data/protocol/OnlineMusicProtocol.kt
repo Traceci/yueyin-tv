@@ -17,8 +17,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -51,6 +54,12 @@ class OnlineMusicProtocol(
      * 由 App 层注入（core 不反向依赖 app 的 MusicSourceRuntime）。
      */
     private val hasSources: () -> Boolean = { true },
+    /**
+     * 导入音源脚本的聚合搜索：在线搜索在官方 5 平台之外，把用户导入的脚本也当作数据源，
+     * 对 5 个平台逐一调用脚本的 search 事件，把脚本返回的歌并入结果。由 App 层注入
+     * （core 不反向依赖 app 的 OnlineScriptSearch / MusicSourceRuntime）。为 null 表示不启用。
+     */
+    private val scriptSearch: (suspend (String) -> List<OnlineSong>)? = null,
 ) : MusicProtocol {
 
     override val type: ConnectType = ConnectType.ONLINE
@@ -188,9 +197,40 @@ class OnlineMusicProtocol(
 
     override suspend fun search(profile: ConnectProfile, query: String): List<RemoteSong> {
         if (!hasSources()) return emptyList()
-        val result = runCatching { repository.search(query, useCache = true) }.getOrNull()
-            ?: return emptyList()
-        val songs = result.songs
+        // 脚本搜索和后台预取抢同一块隐藏 WebView（单实例、操作串行）：
+        // 上一轮列表的预取还在跑时开搜，两边会互相切换脚本上下文。
+        // 预取只是"点了秒开"的优化，搜到歌后再点开照样会现场取链，所以这里直接让路。
+        prefetchJob?.cancel()
+        // 官方 5 平台 + 导入音源脚本并行聚合：脚本整轮自带预算，这里再兜一层 5 秒总超时。
+        val songs = coroutineScope {
+            val official = async(Dispatchers.IO) {
+                runCatching { repository.search(query, useCache = true) }.getOrNull()?.songs.orEmpty()
+            }
+            val scripted = if (scriptSearch != null) {
+                async(Dispatchers.IO) {
+                    runCatching { withTimeout(5_000) { scriptSearch.invoke(query) } }.getOrElse { emptyList() }
+                }
+            } else {
+                async { emptyList<OnlineSong>() }
+            }
+            val officialSongs = official.await()
+            val scriptSongs = scripted.await()
+            val merged = LinkedHashSet<String>()
+            val out = ArrayList<OnlineSong>(officialSongs.size + scriptSongs.size)
+            fun push(song: OnlineSong) {
+                if (merged.add(song.key)) out += song
+            }
+            // 官方、脚本 1:1 交错，各自内部顺序不变（仍按相关度排）。
+            // 不能把脚本结果整段追加在官方后面：官方一页上百首，脚本结果会沉到看不见的地方，
+            // 那样"聚合"就等于没做。同 key 去重，脚本常会返回官方已有的同一首。
+            val total = maxOf(officialSongs.size, scriptSongs.size)
+            for (i in 0 until total) {
+                officialSongs.getOrNull(i)?.let(::push)
+                scriptSongs.getOrNull(i)?.let(::push)
+            }
+            out
+        }
+        if (songs.isEmpty()) return emptyList()
         indexSongs(songs)
         prefetch(songs)
         return songs.map { it.toRemoteSong() }

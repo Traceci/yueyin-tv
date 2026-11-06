@@ -439,14 +439,18 @@ internal fun ImmersivePlayer(
     // 播放页必须自己把返回键管到底。
     // 以前这个 BackHandler 只在控制条/队列/音效面板可见时启用，自动收起（5 秒）后就失效，
     // 返回事件冒泡到顶层：先弹搜索页、再弹首页、再来一次「再按一次退出」——连着按几下 App 就没了。
-    // 现在收尾逻辑改成：有浮层就先关浮层，没浮层才退出播放页，永远不往上冒。
+    // 现在的取舍：只有真正的浮层（队列、音效面板）才拦一次返回用于关闭；
+    // 控制条只是一个常驻的透明浮层，不应该吃掉返回键——否则「控制条刚好可见」时
+    // 要按两下才退得出去。除此之外一律一下退出播放页，永远不往上冒。
     BackHandler {
         if (fxPanelVisible) {
             fxPanelVisible = false
             controlsVisible = true
             runCatching { fxFocus.requestFocus() }
-        } else if (queueVisible || controlsVisible) {
-            dismissPlayerChrome()
+        } else if (queueVisible) {
+            queueVisible = false
+            controlsVisible = true
+            runCatching { playerFocus.requestFocus() }
         } else {
             onBack()
         }
@@ -456,7 +460,8 @@ internal fun ImmersivePlayer(
             .background(FnColors.Background)
             .focusRequester(playerFocus)
             .dismissPlayerChromeOnBack(
-                chromeVisible = controlsVisible || queueVisible || fxPanelVisible,
+                // 只拦真正的浮层。控制条可见时不拦，让返回键直达 BackHandler 直接退页。
+                chromeVisible = queueVisible || fxPanelVisible,
                 consumeBackKeyUp = consumeBackKeyUp,
                 setConsumeBackKeyUp = { consumeBackKeyUp = it },
                 onDismiss = ::dismissPlayerChrome,
@@ -854,8 +859,10 @@ private fun AmbientGlowOverlay(color: Color, modifier: Modifier = Modifier) {
 @Composable
 private fun PosterBlurredBackdrop(bitmap: Bitmap, panelColor: Color, modifier: Modifier = Modifier) {
     Box(modifier) {
+        // 同一张封面在这里只包一次：播放页会随进度/控制条状态重组，反复包会反复上传纹理。
+        val image = remember(bitmap) { bitmap.asImageBitmap() }
         Image(
-            bitmap.asImageBitmap(),
+            image,
             null,
             Modifier
                 .fillMaxSize()
@@ -1200,8 +1207,9 @@ private fun PlayerMainContent(
     if (poster) {
         Box(Modifier.fillMaxSize()) {
             if (artworkBitmap != null) {
+                val image = remember(artworkBitmap) { artworkBitmap.asImageBitmap() }
                 Image(
-                    artworkBitmap.asImageBitmap(),
+                    image,
                     null,
                     Modifier.fillMaxWidth(0.58f).fillMaxHeight(),
                     contentScale = ContentScale.Crop,
@@ -1636,8 +1644,9 @@ private fun DiscArtwork(
                 )
             }
             if (artworkBitmap != null) {
+                val image = remember(artworkBitmap) { artworkBitmap.asImageBitmap() }
                 Image(
-                    artworkBitmap.asImageBitmap(),
+                    image,
                     null,
                     Modifier.size(labelSize).clip(CircleShape),
                     contentScale = ContentScale.Crop,

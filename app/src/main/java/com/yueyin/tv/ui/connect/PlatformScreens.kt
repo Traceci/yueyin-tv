@@ -78,6 +78,8 @@ object ConnectRuntime {
         if (registryRef == null) {
             // 取链器只建一次：probeClient 内部有连接池，反复 new 会不断建连接。
             val playbackResolver = com.yueyin.tv.source.OnlinePlaybackResolver(context.applicationContext)
+            // 脚本聚合搜索也只建一次，复用同一个 WebView 运行时。
+            val scriptSearch = com.yueyin.tv.source.OnlineScriptSearch(context.applicationContext)
             registryRef = MusicProtocolRegistry(
                 listOf(
                     com.yueyin.tv.core.data.protocol.SubsonicProtocol(ConnectType.NAVIDROME),
@@ -101,6 +103,8 @@ object ConnectRuntime {
                         hasSources = {
                             com.yueyin.tv.ui.source.MusicSourceRuntime.state.value.sources.isNotEmpty()
                         },
+                        // 把导入音源脚本也接入搜索聚合（双端共用这一条在线协议）。
+                        scriptSearch = scriptSearch::search,
                     ),
                 ),
             )

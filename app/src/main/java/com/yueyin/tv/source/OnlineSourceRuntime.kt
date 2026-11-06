@@ -139,8 +139,14 @@ class OnlineSourceRuntime(context: Context) {
         }
     }
 
-    /** 加载（或切换）音源脚本。返回是否成功注册了 request 事件。 */
-    suspend fun loadScript(fileName: String, script: String): Boolean {
+    /**
+     * 加载（或切换）音源脚本。返回是否成功注册了 request 事件。
+     *
+     * @param awaitInit 是否在脚本没声明平台时等它把 `inited` 发出来（最多 2.5 秒）。
+     *   取链/歌词这类"必须知道脚本支持哪些平台才能挑源"的场景要等；
+     *   搜索是即时要结果的，自己有更短的时间片，等这 2.5 秒等于直接超时，所以传 false。
+     */
+    suspend fun loadScript(fileName: String, script: String, awaitInit: Boolean = true): Boolean {
         ensurePage(appContext)
         val key = fileName + ":" + script.hashCode()
         if (loadedKey == key) return true
@@ -159,7 +165,7 @@ class OnlineSourceRuntime(context: Context) {
             // 有些音源是「异步初始化」：脚本先发一次版本检查请求，拿到结果后才 send(inited)。
             // 加载完立刻问 declaredPlatforms() 会拿到空集，平台页就会显示成「这个音源没有可用平台」。
             // 这里最多等 2.5 秒，等它把 inited 发出来。
-            if (declaredPlatforms().isEmpty()) {
+            if (awaitInit && declaredPlatforms().isEmpty()) {
                 withTimeoutOrNull(2_500) {
                     while (declaredPlatforms().isEmpty()) delay(120)
                 }

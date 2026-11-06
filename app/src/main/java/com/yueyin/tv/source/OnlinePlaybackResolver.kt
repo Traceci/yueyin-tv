@@ -81,7 +81,7 @@ class OnlinePlaybackResolver(context: Context) {
                 return PlaybackResolution.Failure("${sourceLabel(platformKey)} 刚连续取链失败，先跳过（${left} 秒后自动重试）")
             }
         }
-        val candidates = all.sortedByDescending { score(it, platformKey) }
+        val candidates = rankedFor(all, song, platformKey)
         val runtime = OnlineSourceRuntime.get(appContext)
         val reasons = mutableListOf<String>()
         var lastTriedUrl = ""
@@ -94,7 +94,7 @@ class OnlinePlaybackResolver(context: Context) {
                 reasons += "取链超时"
                 break
             }
-            if (score(source, platformKey) < 0) continue
+            if (score(source, platformKey) < 0 && source.fileName != song.sourceName) continue
             val loaded = runCatching { runtime.loadScript(source.fileName, source.script) }.getOrElse { false }
             if (!loaded) {
                 reasons += "${source.fileName}: 加载失败"
@@ -174,6 +174,22 @@ class OnlinePlaybackResolver(context: Context) {
     private fun markHit(source: MusicSource) {
         penalty.remove(source.id)
     }
+
+    /**
+     * 候选脚本排序：**产出这条结果的脚本**永远排第一。
+     *
+     * 脚本聚合搜索出来的歌，id / hash 是那份脚本自己那套编码，换别的脚本很可能对不上
+     * （同一首歌在两家脚本里的 id 形如 `228908` 与 `TxSong_xxx`），会白跑一轮再失败。
+     * 官方接口来的歌 sourceName 为空，这个条件对它们恒不成立，排序结果与以前完全一致。
+     */
+    private fun rankedFor(
+        sources: List<MusicSource>,
+        song: OnlineSong,
+        platformKey: String,
+    ): List<MusicSource> = sources.sortedWith(
+        compareByDescending<MusicSource> { song.sourceName.isNotBlank() && it.fileName == song.sourceName }
+            .thenByDescending { score(it, platformKey) },
+    )
 
     private fun buildInfo(song: OnlineSong, quality: String): JsonObject {
         val id = song.id
@@ -266,10 +282,10 @@ class OnlinePlaybackResolver(context: Context) {
         val platformKey = song.platform.key
         val all = MusicSourceRuntime.store.state.value.sources.filter { it.enabled }
         if (all.isEmpty()) return null
-        val candidates = all.sortedByDescending { score(it, platformKey) }
+        val candidates = rankedFor(all, song, platformKey)
         val runtime = OnlineSourceRuntime.get(appContext)
         for (source in candidates) {
-            if (score(source, platformKey) < 0) continue
+            if (score(source, platformKey) < 0 && source.fileName != song.sourceName) continue
             if (!runCatching { runtime.loadScript(source.fileName, source.script) }.getOrElse { false }) continue
             val declared = runCatching { runtime.declaredPlatforms() }.getOrElse { emptySet() }
             val supported = declared.isEmpty() || declared.contains(platformKey) ||

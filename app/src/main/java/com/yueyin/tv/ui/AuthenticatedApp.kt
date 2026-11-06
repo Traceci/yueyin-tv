@@ -127,10 +127,12 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.TextUnit
@@ -309,6 +311,21 @@ internal fun AuthenticatedApp(
     var stack by remember(session.user.guid) { mutableStateOf(listOf<LibraryRoute>(LibraryRoute.Home)) }
     var lastHomeBackAt by remember(session.user.guid) { mutableStateOf(0L) }
     val route = stack.last()
+    // 常驻导航条的焦点锚点：全 App 唯一，随 AuthenticatedApp 生命周期存活。
+    val navRequesters = remember { NavRequesters() }
+    // 当前路由对应的一级导航项；null 表示这一页不显示导航条（详情页 / 搜索 / 播放页）。
+    val navTab = when (route) {
+        LibraryRoute.Home -> LibraryNavTab.Home
+        LibraryRoute.Albums -> LibraryNavTab.Albums
+        LibraryRoute.AllPlaylists -> LibraryNavTab.Playlists
+        LibraryRoute.My -> LibraryNavTab.My
+        LibraryRoute.Settings -> LibraryNavTab.Settings
+        else -> null
+    }
+    // 内容区（不含顶栏）当前是否有焦点：一级 tab 页按返回时用它区分
+    // 「焦点在内容区，先退回导航条」和「焦点已经在导航条上，再退才回首页」。
+    // 必须早于 BackHandler 声明（Kotlin 局部变量先声明后使用）。
+    val contentFocused = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
     val context = LocalContext.current
     val stateHolder = rememberSaveableStateHolder()
     val retainedScope = rememberCoroutineScope()
@@ -443,10 +460,21 @@ internal fun AuthenticatedApp(
                 stack = stack.dropLast(1)
                 navDirection = -1
             }
-            // 一级 tab 页按返回回到首页（五个 Tab 互为平级，不再有二级页的回退语义）
+            // 一级 tab 页按返回：先把焦点交回顶栏对应的 tab（逐层退出），
+            // 焦点已经在导航条上时再按一次才回首页。
+            // 原来这里直接 root(Home)：在「专辑 / 歌单 / 我的 / 设置」里按返回会整页跳回首页，
+            // 用户只是想从内容区退出来，并不想换页。
             route == LibraryRoute.My || route == LibraryRoute.AllPlaylists ||
-                route == LibraryRoute.Albums || route == LibraryRoute.Settings ->
-                root(LibraryRoute.Home)
+                route == LibraryRoute.Albums || route == LibraryRoute.Settings -> {
+                val anchor = navTab?.let { navRequesters.forTab(it.name.lowercase()) }
+                if (contentFocused.get() && anchor != null) {
+                    // 抑制「焦点落到 Tab 即切页」：这里只是退出内容区，不是要切页。
+                    tabSwitchBlocked.value = true
+                    runCatching { anchor.requestFocus() }
+                } else {
+                    root(LibraryRoute.Home)
+                }
+            }
             route == LibraryRoute.Home -> {
                 val now = SystemClock.elapsedRealtime()
                 if (isHomeBackConfirmed(lastHomeBackAt, now)) {
@@ -479,20 +507,9 @@ internal fun AuthenticatedApp(
             isTabSwitchBlocked = { tabSwitchBlocked.value },
         )
     }
-    // 常驻导航条的焦点锚点：全 App 唯一，随 AuthenticatedApp 生命周期存活。
-    val navRequesters = remember { NavRequesters() }
     // 导航条「设置」标签按下键的落点：设置页左栏第一项「播放界面」。
     // 设置页不再自己抢焦点，焦点可以留在导航条上继续向右走到「搜索 / 播放胶囊」。
     val settingsEntryFocus = remember { FocusRequester() }
-    // 当前路由对应的一级导航项；null 表示这一页不显示导航条（详情页 / 搜索 / 播放页）。
-    val navTab = when (route) {
-        LibraryRoute.Home -> LibraryNavTab.Home
-        LibraryRoute.Albums -> LibraryNavTab.Albums
-        LibraryRoute.AllPlaylists -> LibraryNavTab.Playlists
-        LibraryRoute.My -> LibraryNavTab.My
-        LibraryRoute.Settings -> LibraryNavTab.Settings
-        else -> null
-    }
     // 焦点保底：切页会销毁旧内容里的焦点节点。若新页面还在加载、迟迟没人接焦点，
     // Compose 焦点树就会处于「无焦点」状态；此时按方向键，系统会执行 restoreDefaultFocus，
     // 在 Compose 内部命中一个已 detach 的节点并抛
@@ -502,7 +519,6 @@ internal fun AuthenticatedApp(
     // 让焦点树里始终有一个 attached 的节点。
     // 用 AtomicBoolean 而不是 Compose State：焦点每次移动都写 State 会让整个
     // AuthenticatedApp 重组，代价太大，这里只需要读一个瞬时值。
-    val contentFocused = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
     val firstRouteSeen = remember { mutableStateOf(true) }
     val focusManager = LocalFocusManager.current
     LaunchedEffect(route, navTab) {
@@ -3119,7 +3135,10 @@ private fun AllPlaylists(
     }
     var reordering by remember { mutableStateOf(false) }
     var pickedUp by remember { mutableStateOf(false) }
-    var focusedIndex by remember { mutableStateOf(0) }
+    // 必须进 saveable：打开歌单详情时整页状态会被 SaveableStateProvider 保存，
+    // 返回时若用 remember 会重置成 0，焦点永远退回第一个「热歌榜」，
+    // 而不是用户刚才点开的那个歌单。
+    var focusedIndex by rememberSaveable { mutableStateOf(0) }
     var centerDownAt by remember { mutableStateOf(0L) }
     val gridState = rememberLazyGridState()
     val focusRequesters = remember(displayList.size) { List(displayList.size) { FocusRequester() } }
@@ -3174,8 +3193,16 @@ private fun AllPlaylists(
         if (navFocusController.pending != null) return@LaunchedEffect
         if (displayList.isEmpty() || initialFocusRequested && !reordering) return@LaunchedEffect
         val target = if (reordering) focusedIndex else focusedIndex.coerceIn(0, displayList.lastIndex.coerceAtLeast(0))
-        runCatching { focusRequesters[target].requestFocus() }
-        if (!reordering) initialFocusRequested = true
+        // 从详情页返回时 focusRequesters 刚随列表重建，节点可能还没 attach，此时
+        // requestFocus 抛「FocusRequester is not initialized」被 runCatching 吞掉，
+        // 焦点就退回列表第一项。逐帧重试到成功，保证恢复到用户刚才打开的那一项。
+        repeat(10) {
+            if (runCatching { focusRequesters[target].requestFocus() }.isSuccess) {
+                if (!reordering) initialFocusRequested = true
+                return@LaunchedEffect
+            }
+            withFrameNanos { }
+        }
     }
 
     Box(
@@ -3901,6 +3928,15 @@ private fun TrackCollection(
     val restoredFocus = remember(stateKey) { FocusRequester() }
     val listState = rememberLazyListState()
     val actionScope = rememberCoroutineScope()
+    // 播放页是否盖在这一页上面。从播放页返回时整页的焦点节点会被重建，
+    // 而 initialFocusRequested 是 remember 状态：只要这一页没被真正销毁，
+    // 它仍然是 true，恢复焦点的 LaunchedEffect 就直接 return——结果就是
+    // 「从播放页退回来，整页一个焦点框都没有，要按一下方向键才出来」。
+    // 进入播放页时把它复位，返回后由下面的 LaunchedEffect 重新抢一次。
+    val playerRouteOpen = LocalPlayerRouteOpen.current
+    LaunchedEffect(playerRouteOpen) {
+        if (playerRouteOpen) initialFocusRequested = false
+    }
     var primaryActionRunning by remember(stateKey) { mutableStateOf(false) }
     var loadedContentRevision by rememberSaveable(stateKey) { mutableStateOf<Long?>(null) }
     fun setError(value: AppError?) {
@@ -4074,7 +4110,17 @@ private fun TrackCollection(
         TrackCollectionPrimaryAction.PlayAll -> "播放全部"
         is TrackCollectionPrimaryAction.StartRoam -> "随机漫游"
     }
-    LaunchedEffect(snapshot.initialLoadCompleted, tracks, focusedKey, initialFocusEnabled, showTrackList, primaryActionEnabled) {
+    LaunchedEffect(
+        snapshot.initialLoadCompleted,
+        tracks,
+        focusedKey,
+        initialFocusEnabled,
+        showTrackList,
+        primaryActionEnabled,
+        playerRouteOpen,
+    ) {
+        // 播放页在上层时不抢焦点，否则方向键会被这一页吃掉。
+        if (playerRouteOpen) return@LaunchedEffect
         if (!initialFocusEnabled || !snapshot.initialLoadCompleted || initialFocusRequested) return@LaunchedEffect
         val availableKeys = buildList {
             if (primaryActionEnabled) add("primary-action")
@@ -5481,7 +5527,10 @@ private fun RemoteArtwork(
 ) {
     val bitmap = rememberRemoteArtworkBitmap(container, coverId, variant, fallbackVariant)
     if (bitmap != null) {
-        Image(bitmap.asImageBitmap(), null, modifier.clip(shape), contentScale = contentScale)
+        // 复用同一个 ImageBitmap 实例：否则每次重组都新建包装，Compose 会当成新图片重新上传 GPU 纹理。
+        // Perfetto 显示焦点移动触发整屏重绘时 TextureOp 高达近 3000 次，纹理重复上传是主因之一。
+        val imageBitmap = remember(bitmap) { bitmap.asImageBitmap() }
+        Image(imageBitmap, null, modifier.clip(shape), contentScale = contentScale)
     } else {
         Box(modifier.background(FnColors.Surface, shape), contentAlignment = Alignment.Center) {
             if (placeholderContent != null) {
@@ -5559,7 +5608,16 @@ private fun SearchScreen(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
-    var query by remember { mutableStateOf("") }
+    // 文本与光标/选区必须由同一个 TextFieldValue 一起保存：BasicTextField 的字符串重载
+    // 会自己保留选区，而这里原来的 query 用 remember（不进 saveable）。进播放页时搜索页
+    // 被 SaveableStateProvider 保存，返回后 query 重置为空串、选区却从 saveable 恢复到
+    // offset>0（拼音输入法组词时的位置），Compose 构造 TextFieldValue 时抛
+    // "offset(2) is out of bounds [0, 0)"，整个进程退出。改成同源状态后不会再出现
+    // 「文本为空但选区还指向旧位置」的非法组合。
+    var queryValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(""))
+    }
+    val query = queryValue.text
     var results by remember { mutableStateOf<SearchResults?>(null) }
     var searching by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<AppError?>(null) }
@@ -5570,6 +5628,12 @@ private fun SearchScreen(
     var searchToken by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
     val inputFocus = remember { FocusRequester() }
+    // 从播放页返回搜索页时同样的根因：整页焦点被销毁，且原 LaunchedEffect(Unit) 不会重跑，
+    // 结果是一个焦点都没有。这里在播放页关闭时重新把焦点放回输入框。
+    val playerRouteOpen = LocalPlayerRouteOpen.current
+    LaunchedEffect(playerRouteOpen) {
+        if (!playerRouteOpen) runCatching { inputFocus.requestFocus() }
+    }
 
     fun runSearch(keyword: String) {
         val trimmed = keyword.trim()
@@ -5667,8 +5731,8 @@ private fun SearchScreen(
         }
         Spacer(Modifier.height(14.dp))
         SearchField(
-            value = query,
-            onValueChange = { query = it },
+            value = queryValue,
+            onValueChange = { queryValue = sanitizeSearchFieldValue(it) },
             onSubmit = { runSearch(query) },
             focusRequester = inputFocus,
             onFocusStateChange = {},
@@ -5747,11 +5811,29 @@ private fun SearchScreen(
     }
 }
 
+/**
+ * 输入法在组词、提交或状态恢复时，可能送回选区/组区间超出当前文本长度的 TextFieldValue；
+ * Compose 构造它时会直接抛 IllegalArgumentException 并终止进程。统一钳制到合法区间，
+ * 保证交给 BasicTextField 的值永远是自洽的。
+ */
+private fun sanitizeSearchFieldValue(value: TextFieldValue): TextFieldValue {
+    val max = value.text.length
+    fun clamp(range: TextRange): TextRange {
+        val a = range.start.coerceIn(0, max)
+        val b = range.end.coerceIn(0, max)
+        return TextRange(minOf(a, b), maxOf(a, b))
+    }
+    return value.copy(
+        selection = clamp(value.selection),
+        composition = value.composition?.let { clamp(it) },
+    )
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SearchField(
-    value: String,
-    onValueChange: (String) -> Unit,
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
     onSubmit: () -> Unit,
     focusRequester: FocusRequester,
     onFocusStateChange: (Boolean) -> Unit,
@@ -5760,6 +5842,9 @@ private fun SearchField(
     val keyboard = LocalSoftwareKeyboardController.current
     val imeVisible = WindowInsets.isImeVisible
     val shape = RoundedCornerShape(FnRadius.lg)
+    // 组合期再做一次钳制：即使外部状态或输入法送来过期的选区，交给 BasicTextField 的
+    // 值也一定落在当前文本长度内。
+    val safeValue = sanitizeSearchFieldValue(value)
 
     // 进入搜索页即弹出键盘，焦点由 SearchScreen 的 LaunchedEffect 请求到输入框上，
     // 用户无需再按一次确定键即可直接输入。
@@ -5769,7 +5854,7 @@ private fun SearchField(
     }
 
     BasicTextField(
-        value = value,
+        value = safeValue,
         onValueChange = onValueChange,
         modifier = Modifier
             .fillMaxWidth()
@@ -5813,7 +5898,7 @@ private fun SearchField(
         cursorBrush = SolidColor(FnColors.Coral),
         decorationBox = { innerTextField ->
             Box(contentAlignment = Alignment.CenterStart) {
-                if (value.isEmpty()) {
+                if (value.text.isEmpty()) {
                     Text("输入关键词或拼音首字母，如 zjl，松开遥控器即自动搜索", color = FnColors.Muted, fontSize = FnType.Label)
                 }
                 innerTextField()

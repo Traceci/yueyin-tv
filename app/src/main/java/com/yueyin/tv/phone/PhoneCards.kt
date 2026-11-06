@@ -125,8 +125,10 @@ internal fun PhoneArtwork(
         .clip(shape)
         .onSizeChanged { size -> displayPx.value = maxOf(size.width, size.height) }
     if (bitmap != null) {
+        // 复用同一个 ImageBitmap 包装：每次重组都新建会被 Compose 当成新图片，重新上传 GPU 纹理。
+        val imageBitmap = remember(bitmap) { bitmap.asImageBitmap() }
         Image(
-            bitmap = bitmap.asImageBitmap(),
+            bitmap = imageBitmap,
             contentDescription = null,
             modifier = artworkModifier,
             contentScale = contentScale,

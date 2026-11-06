@@ -43,6 +43,8 @@ data class OnlineSong(
     val qualities: List<String>,
     /** 酷狗用 hash 取链、QQ 用 songmid，两者和 id 不一定相同，单独留一份 */
     val mediaId: String = "",
+    /** 标记这条结果来自哪个导入音源脚本（文件名）；空字符串表示来自官方 5 平台接口。 */
+    val sourceName: String = "",
 ) {
     /** 跨平台唯一的列表 key */
     val key: String get() = "${platform.key}:$id"

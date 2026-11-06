@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.0.8 - 2026-11-06
+
+搜索接入音源脚本聚合 + 渲染层减负，一条线解决"搜不到脚本里的歌"、一条线压 TV 端整屏重绘。
+
+### 搜索脚本聚合
+
+- `OnlineMusicProtocol` 新增 `scriptSearch` 注入口（App 层注入，core 不反向依赖 app）：在线搜索在官方酷我/网易/QQ/酷狗/咪咕 5 家之外，把用户导入的音源脚本也当数据源，逐平台调用脚本注册的 `search` 事件。
+- 新增 `app/source/OnlineScriptSearch.kt`：单 WebView 串行约束下整轮 **3 秒总预算**，按剩余平台平分时间片，预算用完带着已拿到的部分结果返回，绝不让搜索页一直转圈；查询结果带大小写不敏感缓存（12 条 LRU，输入即搜不闪列表）；失败过的脚本按失败计数往后排。
+- 官方结果与脚本结果 **1:1 交错合并**、按 key 去重——脚本结果不再整段沉在几百首官方歌后面。
+- `search` 事件入参同时带根级 `keyword` 与 `musicInfo.keyword`（兼容两类脚本读法）。
+- `OnlineSong` 新增 `sourceName`（产出结果的脚本文件名）；取链/歌词时**优先选回同一份脚本**（各家 id 编码不互通，换脚本会白试一轮）。
+- 搜索开始前先取消上一轮列表的后台预取，避免预取与脚本搜索在单 WebView 上互相切换脚本上下文。
+- `OnlineSourceRuntime.loadScript` 新增 `awaitInit` 参数：脚本搜索不等 2.5 秒的 `inited` 声明等待（等它就等于直接超时）。
+
+### 渲染 / 卡顿
+
+- 封面 `ImageBitmap` 包装复用（`RemoteArtwork`、手机卡片 `PhoneCards`、播放页海报/小图三处）：此前每次重组都新建包装，Compose 会当成新图片**重新上传 GPU 纹理**——正是 Perfetto 里 TextureOp 近 3000 次的主要来源之一。播放页随进度/控制条状态高频重组，此项收益最直接。
+- R8 开启 **full mode**（`android.enableR8.fullMode=true`），release 包进一步裁剪；补 WebView JS 桥 keep 规则（`nativeReady/nativeLog/nativeEvent/nativeRequest/onResult`），已用 dexdump 逐个确认保留——音源运行时（取链/搜索/歌词）不受影响。
+- 仪器化验证：新增 `OnlineScriptSearchTest`（真 WebView + 假音源脚本），在模拟器上跑通"选脚本 → 加载 → search → 解析 → OnlineSong"全链路，钉死字段解析（时长 `03:20`→200s、`hash`、`albumId`、`sourceName` 标记）与缓存行为。
+
+### 发版
+
+- versionCode 32 / versionName 2.0.8。2.0.7 当时代码升了但 `update.json` 没跟着发，老版本「检查更新」搜不到新版；本版起清单与代码同版本号同步发布。
+
 ## 2.0.6 - 2026-11-05
 
 车机适配、播放失败闭环、手机端 UI 收口三线并行，一个 tag 出包。
