@@ -70,6 +70,31 @@ class OnlineMusicProtocol(
     // 播放链缓存统一交给带 TTL 的 StreamUrlCache：音源直链带签名/时效，
     // 永不过期的本地 Map 会让队列后半段整批失效（见 StreamUrlCache 注释）。
 
+    private companion object {
+        /**
+         * 交给播放器前只认这个时限内取到的直链。
+         *
+         * 比 [StreamUrlCache.ttlMs] 更严格是刻意的：缓存里留着可以给「探活/续播」复用，
+         * 但真正要交给 ExoPlayer 的那一条，越新越安全——脚本链的有效期常常只有一分钟级。
+         */
+        const val PLAYABLE_MAX_AGE_MS = 90_000L
+
+        /**
+         * 后台预取只温热队列最前面这几首。
+         *
+         * 以前一次取 20 首：批量取出来的链在同一时刻起步老化，播到后半段已经全部过期，
+         * 却还躺在缓存里被当成可用地址（正是「下一曲也失败、点重试却能播」的来源）。
+         * 现在只提前备 3 首，其余交给「播到时现场取链」，链始终是新鲜的。
+         */
+        const val PREFETCH_AHEAD = 3
+
+        /** 搜索结果的专辑分区最多几张：电视上是横向一排，再多就要一直往右按。 */
+        const val SEARCH_ALBUM_LIMIT = 12
+
+        /** 专辑搜索的总超时。给得比歌曲短：它是附加分区，宁可少显示也不要让搜索变慢。 */
+        const val SEARCH_ALBUM_TIMEOUT_MS = 4_500L
+    }
+
     // 平台 + 歌曲 id → OnlineSong 的还原表，取链/歌词时用
     private val songIndex = ConcurrentHashMap<String, OnlineSong>()
 
@@ -237,6 +262,34 @@ class OnlineMusicProtocol(
     }
 
     /**
+     * 搜索专辑。
+     *
+     * 以前 `ProtocolLibrarySource.search()` 里这块是硬编码 `emptyList()`，
+     * 两端的「专辑」分区因此永远不显示——不是 UI 没做，是根本没人喂数据。
+     * 现在按专辑搜索接口取回来，id 仍用 `platform:album:id` 编码，
+     * 点进去走的是现成的专辑详情链路（[albumSongs]），不用另写页面。
+     */
+    override suspend fun searchAlbums(profile: ConnectProfile, query: String): List<RemoteAlbum> {
+        if (!hasSources()) return emptyList()
+        val albums = runCatching {
+            // 专辑只是个附加分区，不能拖住整个搜索：超时就直接当没有。
+            withTimeout(SEARCH_ALBUM_TIMEOUT_MS) {
+                repository.searchAlbums(query, limit = SEARCH_ALBUM_LIMIT)
+            }
+        }.getOrDefault(emptyList())
+        return albums.map { album ->
+            RemoteAlbum(
+                id = albumIdOf(album.platform, album.id),
+                name = album.name,
+                artistName = album.artist,
+                coverId = album.coverUrl.takeIf { it.isNotBlank() },
+                songCount = album.songCount,
+                releaseDate = album.publishDate,
+            )
+        }
+    }
+
+    /**
      * 歌手详情：在线没有歌手详情接口，按歌手名跨平台搜索，再筛出真正属于该歌手的歌。
      * id 里编码了歌手名（见 [artistIdOf]），这里还原出来当搜索词。
      */
@@ -262,14 +315,16 @@ class OnlineMusicProtocol(
     // ---------------------------------------------------------------- 播放 / 封面 / 歌词
 
     override fun streamUrl(profile: ConnectProfile, songId: String): String =
-        StreamUrlCache.get(songId).orEmpty()
+        // 队列构建时会同步问一次：只认足够新的链，老链宁可不给（返回空 → 播到时现场取）。
+        StreamUrlCache.get(songId, PLAYABLE_MAX_AGE_MS).orEmpty()
 
     /**
      * 播放前取链：缓存命中直接返回；未命中则现场取链（suspend，可阻塞等待）。
      * 这是解决"点播放即出声"的关键——预取是尽力而为，这里兜底保证能播。
      */
     override suspend fun resolveStreamUrl(profile: ConnectProfile, songId: String): String {
-        StreamUrlCache.get(songId)?.let { return it }
+        // 太老的链即便还在 TTL 内也重取：宁可多花 0.3 秒，也不要让播放器去连一条死链。
+        StreamUrlCache.get(songId, PLAYABLE_MAX_AGE_MS)?.let { return it }
         // 用户真的要点播了：先把后台预取停掉，别让这一首要排在二十首之后。
         if (prefetchJob != null) {
             prefetchJob?.cancel()
@@ -327,12 +382,12 @@ class OnlineMusicProtocol(
         prefetchJob?.cancel()
         prefetchJob = prefetchScope.launch {
             // 串行取链：音源运行时是单个隐藏 WebView，并发 resolve 会在 JS 侧排队，
-            // 串行反而更稳、更容易命中已加载的脚本。首屏只取前 20 条，避免拖太久。
-            for (song in songs.take(20)) {
+            // 串行反而更稳、更容易命中已加载的脚本。只温热最前面几首，剩下的播到时现取。
+            for (song in songs.take(PREFETCH_AHEAD)) {
                 // 被用户点播取消后要立刻收手（runCatching 会把取消异常吞掉，这里显式判活）
                 if (!isActive) return@launch
                 val key = songIdOf(song.platform, song.id)
-                if (StreamUrlCache.get(key) != null) continue
+                if (StreamUrlCache.get(key, PLAYABLE_MAX_AGE_MS) != null) continue
                 val url = runCatching { resolveUrl(song) }.getOrNull()
                 if (!url.isNullOrBlank()) StreamUrlCache.put(key, url)
             }

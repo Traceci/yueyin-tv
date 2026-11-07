@@ -462,7 +462,170 @@ class OnlineMusicApi(
 
     // ---------------------------------------------------------------- HTTP
 
+    // ---------------------------------------------------------------- 专辑搜索
+
+    /**
+     * 专辑搜索：只覆盖网易云、QQ、酷我三家。
+     *
+     * 排除另外两家的原因不同：
+     *  - 咪咕的专辑详情在 `OnlineDiscoverApi.albumCollection` 里还是「暂不支持」，
+     *    放进搜索结果等于给用户一张点开就报错的卡片；
+     *  - 酷狗的 `search/album` 是"按专辑名模糊匹配"，搜歌手会混进大量翻唱专辑
+     *    （实测搜 zhoujielun 返回「超长合集歌单 / 蒋道理」这类），
+     *    而这一排卡片是给用户认"这个歌手的正式专辑"的，宁可少一家也不塞噪音。
+     *
+     * 和歌曲搜索一样，这里只负责"有哪些专辑"；曲目由专辑详情接口按 id 现取。
+     */
+    suspend fun searchAlbums(
+        platform: OnlinePlatform,
+        keyword: String,
+        page: Int = 1,
+        limit: Int = 10,
+    ): List<OnlineAlbum> = withContext(Dispatchers.IO) {
+        val kw = keyword.trim()
+        if (kw.isEmpty()) return@withContext emptyList()
+        when (platform) {
+            OnlinePlatform.NetEase -> searchNetEaseAlbums(kw, page, limit)
+            OnlinePlatform.QQ -> searchQQAlbums(kw, page, limit)
+            OnlinePlatform.Kuwo -> searchKuwoAlbums(kw, page, limit)
+            OnlinePlatform.Kugou, OnlinePlatform.Migu -> emptyList()
+        }
+    }
+
+    /**
+     * 多平台并发专辑搜索，按平台轮转合并（和歌曲搜索同一个理由：
+     * 不轮转的话，先回来的那一家的十几张专辑会把其他家全压到下面）。
+     * 单家失败只丢这一家的结果，不拖垮整页。
+     */
+    suspend fun searchAlbumsAll(
+        keyword: String,
+        platforms: List<OnlinePlatform> = ALBUM_SEARCH_PLATFORMS,
+        page: Int = 1,
+        limit: Int = 10,
+    ): List<OnlineAlbum> = coroutineScope {
+        val kw = keyword.trim()
+        if (kw.isEmpty()) return@coroutineScope emptyList()
+        val buckets = platforms.map { platform ->
+            async { runCatching { searchAlbums(platform, kw, page, limit) }.getOrDefault(emptyList()) }
+        }.map { it.await() }
+        val merged = mutableListOf<OnlineAlbum>()
+        val seen = HashSet<String>()
+        val longest = buckets.maxOfOrNull { it.size } ?: 0
+        for (index in 0 until longest) {
+            for (bucket in buckets) {
+                val album = bucket.getOrNull(index) ?: continue
+                // 同一张专辑在不同平台 id 不同，按「专辑名 + 歌手」去重，
+                // 否则搜「周杰伦」会看到四五张同名专辑挨在一起。
+                val dedupKey = "${album.name.lowercase()}|${album.artist.lowercase()}"
+                if (!seen.add(dedupKey)) continue
+                merged += album
+            }
+        }
+        merged
+    }
+
+    /** 网易：搜索结果接口换 `type=10` 就是专辑，字段和歌曲那套不共用。 */
+    private fun searchNetEaseAlbums(keyword: String, page: Int, limit: Int): List<OnlineAlbum> {
+        val url = "https://music.163.com/api/search/get/web".toHttpUrl().newBuilder()
+            .addQueryParameter("s", keyword)
+            .addQueryParameter("type", "10")
+            .addQueryParameter("offset", ((page - 1).coerceAtLeast(0) * limit).toString())
+            .addQueryParameter("limit", limit.toString())
+            .build()
+        val root = OnlineJson.parseObject(
+            OnlineHttp.get(client, url.toString(), referer = "https://music.163.com"),
+        ) ?: throw IOException("网易专辑搜索返回异常")
+        val list = root.obj("result")?.arr("albums") ?: return emptyList()
+        return list.mapNotNull { element ->
+            val item = element as? JsonObject ?: return@mapNotNull null
+            val id = item.firstNonEmpty("idStr", "id")
+            if (id.isEmpty()) return@mapNotNull null
+            OnlineAlbum(
+                platform = OnlinePlatform.NetEase,
+                id = id,
+                name = OnlineText.cleanHtml(item.str("name")),
+                artist = OnlineText.cleanArtist(
+                    item.arr("artists").stringsOf("name").joinToString("/")
+                        .ifEmpty { item.obj("artist")?.str("name").orEmpty() },
+                ),
+                coverUrl = item.firstNonEmpty("picUrl", "blurPicUrl"),
+                publishDate = OnlineText.formatDate(item.str("publishTime")),
+                songCount = item.int("size"),
+            )
+        }
+    }
+
+    /**
+     * QQ：`client_search_cp?t=8` 是专辑搜索。
+     * 返回 `data.album.list[]`，专辑 id 要取 `albumMID`——专辑详情接口认的是 mid 不是数字 id。
+     */
+    private fun searchQQAlbums(keyword: String, page: Int, limit: Int): List<OnlineAlbum> {
+        val url = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp".toHttpUrl().newBuilder()
+            .addQueryParameter("w", keyword)
+            .addQueryParameter("t", "8")
+            .addQueryParameter("format", "json")
+            .addQueryParameter("n", limit.toString())
+            .addQueryParameter("p", page.coerceAtLeast(1).toString())
+            .build()
+        val root = OnlineJson.parseObject(get(url.toString()))
+            ?: throw IOException("QQ 专辑搜索返回异常")
+        val list = root.obj("data")?.obj("album")?.arr("list") ?: return emptyList()
+        return list.mapNotNull { element ->
+            val item = element as? JsonObject ?: return@mapNotNull null
+            val mid = item.firstNonEmpty("albumMID", "album_mid")
+            if (mid.isEmpty()) return@mapNotNull null
+            OnlineAlbum(
+                platform = OnlinePlatform.QQ,
+                id = mid,
+                name = OnlineText.cleanHtml(item.firstNonEmpty("albumName", "album_name")),
+                artist = OnlineText.cleanArtist(
+                    item.arr("singer_list").stringsOf("name").joinToString("/")
+                        .ifEmpty { item.str("singerName") },
+                ),
+                coverUrl = "https://y.gtimg.cn/music/photo_new/T002R300x300M000$mid.jpg",
+                publishDate = OnlineText.formatDate(item.str("publicTime")),
+                songCount = item.int("song_count"),
+            )
+        }
+    }
+
+    /** 酷我：同一个 `r.s` 换 `ft=album` 即可，字段是 `albumlist[]`（注意不是 `abslist`）。 */
+    private fun searchKuwoAlbums(keyword: String, page: Int, limit: Int): List<OnlineAlbum> {
+        val url = "https://search.kuwo.cn/r.s".toHttpUrl().newBuilder()
+            .addQueryParameter("client", "kt")
+            .addQueryParameter("all", keyword)
+            .addQueryParameter("pn", (page - 1).coerceAtLeast(0).toString())
+            .addQueryParameter("rn", limit.toString())
+            .addQueryParameter("uid", "0")
+            .addQueryParameter("ver", "kwplayer_ar_9.2.2.1")
+            .addQueryParameter("vipver", "1")
+            .addQueryParameter("newver", "1")
+            .addQueryParameter("ft", "album")
+            .addQueryParameter("encoding", "utf8")
+            .addQueryParameter("rformat", "json")
+            .addQueryParameter("mobi", "1")
+            .build()
+        val root = OnlineJson.parseObject(get(url.toString()))
+            ?: throw IOException("酷我专辑搜索返回异常")
+        val list = root.arr("albumlist") ?: return emptyList()
+        return list.mapNotNull { element ->
+            val item = element as? JsonObject ?: return@mapNotNull null
+            val id = item.firstNonEmpty("albumid", "id")
+            if (id.isEmpty()) return@mapNotNull null
+            OnlineAlbum(
+                platform = OnlinePlatform.Kuwo,
+                id = id,
+                name = OnlineText.cleanHtml(item.str("name")),
+                artist = OnlineText.cleanArtist(item.firstNonEmpty("artist", "fartist")),
+                coverUrl = OnlineText.cleanHtml(item.str("hts_img")),
+                publishDate = OnlineText.formatDate(item.firstNonEmpty("pub", "showtime")),
+                songCount = item.int("musiccnt"),
+            )
+        }
+    }
+
     private fun get(url: String): String = OnlineHttp.get(client, url)
+
 
     private fun interleave(songs: List<OnlineSong>): List<OnlineSong> {
         if (songs.isEmpty()) return songs
@@ -479,6 +642,13 @@ class OnlineMusicApi(
     }
 
     companion object {
+        /** 支持专辑搜索的平台：咪咕没有专辑详情、酷狗结果噪音大，都不参与（见 [searchAlbums]）。 */
+        val ALBUM_SEARCH_PLATFORMS = listOf(
+            OnlinePlatform.NetEase,
+            OnlinePlatform.QQ,
+            OnlinePlatform.Kuwo,
+        )
+
         /** 保留这两个门面，单元测试与旧调用点都指向这里 */
         fun cleanHtml(input: String): String = OnlineText.cleanHtml(input)
 

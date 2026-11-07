@@ -13,6 +13,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -41,6 +43,13 @@ import kotlin.coroutines.resume
  * 这样既不内置任何音源，也不受 WebView 跨域限制。
  *
  * 约定：所有 WebView 操作都在主线程串行执行，对外暴露的都是 suspend 方法。
+ *
+ * 注意这里有**一把全局执行锁** `execLock`：WebView 里只有一个脚本上下文，
+ * `__lxLoadScript` 会替换当前脚本。搜索（OnlineScriptSearch）、后台预取
+ * （OnlineMusicProtocol.prefetch）、点播取链（OnlinePlaybackResolver）、
+ * 失败重试四条链路互相之间原来没有任何互斥，谁先谁后全看调度——
+ * A 刚加载脚本 1，B 就加载脚本 2，A 的 `__lxCall` 落到脚本 2 的上下文里，
+ * 表现就是「偶发取链失败 / 响应超时」。所有对外入口统一在这把锁上排队。
  */
 @SuppressLint("SetJavaScriptEnabled")
 class OnlineSourceRuntime(context: Context) {
@@ -60,6 +69,12 @@ class OnlineSourceRuntime(context: Context) {
 
     private val calls = ConcurrentHashMap<String, CompletableDeferred<JsonObject>>()
     private var callSeq = 0
+
+    /**
+     * 全局执行锁：WebView 里只有一份脚本上下文，`loadScript` 会把它换掉。
+     * 搜索 / 预取 / 点播 / 重试必须排队，否则会拿到别家脚本的结果或超时。
+     */
+    private val execLock = Mutex()
 
     private val bridge = object {
         @JavascriptInterface
@@ -146,7 +161,10 @@ class OnlineSourceRuntime(context: Context) {
      *   取链/歌词这类"必须知道脚本支持哪些平台才能挑源"的场景要等；
      *   搜索是即时要结果的，自己有更短的时间片，等这 2.5 秒等于直接超时，所以传 false。
      */
-    suspend fun loadScript(fileName: String, script: String, awaitInit: Boolean = true): Boolean {
+    suspend fun loadScript(fileName: String, script: String, awaitInit: Boolean = true): Boolean =
+        execLock.withLock { loadScriptLocked(fileName, script, awaitInit) }
+
+    private suspend fun loadScriptLocked(fileName: String, script: String, awaitInit: Boolean): Boolean {
         ensurePage(appContext)
         val key = fileName + ":" + script.hashCode()
         if (loadedKey == key) return true
@@ -165,9 +183,9 @@ class OnlineSourceRuntime(context: Context) {
             // 有些音源是「异步初始化」：脚本先发一次版本检查请求，拿到结果后才 send(inited)。
             // 加载完立刻问 declaredPlatforms() 会拿到空集，平台页就会显示成「这个音源没有可用平台」。
             // 这里最多等 2.5 秒，等它把 inited 发出来。
-            if (awaitInit && declaredPlatforms().isEmpty()) {
+            if (awaitInit && declaredPlatformsLocked().isEmpty()) {
                 withTimeoutOrNull(2_500) {
-                    while (declaredPlatforms().isEmpty()) delay(120)
+                    while (declaredPlatformsLocked().isEmpty()) delay(120)
                 }
             }
         }
@@ -175,7 +193,9 @@ class OnlineSourceRuntime(context: Context) {
     }
 
     /** 音源声明支持的平台（inited 事件里的 sources 键名）。 */
-    suspend fun declaredPlatforms(): Set<String> {
+    suspend fun declaredPlatforms(): Set<String> = execLock.withLock { declaredPlatformsLocked() }
+
+    private suspend fun declaredPlatformsLocked(): Set<String> {
         val raw = evalOnMain("__lxDeclared()") ?: return emptySet()
         val obj = runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return emptySet()
         val sources = obj["sources"]?.jsonObject ?: return emptySet()
@@ -184,19 +204,35 @@ class OnlineSourceRuntime(context: Context) {
 
     /**
      * 调用脚本的 request 事件。
+     *
+     * @param timeoutMs 本次调用的超时。取链链路会按「这一首的剩余预算」传更小的值：
+     *   写死 12 秒时，一份对某平台无响应的脚本能在两个音质上各耗尽 12 秒，
+     *   实测单曲要等 24 秒才失败，用户体感就是「点了歌没反应」。
      * @return 脚本返回的原始值（通常是 url 字符串或 {url, ...}）
      */
-    suspend fun call(source: String, action: String, info: JsonObject): String? {
+    suspend fun call(
+        source: String,
+        action: String,
+        info: JsonObject,
+        timeoutMs: Long = 12_000L,
+    ): String? = execLock.withLock { callLocked(source, action, info, timeoutMs) }
+
+    private suspend fun callLocked(
+        source: String,
+        action: String,
+        info: JsonObject,
+        timeoutMs: Long,
+    ): String? {
         val callId = "c" + (++callSeq)
         val deferred = CompletableDeferred<JsonObject>()
         calls[callId] = deferred
         val payload = json.encodeToString(JsonObject.serializer(), info)
         val result = try {
-            // 12 秒是一条合理上界：正常取链 0.2~2 秒（实测酷我 0.25s、网易 0.3s、酷狗 0.4s、QQ 0.9s）。
+            // 默认 12 秒是一条合理上界：正常取链 0.2~2 秒（实测酷我 0.25s、网易 0.3s、酷狗 0.4s、QQ 0.9s）。
             // 超过这个时间的多半是「版权受限的 VIP 曲目」——音源脚本会把五组 API 全部试一遍才放弃，
             // 实测能跑到 18 秒。原来给 35 秒，等于让一首取不到的歌把整个取链队列（单个 WebView，串行）
             // 堵住半分钟，用户看到的就是「点歌没反应」。
-            withTimeout(12_000) {
+            withTimeout(timeoutMs) {
                 evalOnMain(
                     "__lxCall(${quote(callId)}, ${quote(source)}, ${quote(action)}, ${quote(payload)})",
                 )

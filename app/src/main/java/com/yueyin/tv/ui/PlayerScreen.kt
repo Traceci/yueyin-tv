@@ -82,7 +82,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -94,6 +96,7 @@ import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -976,8 +979,6 @@ private fun rememberDitherBrush(): Brush = remember {
 private fun FloatingLyricsContent(
     syncedLyrics: SyncedLyrics?,
     playbackProgress: State<PlaybackProgressState>,
-    title: String,
-    artist: String,
     modifier: Modifier = Modifier,
 ) {
     val positionMs = playbackProgress.value.positionMs
@@ -1030,6 +1031,133 @@ private fun FloatingLyricsContent(
                     seed = 1,
                 )
             }
+        }
+    }
+}
+
+/**
+ * 迷你信息层：左上角「歌名 + 歌手」、底部一条玻璃质感的迷你进度条。
+ *
+ * 只在控制层隐藏时出现（展示形态为「迷你歌词」且没人按遥控器的时候）。
+ * 设计上刻意压暗、压细：它是背景信息，不是控件——不能抢歌词的视觉重心，
+ * 也不能让用户误以为这里可以聚焦/拖动（没有任何焦点节点，按键照旧走传输控制）。
+ */
+@Composable
+private fun MiniNowPlayingChrome(
+    title: String,
+    artist: String,
+    playbackProgress: State<PlaybackProgressState>,
+    alpha: Float,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                // 与歌词正文同一套左右基准（64dp），标题不会和歌词的左缘错开
+                .padding(start = 64.dp, top = 46.dp)
+                // 太长的歌名不允许一路顶到屏幕中间，给歌词留出呼吸空间
+                .widthIn(max = 560.dp)
+                .graphicsLayer { this.alpha = alpha },
+        ) {
+            Text(
+                text = title,
+                color = Color.White,
+                fontSize = 30.sp,
+                lineHeight = 36.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                // 歌词背景是流动的彩色，纯白字在浅色段会糊掉；只用柔和黑影托底，不加底板
+                style = TextStyle(shadow = Shadow(Color.Black.copy(alpha = 0.45f), blurRadius = 14f)),
+            )
+            if (artist.isNotBlank()) {
+                Spacer(Modifier.height(5.dp))
+                Text(
+                    text = artist,
+                    color = Color.White.copy(alpha = 0.60f),
+                    fontSize = 17.sp,
+                    lineHeight = 22.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(shadow = Shadow(Color.Black.copy(alpha = 0.35f), blurRadius = 10f)),
+                )
+            }
+        }
+        MiniPlaybackProgress(
+            playbackProgress = playbackProgress,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(horizontal = 64.dp)
+                .padding(bottom = 40.dp)
+                .graphicsLayer { this.alpha = alpha },
+        )
+    }
+}
+
+/**
+ * 迷你进度条：一条 2dp 的玻璃丝。
+ *
+ * 玻璃感来自三点：底色两端渐隐（不留硬边）、已播段用低透明度白而不是主色、
+ * 头部只有一个 2dp 的小亮点。整体透明度上限 0.4 左右——它只需要"扫一眼知道播到哪"，
+ * 不应该比歌词更显眼。
+ */
+@Composable
+private fun MiniPlaybackProgress(
+    playbackProgress: State<PlaybackProgressState>,
+    modifier: Modifier = Modifier,
+) {
+    val progress = playbackProgress.value
+    val fraction = playerProgressFraction(progress.positionMs, progress.durationMs)
+    val bufferedFraction = playerProgressFraction(progress.bufferedMs, progress.durationMs)
+    Canvas(modifier.height(10.dp)) {
+        val centerY = size.height / 2f
+        val bar = 2.dp.toPx()
+        val corner = CornerRadius(bar / 2f, bar / 2f)
+        // 轨道：中间稍亮、两端渐隐，看起来像一条被光照到的玻璃丝，而不是一根画上去的线
+        drawRoundRect(
+            brush = Brush.horizontalGradient(
+                0.00f to Color.White.copy(alpha = 0.03f),
+                0.10f to Color.White.copy(alpha = 0.12f),
+                0.90f to Color.White.copy(alpha = 0.12f),
+                1.00f to Color.White.copy(alpha = 0.03f),
+            ),
+            topLeft = Offset(0f, centerY - bar / 2f),
+            size = Size(size.width, bar),
+            cornerRadius = corner,
+        )
+        val playedWidth = size.width * fraction
+        val bufferedWidth = size.width * bufferedFraction
+        if (bufferedWidth > playedWidth) {
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.15f),
+                topLeft = Offset(playedWidth, centerY - bar / 2f),
+                size = Size(bufferedWidth - playedWidth, bar),
+                cornerRadius = corner,
+            )
+        }
+        if (playedWidth > 0f) {
+            drawRoundRect(
+                brush = Brush.horizontalGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.20f),
+                        Color.White.copy(alpha = 0.42f),
+                    ),
+                    startX = 0f,
+                    endX = playedWidth,
+                ),
+                topLeft = Offset(0f, centerY - bar / 2f),
+                size = Size(playedWidth.coerceAtLeast(bar), bar),
+                cornerRadius = corner,
+            )
+            // 头部亮点：只给一点点，作为"当前在这里"的暗示
+            drawCircle(
+                color = Color.White.copy(alpha = 0.50f),
+                radius = 2.dp.toPx(),
+                center = Offset(playedWidth, centerY),
+            )
         }
     }
 }
@@ -1195,13 +1323,32 @@ private fun PlayerMainContent(
 ) {
     val placeholder = title.take(1).ifBlank { "音" }
     if (lyrics) {
-        FloatingLyricsContent(
-            syncedLyrics = syncedLyrics,
-            playbackProgress = playbackProgress,
-            title = title,
-            artist = artist,
-            modifier = Modifier.fillMaxSize(),
-        )
+        Box(Modifier.fillMaxSize()) {
+            FloatingLyricsContent(
+                syncedLyrics = syncedLyrics,
+                playbackProgress = playbackProgress,
+                modifier = Modifier.fillMaxSize(),
+            )
+            // 迷你信息层：控制条升起时淡出——那时歌名和进度条已经在控制条里，
+            // 两层同时出现会打架；控制条隐藏时才需要「在听什么 / 播到哪」这两个锚点。
+            val miniChromeAlpha by animateFloatAsState(
+                targetValue = if (controlsVisible) 0f else 1f,
+                // 出现慢一点、退场快一点：升起控制条是用户主动操作，立刻让位；反过来要柔和。
+                animationSpec = tween(
+                    durationMillis = if (controlsVisible) 180 else 420,
+                    easing = LinearEasing,
+                ),
+                label = "miniNowPlayingAlpha",
+            )
+            if (miniChromeAlpha > 0.01f) {
+                MiniNowPlayingChrome(
+                    title = title,
+                    artist = artist,
+                    playbackProgress = playbackProgress,
+                    alpha = miniChromeAlpha,
+                )
+            }
+        }
         return
     }
     if (poster) {
@@ -2521,7 +2668,7 @@ internal fun Modifier.playerTouchTarget(enabled: Boolean = true, onClick: () -> 
     }
 }
 
-private enum class PlayerSideActionGlyph {
+internal enum class PlayerSideActionGlyph {
     HeartOutline,
     HeartFilled,
     RepeatAll,
@@ -2539,7 +2686,7 @@ private fun playModeGlyph(mode: PlayMode): PlayerSideActionGlyph = when (mode) {
 }
 
 @Composable
-private fun PlayerSideActionIcon(glyph: PlayerSideActionGlyph) {
+internal fun PlayerSideActionIcon(glyph: PlayerSideActionGlyph) {
     val iconColor = LocalContentColor.current
     Canvas(Modifier.size(17.dp)) {
         val stroke = 1.7.dp.toPx()

@@ -15,6 +15,8 @@ import com.yueyin.tv.core.data.repository.SearchResults
 import com.yueyin.tv.core.model.Track
 import com.yueyin.tv.core.model.TrackGuid
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -138,11 +140,22 @@ class ProtocolLibrarySource(
 
     suspend fun search(query: String): SearchResults {
         if (query.isBlank()) return SearchResults()
-        val songs = runCatching { protocol.search(profile, query) }.getOrDefault(emptyList())
+        // 歌曲与专辑并行：串行的话用户要先等专辑超时（最长 4.5 秒）才看到歌曲列表。
+        val (songs, albums) = coroutineScope {
+            val songsJob = async {
+                runCatching { protocol.search(profile, query) }.getOrDefault(emptyList())
+            }
+            val albumsJob = async {
+                runCatching { protocol.searchAlbums(profile, query) }.getOrDefault(emptyList())
+            }
+            songsJob.await() to albumsJob.await()
+        }
         return SearchResults(
             tracks = songs.map { it.toTrack() },
+            // 歌手实体：在线侧没有独立的歌手目录，只能从歌曲聚合；
+            // 这里保持空，由歌曲分区里的歌手名去定位（专辑已经能搜出来了）。
             artists = emptyList(),
-            albums = emptyList(),
+            albums = albums.map { it.toDomain() },
             playlists = cachedPlaylists()
                 .filter { it.name.contains(query, ignoreCase = true) }
                 .map { it.toDomain() },
@@ -279,7 +292,8 @@ class ProtocolLibrarySource(
         artistName = artistName.takeIf { it.isNotBlank() },
         coverId = coverId,
         trackCount = songCount.takeIf { it > 0 },
-        releaseDate = null,
+        // 只留年份：卡片副标题是「歌手 · 2016」，整条日期在窄卡片里放不下
+        releaseDate = releaseDate.take(4).takeIf { it.length == 4 && it.all(Char::isDigit) },
     )
 
     private fun RemoteArtist.toDomain() = Artist(

@@ -12,6 +12,8 @@ data class RemoteAlbum(
     val artistName: String = "",
     val coverId: String? = null,
     val songCount: Int = 0,
+    /** 发行日期，`yyyy-MM-dd`；没有就是空串。卡片上只取年份。 */
+    val releaseDate: String = "",
 )
 data class RemoteSong(
     val id: String,
@@ -62,6 +64,14 @@ interface MusicProtocol {
     suspend fun playlists(profile: ConnectProfile): List<RemotePlaylist>
     suspend fun playlistSongs(profile: ConnectProfile, playlistId: String): List<RemoteSong>
     suspend fun search(profile: ConnectProfile, query: String): List<RemoteSong>
+
+    /**
+     * 搜索专辑。
+     *
+     * 服务端类协议（Emby/Jellyfin/Subsonic）的搜索接口只返回歌曲，
+     * 专辑要靠「按名字过滤曲库」另行实现，所以默认给空——只有在线音源真正实现了它。
+     */
+    suspend fun searchAlbums(profile: ConnectProfile, query: String): List<RemoteAlbum> = emptyList()
 
     /** 给 Media3 直接播放的地址（可带鉴权参数）。 */
     fun streamUrl(profile: ConnectProfile, songId: String): String

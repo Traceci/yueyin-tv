@@ -152,7 +152,12 @@ class PlaybackController(
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             val player = controller ?: return
-            if (playbackState == Player.STATE_READY) consecutivePlaybackFailures = 0
+            if (playbackState == Player.STATE_READY) {
+                consecutivePlaybackFailures = 0
+                // 这一首已经正常出声了：清掉「已自动重取过」的标记，
+                // 否则它下次（比如拖进度、循环回来）再失败就不会自愈了。
+                lastFailedMediaId = null
+            }
             if (playbackState == Player.STATE_ENDED && queueKind == QueueKind.Roam) {
                 if (autoAdvanceGate.tryConsume(generation, player.currentMediaItem?.mediaId)) {
                     advanceRoam(RoamDirection.Next)
@@ -193,21 +198,20 @@ class PlaybackController(
                 }
                 return
             }
-            if (failingId == null || failingId == lastFailedMediaId) return
-            lastFailedMediaId = failingId
-            if (consecutivePlaybackFailures >= MAX_AUTO_SKIP_FAILURES) return
-            consecutivePlaybackFailures++
-            if (!player.hasNextMediaItem()) return
-            scope.launch {
-                delay(AUTO_SKIP_DELAY_MS)
-                val current = controller ?: return@launch
-                if (current.currentMediaItem?.mediaId != failingId) return@launch
-                runCatching {
-                    current.seekToNextMediaItem()
-                    current.prepare()
-                    current.play()
-                }
+            if (failingId == null) return
+            // 直链过期是最常见的一类失败：脚本给的链只活几分钟，队列里那批是预取时一次性取的。
+            // 以前这里直接跳下一首，而下一首的 uri 是同一批老链，于是「下一曲也失败、点重试却能播」。
+            // 现在先替用户自动点一次「重试」：作废这条死链、现场重取、原地续播。
+            if (failingId != lastFailedMediaId) {
+                lastFailedMediaId = failingId
+                Log.i("YueyinPlayback", "onPlayerError id=$failingId 直链可能过期，自动重取一次")
+                pendingStreamId = failingId
+                pendingStreamAutoPlay = true
+                requestStreamUrl(failingId)
+                return
             }
+            // 已经为重取过一次仍然失败：这首歌确实播不了，退回「换下一首」的老策略。
+            autoSkipAfterFailure(failingId)
         }
 
         override fun onEvents(player: Player, events: Player.Events) {
@@ -1363,7 +1367,38 @@ class PlaybackController(
                 }
                 if (attempt < MAX_STREAM_RESOLVE_ATTEMPTS - 1) delay(STREAM_RESOLVE_DELAY_MS)
             }
-            Log.w("YueyinPlayback", "requestStreamUrl: id=$id 重取直链仍失败，等待用户点重试")
+            Log.w("YueyinPlayback", "requestStreamUrl: id=$id 重取直链仍失败，尝试换下一首")
+            // 重取彻底失败：接着走「自动跳过」。少了这一步，遇到坏平台会一直停在这一首
+            // （此前只有 onPlayerError 会跳，而重取失败并不会再报一次错）。
+            autoSkipAfterFailure(id)
+        }
+    }
+
+    /**
+     * 这一首彻底播不了时换下一首。
+     *
+     * 两条路都会走到这里：① 直链失效且自动重取也失败；② 同一首歌已经重取过一次仍报错。
+     * 连续失败达到上限就停手，把错误留在界面上（说明是真断网/音源挂了，再跳也是白跳）。
+     */
+    private fun autoSkipAfterFailure(failingId: String) {
+        val player = controller ?: return
+        if (player.currentMediaItem?.mediaId != failingId) return
+        if (consecutivePlaybackFailures >= MAX_AUTO_SKIP_FAILURES) return
+        consecutivePlaybackFailures++
+        if (!player.hasNextMediaItem()) return
+        scope.launch {
+            delay(AUTO_SKIP_DELAY_MS)
+            val current = controller ?: return@launch
+            if (current.currentMediaItem?.mediaId != failingId) return@launch
+            runCatching {
+                current.seekToNextMediaItem()
+                // 下一首的 uri 同样来自预取缓存，先作废：即使这条也过期，
+                // 它报错时会走「自动重取」分支自愈，而不是连环失败。
+                current.currentMediaItem?.mediaId?.takeIf { it.isNotBlank() }
+                    ?.let { StreamUrlCache.invalidate(it) }
+                current.prepare()
+                current.play()
+            }
         }
     }
 
@@ -1614,8 +1649,13 @@ class PlaybackController(
         const val MAX_AUTO_SKIP_FAILURES = 2
         const val AUTO_SKIP_DELAY_MS = 400L
 
-        /** 当前首空链时的重取次数与间隔：三次约 2 秒，够脚本换一组 API，又不至于久等。 */
-        const val MAX_STREAM_RESOLVE_ATTEMPTS = 3
+        /**
+         * 当前首没链时的重取次数与间隔。
+         *
+         * 从 3 次收到 2 次：单次取链现在最多 9 秒，3 次重试意味着用户要干等近半分钟，
+         * 而失败两次基本就能确定是这首/这个源不行，交给「重试」按钮更诚实。
+         */
+        const val MAX_STREAM_RESOLVE_ATTEMPTS = 2
         const val STREAM_RESOLVE_DELAY_MS = 500L
     }
 }

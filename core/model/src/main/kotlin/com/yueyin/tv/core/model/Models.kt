@@ -40,7 +40,19 @@ data class Album(
     val coverId: String?,
     val trackCount: Int? = null,
     val releaseDate: String? = null,
-)
+) {
+    /**
+     * 专辑卡副标题：「歌手 · 年份」。
+     *
+     * 电视端和手机端共用同一条规则——有发行年才拼，没有就只显示歌手。
+     * 在线音源里只有酷我有稳定年份，其余平台常常给空，硬拼一个「未知年份」只是噪音。
+     */
+    val cardSubtitle: String
+        get() = listOfNotNull(
+            artistName?.takeIf { it.isNotBlank() },
+            releaseDate?.takeIf { it.isNotBlank() },
+        ).joinToString("  ·  ").ifBlank { "未知歌手" }
+}
 
 data class Track(
     val guid: TrackGuid,

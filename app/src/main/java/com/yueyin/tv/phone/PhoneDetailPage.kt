@@ -63,6 +63,8 @@ internal fun PhoneTrackCollectionPage(
     emptyCaption: String?,
     playingTrackId: String?,
     onPlayTracks: (List<Track>, Int) -> Unit,
+    /** 随机播放：起点随机 + 切播放器随机模式（与电视端同语义）。 */
+    onShuffleTracks: (List<Track>) -> Unit,
     coverShape: Shape = RoundedCornerShape(PhoneRadius.md),
     favoriteStatuses: Map<String, Boolean> = emptyMap(),
     onToggleFavorite: (Track, Boolean) -> Unit = { _, _ -> },
@@ -167,10 +169,12 @@ internal fun PhoneTrackCollectionPage(
                         glyph = PhoneGlyph.Shuffle,
                         enabled = tracks.any(::isPlayable),
                         onClick = {
-                            // 随机播放 = 打乱后从头播。不调用播放器的 shuffle 模式：
-                            // 用户点「随机」想要的是「现在这首随机」，不是「以后一直随机」。
-                            val playable = tracks.filter(::isPlayable)
-                            if (playable.isNotEmpty()) onPlayTracks(playable.shuffled(), 0)
+                            // 随机播放 = 随机起点起播 + 把播放器切成随机模式。
+                            // 以前这里用 `playable.shuffled()` 打乱列表再从头播，和电视端成了两套语义；
+                            // 现在两端统一成「切模式」：队列顺序在播放页/队列弹层里可见、不会被改写，
+                            // 用户还能在播放页把模式切回列表循环，行为是连续的。
+                            // 起点仍由 PhonePlayback 内部随机挑（只切模式的话第一首永远是列表第一首）。
+                            onShuffleTracks(tracks.filter(::isPlayable))
                         },
                         modifier = Modifier.weight(1f),
                     )

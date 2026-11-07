@@ -17,10 +17,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -33,6 +33,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -66,6 +67,53 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 
 /**
+ * 搜索页里必须「跨路由活下来」的那部分状态。
+ *
+ * 为什么不能放在 `PhoneSearchPage` 内部的 `remember` 里：手机壳的路由是 `when (route)`，
+ * 点搜索结果的专辑 / 歌手 / 歌单会 `open()` 压一层新路由，搜索页整个从组合里移除，
+ * 内部 `remember` 全部丢弃。返回时页面重新组合，得到的是一个全新的空搜索页——
+ * 关键词、结果、滚动位置一起没了，用户得从头再输一遍。这与「返回」这两个字的本意正好相反：
+ * 返回应该是「回到刚才那个状态」，而不是「重新开始」。
+ *
+ * 所以把它挂到外壳上（`PhoneApp` 的 `remember`，跨路由存活），页面只负责读写它。
+ * 与 `LibraryRetainedStateStore` 的区别：那边存的是可分页的曲库列表，这里是搜索会话，
+ * 生命周期只到换账号 / 换平台，没必要塞进那个按 key 回收的仓库里。
+ */
+internal class PhoneSearchRetention {
+    val query = mutableStateOf("")
+    val results = mutableStateOf<SearchResults?>(null)
+    val error = mutableStateOf<AppError?>(null)
+    val diag = mutableStateOf<String?>(null)
+
+    /**
+     * 已经为哪个关键词出过结果（含失败）。
+     *
+     * 返回搜索页时靠它判断「这个词的结果已经在这里了」，不必再搜一遍——
+     * 否则每退一次就闪一次 loading、还把滚动位置顶回顶部。
+     * 只在请求真正落地（成功 / 超时 / 异常）时写入，飞行中被中断的那次不算：
+     * 那样返回时才会如实重搜一次，而不是把上一个词的结果当成这个词的。
+     */
+    var settledQuery: String = ""
+
+    /** 歌曲区当前展开到第几条（滚到底追加）。返回后保持，不会又缩回第一页。 */
+    val visibleCount = mutableStateOf(SEARCH_TRACK_FIRST_PAGE)
+
+    /** 结果列表滚动位置。整份 `LazyListState` 留在外面，返回时停在原处。 */
+    val listState = LazyListState()
+
+    /** 换账号 / 换平台时清空：否则会看到上一个数据源的结果。 */
+    fun reset() {
+        query.value = ""
+        results.value = null
+        error.value = null
+        diag.value = null
+        settledQuery = ""
+        visibleCount.value = SEARCH_TRACK_FIRST_PAGE
+        listState.requestScrollToItem(0)
+    }
+}
+
+/**
  * 搜索页。
  *
  * 与电视端 `SearchScreen` 是同一套检索能力的两种呈现：
@@ -78,10 +126,13 @@ import kotlinx.coroutines.withTimeout
  * 边输边搜最容易出的两种 bug，这里都用电视端验证过的写法规避：
  * 1. **旧结果覆盖新结果**——用自增 token，只有最后一次请求允许回写界面；
  * 2. **界面永远停在「正在搜索」**——`finally` 里只在 token 仍是当前值时复位 searching。
+ *
+ * 关键词与结果存在 [PhoneSearchRetention] 里而不是本页 `remember` 里，理由见那个类的注释。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun PhoneSearchPage(
+    retention: PhoneSearchRetention,
     playingTrackId: String?,
     onBack: () -> Unit,
     onPlayTracks: (List<Track>, Int) -> Unit,
@@ -96,11 +147,11 @@ internal fun PhoneSearchPage(
     val inputFocus = remember { FocusRequester() }
     val favoriteState by deps.musicRepository.favoriteState.collectAsStateWithLifecycle()
 
-    var query by remember { mutableStateOf("") }
-    var results by remember { mutableStateOf<SearchResults?>(null) }
+    var query by retention.query
+    var results by retention.results
+    var searchError by retention.error
+    var searchDiag by retention.diag
     var searching by remember { mutableStateOf(false) }
-    var searchError by remember { mutableStateOf<AppError?>(null) }
-    var searchDiag by remember { mutableStateOf<String?>(null) }
     var searchJob by remember { mutableStateOf<Job?>(null) }
     var searchToken by remember { mutableStateOf(0) }
     var history by remember { mutableStateOf(phoneSearchHistory(context)) }
@@ -122,6 +173,13 @@ internal fun PhoneSearchPage(
                 val found = withTimeout(SEARCH_TIMEOUT_MS) { deps.musicRepository.search(trimmed) }
                 if (token != searchToken) return@launch
                 results = found
+                // 新词才算「换了一批结果」：回到列表顶部、收起已展开的条数。
+                // 同一个词的重试（结果页上的「重试」）不应该把用户已经滚到的位置抹掉。
+                if (retention.settledQuery != trimmed) {
+                    retention.settledQuery = trimmed
+                    retention.visibleCount.value = SEARCH_TRACK_FIRST_PAGE
+                    retention.listState.requestScrollToItem(0)
+                }
                 // 无结果时把索引诊断（曲库规模 / 建索引失败原因）留在界面上：
                 // 在线音源搜不到，八成是索引没建起来而不是歌真的不在。
                 searchDiag = if (found.isEmpty) {
@@ -133,6 +191,7 @@ internal fun PhoneSearchPage(
                 if (token != searchToken) return@launch
                 searchError = AppError.Unknown("搜索超时，请稍后重试")
                 searchDiag = deps.musicRepository.lastSearchDiagnostics().orEmpty().takeIf { it.isNotBlank() }
+                retention.settledQuery = trimmed
             } catch (e: CancellationException) {
                 return@launch
             } catch (e: Throwable) {
@@ -140,6 +199,7 @@ internal fun PhoneSearchPage(
                 searchError = (e as? AppException)?.error
                     ?: AppError.Unknown(e.message ?: "搜索失败，请重试")
                 searchDiag = deps.musicRepository.lastSearchDiagnostics().orEmpty().takeIf { it.isNotBlank() }
+                retention.settledQuery = trimmed
             } finally {
                 if (token == searchToken) searching = false
             }
@@ -150,6 +210,9 @@ internal fun PhoneSearchPage(
     // 没预热的话首个字符就要等整本曲库索引建完。
     LaunchedEffect(Unit) {
         runCatching { deps.musicRepository.warmSearchIndex() }
+        // 从专辑 / 歌手 / 歌单详情返回时不要再抢焦点、不要再弹软键盘：
+        // 用户退回来是想接着看结果，键盘弹出来会把半个列表盖住。
+        if (retention.settledQuery.isNotEmpty()) return@LaunchedEffect
         delay(120)
         runCatching { inputFocus.requestFocus() }
         runCatching { keyboard?.show() }
@@ -165,6 +228,14 @@ internal fun PhoneSearchPage(
             searching = false
             searchError = null
             searchDiag = null
+            retention.settledQuery = ""
+            return@LaunchedEffect
+        }
+        // 返回搜索页：这个词的结果已经在 retention 里躺着，再搜一遍只会闪一次 loading、
+        // 并把滚动位置顶回顶部。只有当「词没变但结果不在了」（搜索途中退出等）才补搜。
+        if (trimmed == retention.settledQuery &&
+            (retention.results.value != null || retention.error.value != null)
+        ) {
             return@LaunchedEffect
         }
         delay(180L)
@@ -215,6 +286,7 @@ internal fun PhoneSearchPage(
 
                 results != null -> SearchResultList(
                     results = results!!,
+                    retention = retention,
                     playingTrackId = playingTrackId,
                     favoriteStatuses = favoriteState.statuses,
                     onPlayTrack = { tracks, index ->
@@ -249,8 +321,9 @@ internal fun PhoneSearchPage(
 /** 单次搜索兜底超时，与电视端同一量级：只为兜住网络异常，不截断正常的大曲库建索引。 */
 private const val SEARCH_TIMEOUT_MS = 120_000L
 
-/** 歌曲区最多直出 20 首：再多用户也不会在搜索结果里往下翻，找具体某首该用更精确的词。 */
-private const val SEARCH_TRACK_LIMIT = 20
+/** 歌曲区首屏直出条数；滚到底再追加 [SEARCH_TRACK_PAGE] 条，直到显示完整结果。 */
+private const val SEARCH_TRACK_FIRST_PAGE = 30
+private const val SEARCH_TRACK_PAGE = 30
 
 // ---------------------------------------------------------------------------
 // 顶部输入
@@ -308,7 +381,7 @@ private fun SearchTopBar(
                     decorationBox = { inner ->
                         if (query.isEmpty()) {
                             Text(
-                                "搜索歌曲、歌手、歌单",
+                                "搜索歌曲、歌手、专辑",
                                 color = FnColors.Muted,
                                 fontSize = PhoneType.Row,
                                 maxLines = 1,
@@ -481,6 +554,7 @@ private fun SearchErrorState(
 @Composable
 private fun SearchResultList(
     results: SearchResults,
+    retention: PhoneSearchRetention,
     playingTrackId: String?,
     favoriteStatuses: Map<String, Boolean>,
     onPlayTrack: (List<Track>, Int) -> Unit,
@@ -489,29 +563,48 @@ private fun SearchResultList(
     onOpenArtist: (Artist) -> Unit,
     onOpenPlaylist: (Playlist) -> Unit,
 ) {
-    val listState = rememberLazyListState()
-    val trackHits = remember(results) { results.tracks.take(SEARCH_TRACK_LIMIT) }
+    // 滚动位置与已展开条数都留在 retention 里：进详情再返回时接着看，而不是回到顶部、
+    // 也不是缩回第一页（缩回的话用户滚到第 60 首再回来会发现下半截又不见了）。
+    val listState = retention.listState
+    // 搜索结果不再硬截断：先出一页，滚到底自动追加。
+    // 之前固定 take(20)，标题却显示全量（例如 116 首），用户会以为后面的歌丢了；
+    // 更糟的是点播队列也只用这 20 首，播到第 20 首「下一曲」就没了。
+    val visibleCount = retention.visibleCount.value
+    val trackHits = remember(results, visibleCount) {
+        results.tracks.take(visibleCount.coerceAtMost(results.tracks.size))
+    }
+
+    // 接近列表底部就再放一页。这里刻意每次现读 retention.visibleCount，而不是捕获
+    // 上面那个局部值：collect 的闭包只创建一次，捕获的快照会一直停在旧值上，
+    // 追加一页之后就再也不涨了。
+    LaunchedEffect(listState, results) {
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
+            .collect { lastVisible ->
+                val total = results.tracks.size
+                val shown = retention.visibleCount.value
+                if (shown < total && lastVisible >= shown - 2) {
+                    retention.visibleCount.value = (shown + SEARCH_TRACK_PAGE).coerceAtMost(total)
+                }
+            }
+    }
 
     LazyColumn(
         state = listState,
         contentPadding = PaddingValues(bottom = PhoneSpace.xxl),
         modifier = Modifier.fillMaxSize(),
     ) {
-        if (trackHits.isNotEmpty()) {
+        // 分类片区（专辑/歌手/歌单）排在歌曲列表之前，和电视端同一顺序：
+        // 歌曲动辄上百首，分类横排要是压在列表末尾，用户永远滑不到——
+        // 「搜周杰伦看他的专辑」这件事就等于没做。
+        if (results.albums.isNotEmpty()) {
             item {
-                SearchSectionLabel("歌曲", "${results.tracks.size} 首")
-            }
-            itemsIndexed(trackHits, key = { _, track -> "t:${track.guid.value}" }) { index, track ->
-                Row(Modifier.padding(horizontal = PhoneSpace.screenHorizontal)) {
-                    val favorite = favoriteOf(track, favoriteStatuses)
-                    PhoneTrackRow(
-                        track = track,
-                        index = index,
-                        current = playingTrackId != null && playingTrackId == track.guid.value,
-                        onClick = { onPlayTrack(trackHits, index) },
-                        favorite = favorite,
-                        onToggleFavorite = { onToggleFavorite(track, favorite) },
-                    )
+                SearchSectionLabel("专辑", "${results.albums.size} 张")
+                SearchCardStrip {
+                    items(results.albums.take(20), key = { "al:${it.guid.value}" }) { album ->
+                        Box(Modifier.width(PhoneSize.StripItem)) {
+                            PhoneAlbumCard(album = album, onClick = { onOpenAlbum(album) })
+                        }
+                    }
                 }
             }
         }
@@ -542,15 +635,22 @@ private fun SearchResultList(
                 }
             }
         }
-        if (results.albums.isNotEmpty()) {
+        if (trackHits.isNotEmpty()) {
             item {
-                SearchSectionLabel("专辑", "${results.albums.size} 张")
-                SearchCardStrip {
-                    items(results.albums.take(20), key = { "al:${it.guid.value}" }) { album ->
-                        Box(Modifier.width(PhoneSize.StripItem)) {
-                            PhoneAlbumCard(album = album, onClick = { onOpenAlbum(album) })
-                        }
-                    }
+                SearchSectionLabel("歌曲", "${results.tracks.size} 首")
+            }
+            itemsIndexed(trackHits, key = { _, track -> "t:${track.guid.value}" }) { index, track ->
+                Row(Modifier.padding(horizontal = PhoneSpace.screenHorizontal)) {
+                    val favorite = favoriteOf(track, favoriteStatuses)
+                    PhoneTrackRow(
+                        track = track,
+                        index = index,
+                        current = playingTrackId != null && playingTrackId == track.guid.value,
+                        // 队列给全量结果，而不是截断后的这一页：否则播到页尾就「没有下一首」。
+                        onClick = { onPlayTrack(results.tracks, index) },
+                        favorite = favorite,
+                        onToggleFavorite = { onToggleFavorite(track, favorite) },
+                    )
                 }
             }
         }

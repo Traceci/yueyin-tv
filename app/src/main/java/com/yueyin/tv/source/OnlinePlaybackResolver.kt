@@ -36,6 +36,15 @@ class OnlinePlaybackResolver(context: Context) {
         /** 单曲取链总预算：正常 0.2~2 秒，超过这个数就是坏源在拖时间。 */
         const val RESOLVE_BUDGET_MS = 9_000L
 
+        /**
+         * 单个脚本的时间上限。
+         *
+         * 原来预算只在「换脚本」时检查，而一个脚本内部要试两档音质、每档 12 秒超时，
+         * 实测一份对咪咕无响应的脚本能拖 24 秒才失败——用户点歌后就是长时间没反应。
+         * 现在预算落到每次调用上：单个脚本最多 5 秒，坏源让位给下一个。
+         */
+        const val PER_SCRIPT_BUDGET_MS = 5_000L
+
         /** 同一平台连续失败几次就先熔断。 */
         const val FAILS_BEFORE_COOLDOWN = 3
 
@@ -108,9 +117,18 @@ class OnlinePlaybackResolver(context: Context) {
                 reasons += "${source.fileName}: 不支持${sourceLabel(platformKey)}"
                 continue
             }
+            // 每个脚本单独限时：坏源最多占 5 秒，把剩下的时间留给下一个脚本。
+            val scriptDeadline = minOf(deadline, System.currentTimeMillis() + PER_SCRIPT_BUDGET_MS)
             for (quality in qualityOrder) {
+                val remaining = scriptDeadline - System.currentTimeMillis()
+                if (remaining <= 0L) {
+                    reasons += "${source.fileName}: 取链超时"
+                    break
+                }
                 val info = buildInfo(song, quality)
-                val value = runCatching { runtime.call(platformKey, "musicUrl", info) }.getOrNull()
+                val value = runCatching {
+                    runtime.call(platformKey, "musicUrl", info, timeoutMs = minOf(12_000L, remaining))
+                }.getOrNull()
                 val url = extractUrl(value)
                 if (url != null) {
                     // 很多平台在没版权/非会员时也会给一条"看起来正常"的地址，实际 404。

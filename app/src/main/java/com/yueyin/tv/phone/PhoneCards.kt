@@ -307,7 +307,8 @@ internal fun PhoneAlbumCard(album: Album, onClick: () -> Unit, modifier: Modifie
         )
         Spacer(Modifier.height(2.dp))
         Text(
-            album.artistName.orEmpty().ifBlank { "未知歌手" },
+            // 「歌手 · 年份」；没有年份就只显示歌手（与电视端 Album.cardSubtitle 同一条规则）
+            album.cardSubtitle,
             color = FnColors.Muted,
             fontSize = PhoneType.Micro,
             maxLines = 1,

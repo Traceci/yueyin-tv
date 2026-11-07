@@ -3,10 +3,12 @@ package com.yueyin.tv.phone
 import com.yueyin.tv.AppUiDependencies
 import com.yueyin.tv.core.model.PlaybackTrack
 import com.yueyin.tv.core.model.Track
+import com.yueyin.tv.core.model.playback.PlayMode
 import com.yueyin.tv.ui.RoamPrewarm
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -39,10 +41,14 @@ internal object PhonePlayback {
         tracks: List<Track>,
         startIndex: Int,
         backgroundScope: CoroutineScope,
+        shuffle: Boolean = false,
     ): Boolean {
-        val target = tracks.getOrNull(startIndex) ?: return false
         val playable = tracks.filter(::isPlayable)
         if (playable.isEmpty()) return false
+        // 随机起播：起点也从可播曲目里随机挑一首，而不是固定第 0 首。
+        // `PlaybackController.setPlayMode(Shuffle)` 只改「下一首跳哪儿」、不动当前播放项，
+        // 所以不随机选起点的话，用户点「随机」听到的永远是列表第一首。
+        val target = if (shuffle) playable.random() else (tracks.getOrNull(startIndex) ?: return false)
         val playableIndex = playable.indexOfFirst { it.guid == target.guid }.coerceAtLeast(0)
 
         var queue = withContext(Dispatchers.IO) {
@@ -70,10 +76,36 @@ internal object PhonePlayback {
         val submitted = deps.playbackController.playQueue(queue, currentIndex) != null
         if (!submitted) return false
 
+        // 起播成功后切到随机模式。放后台重试而不是在这里同步等：
+        // 队列刚提交时后台还在补直链（见下方 fillUrls），快照 revision 会继续推进，
+        // 此刻发出的 setPlayMode 会被播放内核判过期、静默回滚成列表循环——
+        // 表现就是「点了随机，歌在播，但播放条上的模式图标还是循环」。
+        if (shuffle) backgroundScope.launch { requestShuffleMode(deps) }
+
         if (queue.any { it.streamUrl.isBlank() }) {
             backgroundScope.launch { fillUrls(deps, queue, currentIndex) }
         }
         return true
+    }
+
+    /**
+     * 把播放器切成随机模式，确认几次直到真的生效。
+     *
+     * 随机模式在播放内核里是一次带 revision 校验的异步切换（`PendingShuffleActivation`），
+     * 队列稳定前的请求会被判过期。这里每 260~360ms 复核一次，最多 6 次，
+     * 等价于用户手动按到模式键——比「一次调用靠运气」可靠得多。
+     * 与电视端 `requestShuffleMode()` 同一套策略，两端行为保持一致。
+     */
+    private suspend fun requestShuffleMode(deps: AppUiDependencies) {
+        val controller = deps.playbackController
+        repeat(6) { attempt ->
+            if (controller.state.value.playMode == PlayMode.Shuffle) return
+            controller.setPlayMode(PlayMode.Shuffle)
+            delay(if (attempt == 0) 260L else 360L)
+        }
+        if (controller.state.value.playMode != PlayMode.Shuffle) {
+            android.util.Log.w("YueyinPlay", "手机端随机模式未生效：多次切换均被回滚")
+        }
     }
 
     private fun isPlayable(track: Track): Boolean =

@@ -1,5 +1,48 @@
 # Changelog
 
+## 2.0.9 - 2026-11-07
+
+搜索（专辑 / 分页 / 返回保留）、随机播放统一、电视迷你歌词信息层三条线；另含一段取链健壮性改进。
+
+### 搜索
+
+- 新增**专辑搜索**：`MusicProtocol.searchAlbums()` → `OnlineMusicApi.searchAlbumsAll()`，网易（`type=10`）/ QQ（`client_search_cp?t=8`，id 用 `albumMID`）/ 酷我（`ft=album`）三路并发，按平台轮转 + 按「专辑名 + 歌手」去重；`ProtocolLibrarySource.search()` 改为 `coroutineScope { async 歌曲 + async 专辑 }` 并行。
+  - 酷狗不接入：实测返回「超长合集歌单」等翻唱噪音；咪咕不接入：无 `albumCollection` 实现，点开会报「暂不支持专辑详情」。
+  - `RemoteAlbum` 增 `releaseDate`，`Album.cardSubtitle` 按「歌手 · 年份」拼接（无年份只显示歌手）。
+- **分类区提到歌曲列表之前**（手机 + 电视）：原来排在 100+ 首歌曲之后，等于不可见。
+- **结果分页**：手机 `SEARCH_TRACK_FIRST_PAGE / SEARCH_TRACK_PAGE`，滚到底追加且点播队列用完整结果；电视端 `visibleCount` 同规则。
+- **搜索会话跨路由存活**：手机 `PhoneSearchRetention`（关键词 / 结果 / 已展开条数 / `LazyListState`）、电视 `TvSearchSession`（结果 + `settledQuery`）。
+  - 存废判据：`stack` 变长（进详情 / 播放页）= 保留，变短或换栈底（退出搜索页）= `reset()`。
+  - 命中「同词且结果还在」直接接回，不重搜、不闪 loading、不把滚动位置顶回顶部。
+- 电视 `SearchField` 增 `autoShowKeyboard`：返回时主动 `hide()` 两次（150ms / 280ms）——只「不调用 show」拦不住，`BasicTextField` 获焦后系统仍会自行弹 IME。
+- 提示文案四处统一为「搜索歌曲、歌手、专辑」；电视输入框原有的遥控器操作提示移到空态说明区。
+
+### 随机播放
+
+- 电视 `TrackCollection.play(index, shuffleMode)`：`shuffleMode` 时起点从 `tracks.indices.filter { isTrackPlayable }` 里 `randomOrNull()`。`setPlayMode(Shuffle)` 只改跳转顺序、不动当前播放项，不随机起点的话点「随机」永远先播列表第一首。
+- 手机 `PhonePlayback.start(..., shuffle)`：同一策略（`playable.random()` 当起点）+ 起播成功后 `backgroundScope.launch { requestShuffleMode() }`，每 260 / 360ms 复核、最多 6 次，规避队列稳定前 revision 推进导致的静默回滚。
+- 手机详情页随机按钮改走 `onShuffleTracks`（`PhoneShell` → `PhoneRouteHost` → `PhoneTrackCollectionPage`），不再 `playable.shuffled()` 打乱队列；队列顺序保持可读，播放页仍可切回列表循环。
+
+### 电视：迷你歌词信息层
+
+- `PlayerScreen` 新增 `MiniNowPlayingChrome`（左上 64dp / 46dp、歌名 30sp Bold、歌手 17sp / 0.60、间距 5dp、`widthIn(max = 560.dp)` 单行省略）与 `MiniPlaybackProgress`（2dp 玻璃丝：轨道两端渐隐、已播段 0.20→0.42、头部 2dp 亮点）。
+- 只在控制层隐藏时出现，随 `controlsVisible` 动画淡入淡出（180ms 淡出 / 420ms 淡入），避免与控制条内进度条并存。
+
+### 取链健壮性
+
+- `OnlinePlaybackResolver`：新增 `PER_SCRIPT_BUDGET_MS = 5_000`，预算落到每次脚本调用（原来只在换脚本时检查，坏源能拖 24 秒）。
+- `OnlineSourceRuntime`：新增 `execLock`（Mutex）串行化各入口，修复搜索 / 预取 / 点播 / 重试互相替换 WebView 脚本上下文导致的偶发取链失败。
+- `StreamUrlCache`：优先解析 URL 自带 `expire`，解析不到才退回 TTL；TTL 5 分钟 → 2 分钟；预取 20 首 → 3 首。
+- 新增 `StreamUrlCacheTest`（6 条）覆盖有效期判定。
+
+### 版本
+
+- `version.properties` → 2.0.9 / 33；`update.json` → v2.0.9。
+
+### 已知问题
+
+- 电视端搜索结果无法用遥控器选中：焦点停留在搜索输入框，方向键被 `BasicTextField` 消费为光标移动。该问题自 2.0.6 起存在，本轮未修。
+
 ## 2.0.8 - 2026-11-06
 
 搜索接入音源脚本聚合 + 渲染层减负，一条线解决"搜不到脚本里的歌"、一条线压 TV 端整屏重绘。

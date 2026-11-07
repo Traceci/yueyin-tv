@@ -17,6 +17,11 @@ class OnlineMusicRepository(
             size > MAX_CACHED_QUERIES
     }
 
+    private val albumCache = object : LinkedHashMap<String, List<OnlineAlbum>>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<OnlineAlbum>>): Boolean =
+            size > MAX_CACHED_QUERIES
+    }
+
     /** 发现页缓存：只留最近一次，够覆盖"进去看一眼就返回" */
     @Volatile
     private var feedCache: Pair<Long, OnlineDiscoverFeed?> = 0L to null
@@ -40,6 +45,25 @@ class OnlineMusicRepository(
             synchronized(cache) { cache[key] = result }
         }
         return result
+    }
+
+    /**
+     * 专辑搜索。和歌曲搜索分开缓存：同一句话的歌曲结果会被「输入即搜」反复读写，
+     * 而专辑只在一次搜索里取一次，混在一张 LRU 里只会互相把对方挤掉。
+     */
+    suspend fun searchAlbums(
+        keyword: String,
+        page: Int = 1,
+        limit: Int = 10,
+        useCache: Boolean = true,
+    ): List<OnlineAlbum> {
+        val trimmed = keyword.trim()
+        if (trimmed.isEmpty()) return emptyList()
+        val key = "${trimmed.lowercase()}|$page|$limit"
+        if (useCache) synchronized(albumCache) { albumCache[key] }?.let { return it }
+        val albums = api.searchAlbumsAll(trimmed, page = page, limit = limit)
+        if (albums.isNotEmpty()) synchronized(albumCache) { albumCache[key] = albums }
+        return albums
     }
 
     /**

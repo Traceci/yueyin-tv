@@ -310,6 +310,8 @@ internal fun AuthenticatedApp(
 ) {
     var stack by remember(session.user.guid) { mutableStateOf(listOf<LibraryRoute>(LibraryRoute.Home)) }
     var lastHomeBackAt by remember(session.user.guid) { mutableStateOf(0L) }
+    // 搜索会话跨路由存活（结果不会被丢掉重搜）。何时作废见下方对 stack 的监听。
+    val searchSession = remember(session.user.guid) { TvSearchSession() }
     val route = stack.last()
     // 常驻导航条的焦点锚点：全 App 唯一，随 AuthenticatedApp 生命周期存活。
     val navRequesters = remember { NavRequesters() }
@@ -365,6 +367,19 @@ internal fun AuthenticatedApp(
             navDirection = -1
             android.util.Log.d("YueyinNav", "back -> depth=${stack.size} top=${stack.lastOrNull()?.let { r -> r::class.simpleName }}")
         }
+    }
+    // 搜索会话什么时候作废：只看这次离开搜索页是「往下钻」还是「往后退」。
+    //   往下钻（进专辑 / 歌手 / 歌单 / 播放页）→ 栈变长，返回时要接回原来那次搜索 → 保留；
+    //   往后退（按返回退出搜索页）→ 栈变短或换了栈底，下次进来必须是全新的搜索 → 清空。
+    // 判定方向用「旧栈是不是新栈的前缀」：压栈时旧栈一定是新栈的前缀，弹栈时相反。
+    // 与手机端 PhoneApp 里那段同语义，两端行为一致。
+    var previousStack by remember(session.user.guid) { mutableStateOf(stack) }
+    LaunchedEffect(stack) {
+        val previous = previousStack
+        previousStack = stack
+        if (previous.lastOrNull() != LibraryRoute.Search) return@LaunchedEffect
+        val pushed = stack.size > previous.size && stack.subList(0, previous.size) == previous
+        if (!pushed) searchSession.reset()
     }
     // 打开 App / 回到前台时自动同步服务器歌单（只读，不反向写入服务器）。
     // 首次进入由首页首次加载即可拿到最新数据；此后每次回到前台都强制刷新歌单列表，
@@ -865,6 +880,7 @@ internal fun AuthenticatedApp(
             )
             LibraryRoute.Search -> SearchScreen(
                 container,
+                session = searchSession,
                 // 搜索结果点歌要真的把歌推进播放队列再打开播放页。
                 // 以前这里是 open(LibraryRoute.Player(it))——路由里的 track 全程没人读，
                 // 于是播放页队列是空的、标题落到「尚未选择歌曲」，返回时还要连按好几下才退得出去。
@@ -3959,13 +3975,43 @@ private fun TrackCollection(
             retained.loading = false
         }
     }
-    fun play(index: Int) {
-        android.util.Log.d("YueyinPlay", "play(index=$index) trackCount=${tracks.size} playableIndex=${tracks.indexOfFirst(::isTrackPlayable)}")
-        val target = tracks.getOrNull(index)?.takeIf(::isTrackPlayable) ?: run {
+    /**
+     * 把播放器切成随机模式。
+     *
+     * 不能在「队列刚装好」的那一刻直接一次性 setPlayMode：随机模式在播放内核里是一次带
+     * revision 校验的异步切换，而队列刚提交时播放页正在 enrich 当前曲目、后台还在补直链，
+     * 快照 revision 会马上再推进一次——那一刻发出的请求会被判过期，静默回滚成列表循环。
+     * 表现就是「点了随机播放，歌是播了，但播放器里的模式还是循环」。
+     *
+     * 所以这里在队列稳定后确认几次，直到模式真的变成 Shuffle（等同于用户手按模式键）。
+     * 用 retainedStore.scope：本页在打开播放页后就被替换，actionScope 会被取消。
+     */
+    fun requestShuffleMode() {
+        retainedStore.scope.launch {
+            repeat(6) { attempt ->
+                if (container.playbackController.state.value.playMode == PlayMode.Shuffle) return@launch
+                container.playbackController.setPlayMode(PlayMode.Shuffle)
+                delay(if (attempt == 0) 260L else 360L)
+            }
+            android.util.Log.w("YueyinPlay", "随机模式未生效：多次切换均被回滚")
+        }
+    }
+
+    fun play(index: Int, shuffleMode: Boolean = false) {
+        // 随机起播：起点也必须随机。`setPlayMode(Shuffle)` 只改「下一首跳哪儿」，
+        // **不动当前播放项**——只切模式的话，用户点「随机播放」听到的永远是列表第一首，
+        // 从第二首才开始随机，观感上等于没随机。这里先随机挑一首当起点，再切模式。
+        val start = if (shuffleMode) {
+            tracks.indices.filter { isTrackPlayable(tracks[it]) }.randomOrNull() ?: index
+        } else {
+            index
+        }
+        android.util.Log.d("YueyinPlay", "play(index=$index, start=$start, shuffle=$shuffleMode) trackCount=${tracks.size} playableIndex=${tracks.indexOfFirst(::isTrackPlayable)}")
+        val target = tracks.getOrNull(start)?.takeIf(::isTrackPlayable) ?: run {
             android.util.Log.d("YueyinPlay", "play aborted: target not playable")
             return
         }
-        val window = exactTrackQueueWindow(loadedPages, index) ?: run {
+        val window = exactTrackQueueWindow(loadedPages, start) ?: run {
             android.util.Log.d("YueyinPlay", "play aborted: exactTrackQueueWindow null")
             setError(AppError.CollectionChanged)
             return
@@ -4032,6 +4078,10 @@ private fun TrackCollection(
                 setError(AppError.TranscodeUnavailable)
                 return@launch
             }
+            // 随机播放 = 把播放器切成 Shuffle 模式，而不是在这里把列表打乱后重建队列。
+            // 两者听感一样，但切模式之后：队列顺序在播放页/队列弹层里可见、
+            // 用户还能用播放页的「播放模式」按钮切回列表循环，行为是连续的。
+            if (shuffleMode) requestShuffleMode()
             // 播放队列已提交（ExoPlayer 已经开始播放），这里立即打开播放页；
             // 不要等 awaitCommitted()（它依赖快照持久化的 acknowledgement，可能延迟或失败），
             // 否则会出现「已经在播，但播放页没弹出、要手动去点底部播放胶囊」的 bug。
@@ -4106,6 +4156,10 @@ private fun TrackCollection(
         TrackCollectionPrimaryAction.PlayAll -> playableTracks.isNotEmpty()
         is TrackCollectionPrimaryAction.StartRoam -> true
     }
+    // 「随机播放」只在主按钮是「播放全部」的页面上给（专辑 / 歌单 / 歌手 / 收藏）。
+    // 「全部歌曲」页的主按钮是「随机漫游」——那是另一套持续推荐，再并一个「随机播放」
+    // 会让用户分不清两者区别，所以那一页刻意不给。
+    val shuffleActionAvailable = primaryAction == TrackCollectionPrimaryAction.PlayAll && playableTracks.isNotEmpty()
     val primaryActionLabel = when (primaryAction) {
         TrackCollectionPrimaryAction.PlayAll -> "播放全部"
         is TrackCollectionPrimaryAction.StartRoam -> "随机漫游"
@@ -4124,6 +4178,7 @@ private fun TrackCollection(
         if (!initialFocusEnabled || !snapshot.initialLoadCompleted || initialFocusRequested) return@LaunchedEffect
         val availableKeys = buildList {
             if (primaryActionEnabled) add("primary-action")
+            if (shuffleActionAvailable) add("shuffle-action")
             detailHeader.tabs.filter { it.selected }.forEach { add(it.key) }
             if (showTrackList) addAll(playableTracks.map { it.guid.value })
             add("detail-back")
@@ -4164,12 +4219,14 @@ private fun TrackCollection(
         restoredFocus = restoredFocus,
         primaryActionLabel = primaryActionLabel,
         primaryActionEnabled = primaryActionEnabled,
+        shuffleActionAvailable = shuffleActionAvailable,
         showTrackList = showTrackList,
         onFocusKey = {
             focusedKey = it
             onFocusOwnerChanged()
         },
         onPrimaryAction = ::runPrimaryAction,
+        onShuffleAction = { play(tracks.indexOfFirst(::isTrackPlayable), shuffleMode = true) },
         onTrackFocused = { index, key ->
             focusedKey = key
             onFocusOwnerChanged()
@@ -4199,9 +4256,11 @@ private fun DetailTrackCollection(
     restoredFocus: FocusRequester,
     primaryActionLabel: String,
     primaryActionEnabled: Boolean,
+    shuffleActionAvailable: Boolean,
     showTrackList: Boolean,
     onFocusKey: (String) -> Unit,
     onPrimaryAction: () -> Unit,
+    onShuffleAction: () -> Unit,
     onTrackFocused: (Int, String) -> Unit,
     onTrack: (Int) -> Unit,
     onLoadMore: () -> Unit,
@@ -4305,6 +4364,50 @@ private fun DetailTrackCollection(
                         contentPadding = PaddingValues(horizontal = 19.dp, vertical = 0.dp),
                     ) {
                         Text("▶  $primaryActionLabel", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    }
+                    if (shuffleActionAvailable) {
+                        // 与「播放全部」同一行、同 44dp 高，靠次级样式（透明底 + 细白描边）
+                        // 拉开主次：不能两个都是珊瑚色描边，否则一眼看不出哪个是主动作。
+                        val shuffleShape = RoundedCornerShape(FnRadius.sm)
+                        Button(
+                            enabled = true,
+                            onClick = onShuffleAction,
+                            modifier = Modifier
+                                .then(if (focusedKey == "shuffle-action") Modifier.focusRequester(restoredFocus) else Modifier)
+                                .onFocusChanged { if (it.isFocused) onFocusKey("shuffle-action") }
+                                .height(44.dp),
+                            shape = ButtonDefaults.shape(
+                                shuffleShape,
+                                shuffleShape,
+                                shuffleShape,
+                                shuffleShape,
+                                shuffleShape,
+                            ),
+                            scale = ButtonDefaults.scale(focusedScale = 1f),
+                            colors = ButtonDefaults.colors(
+                                containerColor = Color.Transparent,
+                                contentColor = FnColors.Muted,
+                                focusedContainerColor = FnColors.FocusFill,
+                                focusedContentColor = FnColors.Text,
+                                pressedContainerColor = FnColors.FocusFill,
+                                pressedContentColor = FnColors.Text,
+                            ),
+                            border = ButtonDefaults.border(
+                                border = Border(
+                                    BorderStroke(1.dp, Color.White.copy(alpha = 0.20f)),
+                                    shape = shuffleShape,
+                                ),
+                                focusedBorder = Border(BorderStroke(3.dp, FnFocus.ringColor), shape = shuffleShape),
+                                pressedBorder = Border(BorderStroke(3.dp, FnFocus.ringColor), shape = shuffleShape),
+                            ),
+                            contentPadding = PaddingValues(horizontal = 17.dp, vertical = 0.dp),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                PlayerSideActionIcon(PlayerSideActionGlyph.Shuffle)
+                                Spacer(Modifier.width(7.dp))
+                                Text("随机播放", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }
@@ -5596,10 +5699,40 @@ internal fun formatDuration(ms: Long): String {
  *  这里只用于防止网络异常导致「永远停在正在搜索」的极端情况，放得足够大（120s）以免截断正常的大曲库构建。 */
 private const val SEARCH_TIMEOUT_MS = 120_000L
 
+/** 歌曲区首屏直出条数；滚到底再追加 [SEARCH_TRACK_PAGE] 条，直到显示完整结果。 */
+private const val SEARCH_TRACK_FIRST_PAGE = 30
+private const val SEARCH_TRACK_PAGE = 30
+
+/**
+ * 电视端搜索会话里必须「跨路由活下来」的那部分状态。
+ *
+ * `SearchScreen` 在 `when (route)` 里，进专辑 / 歌手 / 歌单 / 播放页会把它整个替换掉，
+ * 页面内的 `remember` 全部销毁。关键词因为用了 `rememberSaveable` 活了下来，
+ * 但 `SearchResults` 不是 Parcelable、进不了 saveable，只能丢——于是返回时
+ * `LaunchedEffect(query)` 必然重搜一次：闪一下「正在搜索…」，列表也被顶回顶部。
+ * 这与「返回」的本意正好相反，返回应该是回到刚才那个状态。
+ *
+ * 所以把结果和「已经为哪个词搜过」提到壳层。何时作废见 `AuthenticatedApp` 里对 `stack` 的监听：
+ * 往下钻（进详情 / 播放页）保留，往后退（退出搜索页）清空——与手机端 `PhoneSearchRetention` 同语义。
+ */
+private class TvSearchSession {
+    /** 上一次搜索的结果。null 表示还没搜或已被清空。 */
+    var results: SearchResults? = null
+
+    /** 已经为哪个关键词出过结果（含失败）。返回时靠它判断「这个词的结果已经在这里了」。 */
+    var settledQuery: String = ""
+
+    fun reset() {
+        results = null
+        settledQuery = ""
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SearchScreen(
     container: AuthenticatedAppDependencies,
+    session: TvSearchSession,
     // 必须把整段结果和点中的下标一起传出去：单曲进不了队列，只有「列表 + 起点」才能连续播放。
     onPlayTrack: (List<Track>, Int) -> Unit,
     onOpenPlaylist: (Playlist) -> Unit,
@@ -5618,7 +5751,9 @@ private fun SearchScreen(
         mutableStateOf(TextFieldValue(""))
     }
     val query = queryValue.text
-    var results by remember { mutableStateOf<SearchResults?>(null) }
+    // 结果从会话里接回来：从专辑 / 歌手 / 歌单 / 播放页返回时，上次的结果还在，
+    // 不必重搜（重搜会闪一下「正在搜索…」并把列表顶回顶部）。
+    var results by remember { mutableStateOf(session.results) }
     var searching by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<AppError?>(null) }
     var searchDiag by remember { mutableStateOf<String?>(null) }
@@ -5650,6 +5785,9 @@ private fun SearchScreen(
                 // 已有更新的请求接管了界面：直接丢弃本次结果，不要碰任何状态
                 if (token != searchToken) return@launch
                 results = r
+                // 回写会话：返回搜索页时靠这两个字段判断「这个词的结果已经在这里了」，不必重搜。
+                session.results = r
+                session.settledQuery = trimmed
                 if (r.isEmpty) {
                     val diag = container.musicRepository.lastSearchDiagnostics().orEmpty()
                     searchDiag = diag.takeIf { it.isNotBlank() }
@@ -5705,6 +5843,14 @@ private fun SearchScreen(
             results = null
             searching = false
             searchError = null
+            // 会话一起清掉：否则返回时会把「已经清空」的旧结果又接回来。
+            session.reset()
+            return@LaunchedEffect
+        }
+        // 这个词的结果已经在会话里（从详情 / 播放页返回）：直接接回，不重搜。
+        // 不重搜才不会闪「正在搜索…」，也不会把结果列表顶回顶部。
+        if (trimmed == session.settledQuery && session.results != null) {
+            if (results == null) results = session.results
             return@LaunchedEffect
         }
         delay(180L)
@@ -5736,6 +5882,8 @@ private fun SearchScreen(
             onSubmit = { runSearch(query) },
             focusRequester = inputFocus,
             onFocusStateChange = {},
+            // 只有全新进入才自动弹键盘；从详情 / 播放页返回时结果还留着，再弹会把半个列表盖住。
+            autoShowKeyboard = session.settledQuery.isEmpty(),
         )
         Spacer(Modifier.height(16.dp))
         Box(Modifier.fillMaxWidth().weight(1f)) {
@@ -5792,7 +5940,7 @@ private fun SearchScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
-                        "搜索歌曲、歌手、歌单、专辑",
+                        "搜索歌曲、歌手、专辑",
                         color = FnColors.Text,
                         fontSize = FnType.Section,
                         fontWeight = FontWeight.SemiBold,
@@ -5801,6 +5949,10 @@ private fun SearchScreen(
                     Text("支持中文、拼音全拼与拼音首字母", color = FnColors.Muted, fontSize = FnType.Body)
                     Spacer(Modifier.height(4.dp))
                     Text("例如：周杰伦 / zhoujielun / z j l", color = FnColors.Muted, fontSize = FnType.Sub)
+                    Spacer(Modifier.height(4.dp))
+                    // 原来这句挤在输入框的 placeholder 里，与其它入口的提示文案不一致；
+                    // 挪到这里既保住了遥控器的操作指引，又让四处提示文案统一。
+                    Text("松开遥控器即自动搜索", color = FnColors.Muted, fontSize = FnType.Sub)
                 }
             }
         }
@@ -5837,6 +5989,7 @@ private fun SearchField(
     onSubmit: () -> Unit,
     focusRequester: FocusRequester,
     onFocusStateChange: (Boolean) -> Unit,
+    autoShowKeyboard: Boolean = true,
 ) {
     var focused by remember { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -5848,9 +6001,21 @@ private fun SearchField(
 
     // 进入搜索页即弹出键盘，焦点由 SearchScreen 的 LaunchedEffect 请求到输入框上，
     // 用户无需再按一次确定键即可直接输入。
-    LaunchedEffect(Unit) {
-        delay(120)
-        runCatching { keyboard?.show() }
+    //
+    // 从详情 / 播放页返回时不弹，而且要**主动收一次**：返回时搜索页重建，
+    // `SearchScreen` 会把焦点重新请求到输入框，而 BasicTextField 一旦获焦，
+    // 系统会自己把 IME 弹出来——光「不调用 show()」拦不住，必须显式 hide。
+    LaunchedEffect(autoShowKeyboard) {
+        if (autoShowKeyboard) {
+            delay(120)
+            runCatching { keyboard?.show() }
+        } else {
+            // 两次：IME 的显示是异步的，获焦后才弹，单次 hide 可能被后到的 show 盖掉。
+            delay(150)
+            runCatching { keyboard?.hide() }
+            delay(280)
+            runCatching { keyboard?.hide() }
+        }
     }
 
     BasicTextField(
@@ -5899,7 +6064,9 @@ private fun SearchField(
         decorationBox = { innerTextField ->
             Box(contentAlignment = Alignment.CenterStart) {
                 if (value.text.isEmpty()) {
-                    Text("输入关键词或拼音首字母，如 zjl，松开遥控器即自动搜索", color = FnColors.Muted, fontSize = FnType.Label)
+                    // 与手机端、首页入口统一成同一句；遥控器操作提示移到了下方空态区，
+                    // 那里空间足够，不必挤在单行提示里被截断。
+                    Text("搜索歌曲、歌手、专辑", color = FnColors.Muted, fontSize = FnType.Label)
                 }
                 innerTextField()
             }
@@ -5916,23 +6083,44 @@ private fun SearchResultsContent(
     onOpenAlbum: (Album) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val listState = rememberLazyListState()
+    // 与手机端同一条规则：先出一页，滚（遥控器下移）到底自动追加，不再固定只给 30 首。
+    var visibleCount by remember(results) { mutableStateOf(SEARCH_TRACK_FIRST_PAGE) }
+    val trackHits = remember(results, visibleCount) {
+        results.tracks.take(visibleCount.coerceAtMost(results.tracks.size))
+    }
+    LaunchedEffect(listState, results) {
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
+            .collect { lastVisible ->
+                val total = results.tracks.size
+                if (visibleCount < total && lastVisible >= visibleCount - 2) {
+                    visibleCount = (visibleCount + SEARCH_TRACK_PAGE).coerceAtMost(total)
+                }
+            }
+    }
+
     LazyColumn(
-        state = rememberLazyListState(),
+        state = listState,
         contentPadding = PaddingValues(bottom = 32.dp),
         modifier = modifier,
     ) {
-        if (results.tracks.isNotEmpty()) {
-            item { SearchSectionTitle("歌曲") }
-            // 点中的是「这 30 首里的第几首」，连同一整段结果交给上层去组队列——单曲传出去组不了队列。
-            val trackHits = results.tracks.take(30)
-            itemsIndexed(trackHits, key = { _, track -> track.guid.value }) { index, track ->
-                DetailTrackRow(
-                    index = index,
-                    track = track,
-                    enabled = isTrackPlayable(track),
-                    modifier = Modifier.padding(vertical = 2.dp),
-                    onClick = { onPlayTrack(trackHits, index) },
-                )
+        // 分类片区放在歌曲列表**之前**：搜索结果动辄上百首，分类横排全塞在列表末尾时，
+        // 遥控器要按上百下才能看到「专辑」——等于没有。分类只有几排、一眼可扫，
+        // 先给概览再进入长列表，也更符合"搜一个歌手，先看他的专辑"的意图。
+        if (results.albums.isNotEmpty()) {
+            item {
+                SearchSectionTitle("专辑")
+                Spacer(Modifier.height(6.dp))
+            }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(2.dp)) {
+                    items(results.albums.take(20), key = { it.guid.value }) { album ->
+                        // 副标题「歌手 · 年份」：年份缺就只显示歌手，两端同一套规则（Album.cardSubtitle）
+                        AlbumLockup(album.name, album.cardSubtitle, album.coverId) {
+                            onOpenAlbum(album)
+                        }
+                    }
+                }
             }
         }
         if (results.artists.isNotEmpty()) {
@@ -5965,19 +6153,17 @@ private fun SearchResultsContent(
                 }
             }
         }
-        if (results.albums.isNotEmpty()) {
-            item {
-                SearchSectionTitle("专辑")
-                Spacer(Modifier.height(6.dp))
-            }
-            item {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(2.dp)) {
-                    items(results.albums.take(20), key = { it.guid.value }) { album ->
-                        AlbumLockup(album.name, album.artistName.orEmpty(), album.coverId) {
-                            onOpenAlbum(album)
-                        }
-                    }
-                }
+        if (results.tracks.isNotEmpty()) {
+            item { SearchSectionTitle("歌曲") }
+            itemsIndexed(trackHits, key = { _, track -> track.guid.value }) { index, track ->
+                DetailTrackRow(
+                    index = index,
+                    track = track,
+                    enabled = isTrackPlayable(track),
+                    modifier = Modifier.padding(vertical = 2.dp),
+                    // 队列传全量结果：只传这一页的话，播到页尾就没有下一首了。
+                    onClick = { onPlayTrack(results.tracks, index) },
+                )
             }
         }
     }

@@ -289,6 +289,27 @@ internal fun PhoneApp(
     val store = remember(session.user.guid) { LibraryRetainedStateStore(scope) }
 
 
+    // 搜索会话（关键词 / 结果 / 滚动位置）跨路由保留：点搜索结果的专辑、歌手、歌单会压一层新路由，
+
+    // 搜索页会整个离开组合；挂在壳上，返回时才能接回原来那一次搜索，而不是变成一个空搜索页。
+
+    val searchRetention = remember(session.user.guid) { PhoneSearchRetention() }
+
+
+    // 搜索会话什么时候作废：只看这次离开搜索页是「往下钻」还是「往后退」。
+    //   往下钻（点专辑 / 歌手 / 歌单 / 播放页）→ 栈变长，返回时要接回原来那次搜索 → 保留；
+    //   往后退（按返回退出搜索页）→ 栈变短或换了栈底，下次进来必须是全新的搜索 → 清空。
+    // 判定方向用「旧栈是不是新栈的前缀」：压栈时旧栈一定是新栈的前缀，弹栈时相反。
+    var previousStack by remember(session.user.guid) { mutableStateOf(stack) }
+    LaunchedEffect(stack) {
+        val previous = previousStack
+        previousStack = stack
+        if (previous.lastOrNull() != LibraryRoute.Search) return@LaunchedEffect
+        val pushed = stack.size > previous.size && stack.subList(0, previous.size) == previous
+        if (!pushed) searchRetention.reset()
+    }
+
+
 
 
 
@@ -334,6 +355,12 @@ internal fun PhoneApp(
             store.clearAll()
 
 
+            // 搜索结果是上一个数据源搜出来的，切完平台还留着就成了「点了播不了」的陷阱。
+
+
+            searchRetention.reset()
+
+
         }
 
 
@@ -374,6 +401,28 @@ internal fun PhoneApp(
 
 
     // 手机端「点了继续浏览」比「强制全屏播放」更符合使用习惯，迷你条已经足够反馈）。
+
+
+    // 随机播放：起点随机 + 起播成功后把播放器切成随机模式。
+    // 必须走 PhonePlayback.start 这一层：起播是异步的（要 prepareQueue、取直链），
+    // 切模式只能在队列真的提交给播放器之后做，否则会被内核判过期回滚。
+    // 与电视端「随机播放」语义完全一致（电视端在 TrackCollection.play(shuffleMode = true)）。
+    val shuffleTracks: (List<Track>) -> Unit = { list ->
+
+
+        scope.launch {
+
+
+            val ok = PhonePlayback.start(container, list, 0, store.scope, shuffle = true)
+
+
+            if (!ok) Toast.makeText(context, "这些歌暂时都播不了", Toast.LENGTH_SHORT).show()
+
+
+        }
+
+
+    }
 
 
     val playTracks: (List<Track>, Int) -> Unit = { tracks, index ->
@@ -562,6 +611,9 @@ internal fun PhoneApp(
                         playback = playback,
 
 
+                        searchRetention = searchRetention,
+
+
                         onRoot = root,
 
 
@@ -572,6 +624,9 @@ internal fun PhoneApp(
 
 
                         onPlayTracks = playTracks,
+
+
+                        onShuffleTracks = shuffleTracks,
 
 
                         onOpenSettings = openSettings,
@@ -1254,6 +1309,10 @@ private fun PhoneRouteHost(
     onPlayTracks: (List<Track>, Int) -> Unit,
 
 
+    /** 随机播放：起点随机 + 切播放器随机模式，与电视端同语义。 */
+    onShuffleTracks: (List<Track>) -> Unit,
+
+
     onOpenSettings: (PhoneSettingsPane) -> Unit,
 
 
@@ -1261,6 +1320,11 @@ private fun PhoneRouteHost(
 
 
     onBack: () -> Unit,
+
+
+    // 搜索会话状态由外壳持有、这里只借用：进详情页时搜索页会被整个换出组合，
+    // 状态放在被换掉的那一层，就等于每次返回都从零开始（详见 PhoneSearchRetention）。
+    searchRetention: PhoneSearchRetention,
 
 
     embeddedDetail: Boolean = false,
@@ -1440,6 +1504,9 @@ private fun PhoneRouteHost(
                 onPlayTracks = onPlayTracks,
 
 
+                onShuffleTracks = onShuffleTracks,
+
+
                 favoriteStatuses = favoriteLibrary.statuses,
 
 
@@ -1498,6 +1565,9 @@ private fun PhoneRouteHost(
 
 
                 onPlayTracks = onPlayTracks,
+
+
+                onShuffleTracks = onShuffleTracks,
 
 
                 favoriteStatuses = favoriteLibrary.statuses,
@@ -1567,6 +1637,9 @@ private fun PhoneRouteHost(
 
 
                 onPlayTracks = onPlayTracks,
+
+
+                onShuffleTracks = onShuffleTracks,
 
 
                 coverShape = CircleShape,
@@ -1654,6 +1727,9 @@ private fun PhoneRouteHost(
 
 
         LibraryRoute.Search -> PhoneSearchPage(
+
+
+            retention = searchRetention,
 
 
             playingTrackId = playingId,
