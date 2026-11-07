@@ -8,7 +8,7 @@
 
 <p align="center">
   <img alt="Platform" src="https://img.shields.io/badge/Android%206.0%2B-TV%20%7C%20Phone%20%7C%20Tablet%20%7C%20Car-3DDC84?logo=android&logoColor=white">
-  <img alt="Version" src="https://img.shields.io/badge/version-2.0.4-orange">
+  <img alt="Version" src="https://img.shields.io/badge/version-2.0.9-orange">
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue">
 </p>
 
