@@ -1,5 +1,8 @@
 package com.yueyin.tv.ui.connect
 
+import com.yueyin.tv.accountSubtitle
+import com.yueyin.tv.rememberFnAccountLabel
+
 import android.content.Context
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -20,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Text
@@ -42,6 +46,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -436,6 +441,7 @@ fun PlatformManageContent(
 ) {
     val store = ConnectRuntime.store
     val state by store.state.collectAsState()
+    val fnAccountLabel = rememberFnAccountLabel()
     val firstFocus = remember { FocusRequester() }
     // 每行行首控件共用的「左键回左栏」出口。行内右侧的小按钮（编辑/删除/检测）不挂，
     // 让它们按左回到同一行左边那颗卡，而不是直接跳栏。
@@ -480,6 +486,8 @@ fun PlatformManageContent(
 
     val profiles = state.profiles
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // 电视端不提供本地曲库（导航条里已经没有「本地」），平台页也不再显示那条只读状态。
+            // 手机端走 PhonePlatformPage 自己的实现，不受影响。
             // 飞牛音乐：登录过才出现，和协议平台一样可以编辑（重新登录）/删除（断开账号）。
             // 它不是 ConnectProfile，所以走单独的"会话"语义，但界面上与其它平台平权。
             if (fnSessionActive) {
@@ -519,7 +527,7 @@ fun PlatformManageContent(
                                 }
                                 Text(
                                     if (pendingDeleteFn) "再按一次右侧红色按钮即断开飞牛账号"
-                                    else "与登录账号同一个曲库",
+                                    else fnAccountLabel,
                                     color = if (pendingDeleteFn) FnColors.Coral else FnColors.Muted,
                                     fontSize = 13.sp,
                                 )
@@ -578,7 +586,7 @@ fun PlatformManageContent(
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(profile.displayName, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(profile.type.displayName, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
                                     if (profile.id == state.activeId) {
                                         Spacer(Modifier.width(10.dp))
                                         Text("当前", color = FnColors.Teal, fontSize = 13.sp, fontWeight = FontWeight.Bold)
@@ -586,7 +594,7 @@ fun PlatformManageContent(
                                 }
                                 Text(
                                     if (deleting) "再按一次右侧红色按钮即删除"
-                                    else "${profile.username.ifBlank { profile.type.displayName }} · ${profile.host}",
+                                    else profile.accountSubtitle(),
                                     color = if (deleting) FnColors.Coral else FnColors.Muted,
                                     fontSize = 13.sp,
                                 )

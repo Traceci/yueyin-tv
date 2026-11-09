@@ -251,6 +251,8 @@ internal val LocalNavFocusController = staticCompositionLocalOf { NavFocusContro
 internal class NavRequesters(
     val home: FocusRequester = FocusRequester(),
     val albums: FocusRequester = FocusRequester(),
+    // 本地曲库 Tab 插在「专辑」与「歌单」之间，焦点锚点与其它 Tab 一样全 App 唯一。
+    val local: FocusRequester = FocusRequester(),
     val playlists: FocusRequester = FocusRequester(),
     val my: FocusRequester = FocusRequester(),
     val settings: FocusRequester = FocusRequester(),
@@ -260,6 +262,7 @@ internal class NavRequesters(
     fun forTab(id: String): FocusRequester? = when (id) {
         "home" -> home
         "albums" -> albums
+        "local" -> local
         "playlists" -> playlists
         "my" -> my
         "settings" -> settings
@@ -294,7 +297,7 @@ private fun Modifier.focusGlow(
 private const val FULL_CATALOG_PAGE_SIZE = 12
 
 /** 顶栏一级导航的入口（注意与导航胶囊单个按钮的 LibraryTab 组件区分）。 */
-internal enum class LibraryNavTab { Home, Albums, Playlists, My, Settings }
+internal enum class LibraryNavTab { Home, Albums, Local, Playlists, My, Settings }
 
 // 首页歌单区的列数不再写死：由 FnGrid.columnsFor(可用宽度) 计算（960 画布下为 5 列），
 // 首页展示「列数 × 2 行」个，其余收进「全部歌单」。
@@ -319,6 +322,7 @@ internal fun AuthenticatedApp(
     val navTab = when (route) {
         LibraryRoute.Home -> LibraryNavTab.Home
         LibraryRoute.Albums -> LibraryNavTab.Albums
+        LibraryRoute.LocalMusic -> LibraryNavTab.Local
         LibraryRoute.AllPlaylists -> LibraryNavTab.Playlists
         LibraryRoute.My -> LibraryNavTab.My
         LibraryRoute.Settings -> LibraryNavTab.Settings
@@ -407,6 +411,12 @@ internal fun AuthenticatedApp(
         onDispose { container.updateController.setAutomaticPromptAllowed(true) }
     }
     LaunchedEffect(route.storageKey()) { lastHomeBackAt = 0L }
+    // 电视端没有本地曲库入口：若路由仍落在 LocalMusic（旧版本状态恢复、或跨端共用的路由栈），
+    // 直接退回首页。否则会停在一个「没有任何导航 Tab 对应」的页面上——那一页的焦点锚点
+    // navRequesters.local 不会挂载，切页后的焦点保底找不到可请求的节点，整页无焦点。
+    LaunchedEffect(route) {
+        if (route == LibraryRoute.LocalMusic) root(LibraryRoute.Home)
+    }
     // 切换平台（飞牛 ↔ Navidrome/Jellyfin/Emby…）后，保留的分页/列表缓存全部作废：
     // 不清的话回到首页/我的还是上一个平台的歌，看起来像"切了没反应"。
     val connectState by com.yueyin.tv.ui.connect.ConnectRuntime.store.state.collectAsStateWithLifecycle()
@@ -440,7 +450,13 @@ internal fun AuthenticatedApp(
         route == LibraryRoute.PlatformFnLogin ||
         route is LibraryRoute.PlatformForm ||
         route == LibraryRoute.MusicSources ||
-        route == LibraryRoute.MusicSourceReceive
+        route == LibraryRoute.MusicSourceReceive ||
+        // 本地曲库不依赖任何在线数据源，没连平台 / 没导音源时也必须能进。
+        route == LibraryRoute.LocalMusic ||
+        // 设置页必须随时可达：设置里有「界面形态」手选。若它被这个总闸拦住，
+        // 用户把电视盒子误选成车机/手机（或反过来）之后，在没连平台的机器上就再也
+        // 改不回来了——只能清应用数据。顺带也让更新检查、缓存清理可用。
+        route == LibraryRoute.Settings
     var boundPlatformId by remember(session.user.guid) { mutableStateOf<String?>(null) }
     // 切平台：先在组合阶段同步清空保留状态。必须早于下面 key(activePlatformId) 重建出的新子树
     // 执行——否则新子树 getOrPut 会拿到上一个平台的 state 对象，继续显示旧曲库（这正是
@@ -560,14 +576,20 @@ internal fun AuthenticatedApp(
     // 抢不回来就把这一次按键吞掉，绝不交给 ViewRootImpl 去 restoreDefaultFocus。
     DisposableEffect(navTab) {
         FocusRescue.handler = {
+            // 只做一件事：把焦点交给当前路由对应的导航锚点。
+            //
+            // 这里**绝不能**再调 focusManager.clearFocus(force = true)。实测崩溃栈就是它：
+            //   FocusOwnerImpl.clearFocus → View.clearFocus → View.requestFocus
+            //   → FocusTargetNode(已 detach) → IllegalStateException:
+            //     visitAncestors called on an unattached node
+            // 也就是「先清空再重给」不但救不回来，反而正是触发闪退的那一步——它让 Compose
+            // 去遍历一棵还残留着已销毁节点的焦点树。详情页 / 播放页 / 搜索页没有导航锚点时
+            // 一定会走到这条分支，所以那些页面随便按一下方向键就退回桌面。
+            //
+            // 抢不回来就返回 false，由 MainActivity 吞掉这一次按键（下一帧再试）。
+            // 少响应一次按键可以忍，闪退不能忍。
             val anchor = navTab?.let { navRequesters.forTab(it.name.lowercase()) }
-            var rescued = anchor != null && runCatching { anchor.requestFocus() }.isSuccess
-            if (!rescued) {
-                // 焦点树可能卡在一个已 detach 的节点上，先强制清空再重新给一次。
-                runCatching { focusManager.clearFocus(force = true) }
-                rescued = anchor != null && runCatching { anchor.requestFocus() }.isSuccess
-            }
-            rescued
+            anchor != null && runCatching { anchor.requestFocus() }.isSuccess
         }
         onDispose { FocusRescue.handler = null }
     }
@@ -624,6 +646,7 @@ internal fun AuthenticatedApp(
                             settingsEntryFocus = settingsEntryFocus,
                             onHome = { root(LibraryRoute.Home) },
                             onAlbums = { root(LibraryRoute.Albums) },
+                            onLocal = { root(LibraryRoute.LocalMusic) },
                             onPlaylists = { root(LibraryRoute.AllPlaylists) },
                             onMy = { root(LibraryRoute.My) },
                             onSettings = { root(LibraryRoute.Settings) },
@@ -956,6 +979,10 @@ internal fun AuthenticatedApp(
             )
             LibraryRoute.Artists -> ArtistGrid(container, onOpen = { open(LibraryRoute.ArtistDetail(it)) })
             LibraryRoute.Albums -> AlbumGrid(container, onOpen = { open(LibraryRoute.AlbumDetail(it)) })
+            // 本地曲库：页面内部自己 lib.prepare + playQueue 起播，这里只负责打开播放页。
+            LibraryRoute.LocalMusic -> TvLocalMusicPage(
+                onOpenPlayer = { open(LibraryRoute.Player(null)) },
+            )
             LibraryRoute.AllTracks -> TrackCollection(
                 container = container,
                 stateKey = "all-tracks",
@@ -1069,6 +1096,7 @@ private fun LibraryTopBar(
     settingsEntryFocus: FocusRequester,
     onHome: () -> Unit,
     onAlbums: () -> Unit,
+    onLocal: () -> Unit,
     onPlaylists: () -> Unit,
     onMy: () -> Unit,
     onSettings: () -> Unit,
@@ -1092,6 +1120,7 @@ private fun LibraryTopBar(
                     settingsEntryFocus = settingsEntryFocus,
                     onHome = onHome,
                     onAlbums = onAlbums,
+                    onLocal = onLocal,
                     onPlaylists = onPlaylists,
                     onMy = onMy,
                     onSettings = onSettings,
@@ -1188,6 +1217,7 @@ private fun SegmentedLibraryTabs(
     settingsEntryFocus: FocusRequester,
     onHome: () -> Unit,
     onAlbums: () -> Unit,
+    onLocal: () -> Unit,
     onPlaylists: () -> Unit,
     onMy: () -> Unit,
     onSettings: () -> Unit,
@@ -1204,6 +1234,7 @@ private fun SegmentedLibraryTabs(
         when (target) {
             LibraryNavTab.Home -> onHome()
             LibraryNavTab.Albums -> onAlbums()
+            LibraryNavTab.Local -> onLocal()
             LibraryNavTab.Playlists -> onPlaylists()
             LibraryNavTab.My -> onMy()
             LibraryNavTab.Settings -> onSettings()
@@ -1247,10 +1278,21 @@ private fun SegmentedLibraryTabs(
     val containerShape = CircleShape
     val tabWidth = 78.dp
     val pillInset = 3.dp
-    val containerWidth = tabWidth * 5 + pillInset * 2
+    // 电视端不提供本地曲库：这一页是给手机壳用的（电视要用外接存储，扫描与遥控器选目录
+    // 的体验都不成立）。这里恒为 false，导航条回到 5 个 Tab，宽度、指示器与焦点链自动恢复
+    // 「专辑 ↔ 歌单」直连。手机端 PhoneShell 的入口走它自己的判断，不受影响。
+    val showLocal = false
+    val tabCount = if (showLocal) 6 else 5
+    val containerWidth = tabWidth * tabCount + pillInset * 2
+    // 指示器按「可见序号」算：隐藏本地项时，它后面的 Tab 序号要 -1，否则亮条会错位。
+    val hiddenOrdinalShift = if (!showLocal && selectedTab.ordinal > LibraryNavTab.Local.ordinal) 1 else 0
+    val visibleOrdinal = selectedTab.ordinal - hiddenOrdinalShift
+    // 焦点左右链：显示本地项时在「专辑 → 歌单」之间插入它；隐藏时维持原来的直连。
+    val albumsRight = if (showLocal) navRequesters.local else navRequesters.playlists
+    val playlistsLeft = if (showLocal) navRequesters.local else navRequesters.albums
     // 滑动指示器：随选中项平滑滑动
     val indicatorX by animateDpAsState(
-        targetValue = pillInset + tabWidth * selectedTab.ordinal,
+        targetValue = pillInset + tabWidth * visibleOrdinal,
         animationSpec = tween(durationMillis = FnMotion.Normal, easing = FastOutSlowInEasing),
         label = "navIndicator",
     )
@@ -1287,7 +1329,7 @@ private fun SegmentedLibraryTabs(
                 modifier = Modifier
                     .focusProperties {
                         left = navRequesters.home
-                        right = navRequesters.playlists
+                        right = albumsRight
                     }
                     .focusRequester(navRequesters.albums)
                     .onFocusChanged {
@@ -1295,12 +1337,28 @@ private fun SegmentedLibraryTabs(
                     },
                 onClick = { if (selectedTab != LibraryNavTab.Albums) onAlbums() },
             )
+            if (showLocal) {
+                LibraryTab(
+                    label = "本地",
+                    selected = selectedTab == LibraryNavTab.Local,
+                    modifier = Modifier
+                        .focusProperties {
+                            left = navRequesters.albums
+                            right = navRequesters.playlists
+                        }
+                        .focusRequester(navRequesters.local)
+                        .onFocusChanged {
+                            if (it.isFocused) onTabFocused(LibraryNavTab.Local)
+                        },
+                    onClick = { if (selectedTab != LibraryNavTab.Local) onLocal() },
+                )
+            }
             LibraryTab(
                 label = "歌单",
                 selected = selectedTab == LibraryNavTab.Playlists,
                 modifier = Modifier
                     .focusProperties {
-                        left = navRequesters.albums
+                        left = playlistsLeft
                         right = navRequesters.my
                     }
                     .focusRequester(navRequesters.playlists)
@@ -1868,7 +1926,9 @@ internal fun HomeScreenLayout(
                         modifier = Modifier
                             .weight(1f)
                             .focusProperties {
-                                up = if (playback.hasMedia) nav.nowPlaying else nav.home
+                                // 在首页就回首页：以前这里会跳到右上角的播放胶囊，
+                                // 用户按「上」的意图是回导航条，不是跳到一个角落里。
+                                up = nav.home
                                 right = favoritesFocus
                                 down = playlistFirstFocus
                             }
@@ -1888,7 +1948,8 @@ internal fun HomeScreenLayout(
                         modifier = Modifier
                             .weight(1f)
                             .focusProperties {
-                                up = nav.my
+                                // 同上：收藏卡在右侧，按「上」也应该回「首页」，而不是几何最近的「我的」。
+                                up = nav.home
                                 left = roamFocus
                                 right = FocusRequester.Cancel
                                 down = playlistFirstFocus
@@ -3131,6 +3192,9 @@ private fun AllPlaylists(
     val playlistColumns = FnGrid.columnsFor(
         rememberCanvasWidthDp() - FnCanvas.MinSafeHorizontal.value * 2 - FnGrid.ContentInsetDp,
     )
+    // 导航锚点：歌单卡按「上」要回「歌单」Tab。必须在 composable 作用域先取出来——
+    // focusProperties 的 lambda 不是 @Composable，里面读 CompositionLocal 编译不过。
+    val navAnchors = LocalNavRequesters.current
     val retainedStore = LocalLibraryRetainedState.current
     val playlistState = retainedStore.list<Playlist>("playlists")
     val playlists = playlistState.snapshot.entries
@@ -3347,7 +3411,11 @@ private fun AllPlaylists(
                                                 right = FocusRequester.Cancel
                                             }
                                         } else {
-                                            Modifier
+                                            // 非排序模式：卡片按「上」回「歌单」Tab，
+                                            // 不再靠几何距离去猜（5 个 Tab 时容易落到别的 Tab）。
+                                            Modifier.focusProperties {
+                                                up = navAnchors.playlists
+                                            }
                                         },
                                     )
                                     .then(
@@ -3410,6 +3478,7 @@ private fun AlbumGrid(container: AuthenticatedAppDependencies, onOpen: (Album) -
         rowHeightFor = { columnWidth -> columnWidth + metrics.textBlock },
         loader = { page -> container.musicRepository.albums(page, FULL_CATALOG_PAGE_SIZE) },
         key = { it.guid.value },
+        upFocus = LocalNavRequesters.current.albums,
     ) { album, modifier ->
         AlbumPosterCard(album.name, album.artistName.orEmpty(), album.coverId, modifier = modifier) { onOpen(album) }
     }
@@ -3428,6 +3497,8 @@ private fun <T> PagedCatalogPage(
      * 底部只剩一条切边时直接收掉这半行。不传则保持原来的 `weight(1f)` 撑满。
      */
     rowHeightFor: ((columnWidth: Dp) -> Dp)? = null,
+    /** 网格项的「上」键落点：一级页统一指回自己的导航 Tab，别再按几何距离落到别的 Tab。 */
+    upFocus: FocusRequester? = null,
     item: @Composable (T, Modifier) -> Unit,
 ) {
     val retainedStore = LocalLibraryRetainedState.current
@@ -3531,6 +3602,13 @@ private fun <T> PagedCatalogPage(
                         entry,
                         Modifier
                             .then(if (focusedKey == entryKey) Modifier.focusRequester(contentFocus) else Modifier)
+                            .then(
+                                if (upFocus != null) {
+                                    Modifier.focusProperties { up = upFocus }
+                                } else {
+                                    Modifier
+                                },
+                            )
                             .onFocusChanged { if (it.isFocused) focusedKey = entryKey },
                     )
                 }
@@ -5751,6 +5829,13 @@ private fun SearchScreen(
         mutableStateOf(TextFieldValue(""))
     }
     val query = queryValue.text
+    // 进入页面时**固定一次**是否自动弹键盘。
+    //
+    // 不能直接用 query.isEmpty() 当参数传下去：那个值会随输入变化，敲下第一个字母后
+    // 它就翻成 false，SearchField 里的 LaunchedEffect(autoShowKeyboard) 随即走「主动收起
+    // 键盘」的分支，表现为「刚输一个字母键盘就没了」。
+    // 这里用 remember 锁住首帧的值：全新进入（空）→ 弹；从详情/播放页返回（有词）→ 不弹。
+    val autoShowKeyboardOnEnter = remember { query.isEmpty() }
     // 结果从会话里接回来：从专辑 / 歌手 / 歌单 / 播放页返回时，上次的结果还在，
     // 不必重搜（重搜会闪一下「正在搜索…」并把列表顶回顶部）。
     var results by remember { mutableStateOf(session.results) }
@@ -5765,9 +5850,18 @@ private fun SearchScreen(
     val inputFocus = remember { FocusRequester() }
     // 从播放页返回搜索页时同样的根因：整页焦点被销毁，且原 LaunchedEffect(Unit) 不会重跑，
     // 结果是一个焦点都没有。这里在播放页关闭时重新把焦点放回输入框。
+    //
+    // 必须逐帧重试：进页面这一帧 SearchField 上的 focusRequester 还没 attach，
+    // 单次 requestFocus 会抛 "FocusRequester is not initialized"，被 runCatching 吞掉之后
+    // 输入框就没有焦点——键盘自然也不会弹（用户看到的就是「进搜索页不弹键盘、输不进字」）。
+    // 与列表页焦点恢复用同一套做法。
     val playerRouteOpen = LocalPlayerRouteOpen.current
     LaunchedEffect(playerRouteOpen) {
-        if (!playerRouteOpen) runCatching { inputFocus.requestFocus() }
+        if (playerRouteOpen) return@LaunchedEffect
+        repeat(20) {
+            if (runCatching { inputFocus.requestFocus() }.isSuccess) return@LaunchedEffect
+            withFrameNanos { }
+        }
     }
 
     fun runSearch(keyword: String) {
@@ -5882,8 +5976,8 @@ private fun SearchScreen(
             onSubmit = { runSearch(query) },
             focusRequester = inputFocus,
             onFocusStateChange = {},
-            // 只有全新进入才自动弹键盘；从详情 / 播放页返回时结果还留着，再弹会把半个列表盖住。
-            autoShowKeyboard = session.settledQuery.isEmpty(),
+            // 只用进入页面时锁定的值，不随输入实时变化（否则输入一个字母就会收起键盘）。
+            autoShowKeyboard = autoShowKeyboardOnEnter,
         )
         Spacer(Modifier.height(16.dp))
         Box(Modifier.fillMaxWidth().weight(1f)) {
@@ -6006,15 +6100,20 @@ private fun SearchField(
     // `SearchScreen` 会把焦点重新请求到输入框，而 BasicTextField 一旦获焦，
     // 系统会自己把 IME 弹出来——光「不调用 show()」拦不住，必须显式 hide。
     LaunchedEffect(autoShowKeyboard) {
-        if (autoShowKeyboard) {
-            delay(120)
-            runCatching { keyboard?.show() }
-        } else {
+        if (!autoShowKeyboard) {
             // 两次：IME 的显示是异步的，获焦后才弹，单次 hide 可能被后到的 show 盖掉。
             delay(150)
             runCatching { keyboard?.hide() }
             delay(280)
             runCatching { keyboard?.hide() }
+            return@LaunchedEffect
+        }
+        // 只 show 一次不够：此刻输入框可能还没拿到焦点（SearchScreen 那边正在逐帧重试），
+        // 而 show() 要求输入框已获焦，否则静默失败，键盘就是不弹。
+        // 这里按「已获焦」重试几轮，覆盖整页重建、快速进出搜索页这几条时序。
+        repeat(8) {
+            if (focused) runCatching { keyboard?.show() }
+            delay(120)
         }
     }
 

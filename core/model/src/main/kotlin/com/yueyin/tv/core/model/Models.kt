@@ -54,6 +54,12 @@ data class Album(
         ).joinToString("  ·  ").ifBlank { "未知歌手" }
 }
 
+/**
+ * 曲目来源。用来在播放链路、收藏与 UI 上区分本机文件与远端内容，
+ * 默认 Online 保证所有既有调用点无需改动。
+ */
+enum class TrackOrigin { Online, Local }
+
 data class Track(
     val guid: TrackGuid,
     val title: String,
@@ -65,7 +71,13 @@ data class Track(
     val accessStatus: Int? = null,
     val audioFormat: String? = null,
     val isFavorite: Boolean = false,
-)
+    /** 本地曲目为 Local；在线 / 协议平台曲目为 Online。 */
+    val origin: TrackOrigin = TrackOrigin.Online,
+    /** 仅本地曲目非空，值为 MediaStore 或外部 intent 传入的 content:// URI。 */
+    val localUri: String? = null,
+) {
+    val isLocal: Boolean get() = origin == TrackOrigin.Local
+}
 
 data class SharedLibrary(
     val guid: CollectionGuid,

@@ -1,43 +1,32 @@
 # Changelog
 
-## 2.0.9 - 2026-11-07
+## 2.0.9 - 2026-11-06
 
-搜索（专辑 / 分页 / 返回保留）、随机播放统一、电视迷你歌词信息层三条线；另含一段取链健壮性改进。
+搜索结果不再被截断；在线直链过期导致的「播放失败 → 下一曲也失败 → 点重试又能播」改为自动重取自愈。
 
 ### 搜索
 
-- 新增**专辑搜索**：`MusicProtocol.searchAlbums()` → `OnlineMusicApi.searchAlbumsAll()`，网易（`type=10`）/ QQ（`client_search_cp?t=8`，id 用 `albumMID`）/ 酷我（`ft=album`）三路并发，按平台轮转 + 按「专辑名 + 歌手」去重；`ProtocolLibrarySource.search()` 改为 `coroutineScope { async 歌曲 + async 专辑 }` 并行。
-  - 酷狗不接入：实测返回「超长合集歌单」等翻唱噪音；咪咕不接入：无 `albumCollection` 实现，点开会报「暂不支持专辑详情」。
-  - `RemoteAlbum` 增 `releaseDate`，`Album.cardSubtitle` 按「歌手 · 年份」拼接（无年份只显示歌手）。
-- **分类区提到歌曲列表之前**（手机 + 电视）：原来排在 100+ 首歌曲之后，等于不可见。
-- **结果分页**：手机 `SEARCH_TRACK_FIRST_PAGE / SEARCH_TRACK_PAGE`，滚到底追加且点播队列用完整结果；电视端 `visibleCount` 同规则。
-- **搜索会话跨路由存活**：手机 `PhoneSearchRetention`（关键词 / 结果 / 已展开条数 / `LazyListState`）、电视 `TvSearchSession`（结果 + `settledQuery`）。
-  - 存废判据：`stack` 变长（进详情 / 播放页）= 保留，变短或换栈底（退出搜索页）= `reset()`。
-  - 命中「同词且结果还在」直接接回，不重搜、不闪 loading、不把滚动位置顶回顶部。
-- 电视 `SearchField` 增 `autoShowKeyboard`：返回时主动 `hide()` 两次（150ms / 280ms）——只「不调用 show」拦不住，`BasicTextField` 获焦后系统仍会自行弹 IME。
-- 提示文案四处统一为「搜索歌曲、歌手、专辑」；电视输入框原有的遥控器操作提示移到空态说明区。
+- 搜索结果列表改为**渐进渲染**：先出 30 条，滚到底自动追加，直到显示完整结果。此前手机端固定 `take(20)`、电视端固定 `take(30)`，标题却用全量数量（例如 116 首），让人以为后面的歌丢了。
+- 点歌时把**全量结果**交给播放队列（原先是截断后的那一页），播到页尾不会「没有下一首」。
 
-### 随机播放
+### 播放
 
-- 电视 `TrackCollection.play(index, shuffleMode)`：`shuffleMode` 时起点从 `tracks.indices.filter { isTrackPlayable }` 里 `randomOrNull()`。`setPlayMode(Shuffle)` 只改跳转顺序、不动当前播放项，不随机起点的话点「随机」永远先播列表第一首。
-- 手机 `PhonePlayback.start(..., shuffle)`：同一策略（`playable.random()` 当起点）+ 起播成功后 `backgroundScope.launch { requestShuffleMode() }`，每 260 / 360ms 复核、最多 6 次，规避队列稳定前 revision 推进导致的静默回滚。
-- 手机详情页随机按钮改走 `onShuffleTracks`（`PhoneShell` → `PhoneRouteHost` → `PhoneTrackCollectionPage`），不再 `playable.shuffled()` 打乱队列；队列顺序保持可读，播放页仍可切回列表循环。
+- `StreamUrlCache` 增加**按 URL 自带 `expire` 参数判活**，解析不到才退回 TTL；兜底 TTL 由 5 分钟收紧到 2 分钟。
+- 交给播放器前只认 **90 秒内**取到的直链（`PLAYABLE_MAX_AGE_MS`）：更老的即使还在缓存里也重新取，宁可多花 0.3 秒也不要把死链交出去。
+- 后台预取从 20 首降到 **3 首**：批量取出来的链在同一时刻起步老化，播到后半段已经全部过期。
+- 播放失败时**先自动重取一次**（等价于替用户点「重试」）：作废死链 → 现场重取 → 原地续播；重取仍失败才换下一首。`requestStreamUrl` 失败后也接上自动跳过，不会停在某一首不动。
+- 播放成功后重置失败标记，同一首歌以后还能自愈。
+- 取链预算真正生效：新增**单脚本 5 秒上限**（`PER_SCRIPT_BUDGET_MS`），实测单曲失败从 24 秒降到 5~9 秒；空链重取次数 3→2。
 
-### 电视：迷你歌词信息层
+### 稳定性
 
-- `PlayerScreen` 新增 `MiniNowPlayingChrome`（左上 64dp / 46dp、歌名 30sp Bold、歌手 17sp / 0.60、间距 5dp、`widthIn(max = 560.dp)` 单行省略）与 `MiniPlaybackProgress`（2dp 玻璃丝：轨道两端渐隐、已播段 0.20→0.42、头部 2dp 亮点）。
-- 只在控制层隐藏时出现，随 `controlsVisible` 动画淡入淡出（180ms 淡出 / 420ms 淡入），避免与控制条内进度条并存。
+- `OnlineSourceRuntime` 的 `loadScript` / `declaredPlatforms` / `call` 加**全局执行锁**：单个隐藏 WebView 里只有一份脚本上下文，搜索、预取、点播、重试四条链路原来没有互斥，会互相换掉脚本，表现为偶发取链失败 / 响应超时。
 
-### 取链健壮性
+### 验证
 
-- `OnlinePlaybackResolver`：新增 `PER_SCRIPT_BUDGET_MS = 5_000`，预算落到每次脚本调用（原来只在换脚本时检查，坏源能拖 24 秒）。
-- `OnlineSourceRuntime`：新增 `execLock`（Mutex）串行化各入口，修复搜索 / 预取 / 点播 / 重试互相替换 WebView 脚本上下文导致的偶发取链失败。
-- `StreamUrlCache`：优先解析 URL 自带 `expire`，解析不到才退回 TTL；TTL 5 分钟 → 2 分钟；预取 20 首 → 3 首。
-- 新增 `StreamUrlCacheTest`（6 条）覆盖有效期判定。
-
-### 版本
-
-- `version.properties` → 2.0.9 / 33；`update.json` → v2.0.9。
+- 模拟器：搜索 78 首可一路滚到最后一首；同专辑连续切歌无错误；断网制造真实失败后，日志依次打出「直链可能过期，自动重取一次」→「重取直链仍失败，尝试换下一首」，恢复网络后自动续播。
+- 新增 `StreamUrlCacheTest` 单测 6 条（expire 秒/毫秒、年龄判断、作废）。
+- 电视端本轮只改搜索结果列表与队列传递，**未在电视镜像上实机验证**（本机只有手机镜像），建议真机确认焦点与滚动。
 
 ## 2.0.8 - 2026-11-06
 

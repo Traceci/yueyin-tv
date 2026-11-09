@@ -7,11 +7,16 @@ import android.content.ContextWrapper
 /**
  * 界面形态手选档位。
  *
- * 兜底用：部分车机不上报 UI_MODE_TYPE_CAR / FEATURE_AUTOMOTIVE，甚至不声明触摸屏，
- * 会被旧判定归进 TV 壳。用户在手机设置里手动指定即可，不必为一台设备改判定规则。
+ * 兜底用，两个方向都要能救：
+ * 1. 部分车机不上报 UI_MODE_TYPE_CAR / FEATURE_AUTOMOTIVE，甚至不声明触摸屏，
+ *    会被旧判定归进 TV 壳；
+ * 2. 部分电视盒子固件反过来——把 uiMode 错报成 CAR 或误声明 FEATURE_AUTOMOTIVE
+ *    （例如带前置小触摸屏的媒体播放器盒子），会被判成车机或手机，永远走不到 TV 壳。
+ *    所以这里必须有「电视」档，否则这类设备只能清数据、没法自己选回来。
  */
 enum class LayoutOverride(val label: String) {
     Auto("自动"),
+    Tv("电视"),
     Car("车机"),
     Phone("手机"),
 }
@@ -36,6 +41,7 @@ object DeviceLayoutOverride {
     /** 只有用户显式选了档位才覆盖；Auto 完全保持 [detectFormFactor] 的结果。 */
     fun resolve(context: Context, detected: FormFactor): FormFactor = when (get(context)) {
         LayoutOverride.Auto -> detected
+        LayoutOverride.Tv -> FormFactor.Tv
         LayoutOverride.Car -> FormFactor.Car
         LayoutOverride.Phone -> FormFactor.Phone
     }

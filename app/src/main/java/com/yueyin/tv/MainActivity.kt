@@ -1,5 +1,6 @@
 package com.yueyin.tv
 
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.os.Bundle
@@ -45,6 +46,7 @@ class MainActivity : ComponentActivity() {
         )
         applySystemBars(formFactor, resources.configuration)
         bindAudioFxPreferences()
+        handleIncomingAudio(intent)
         val container = appContainer
         setContent {
             YueYinApp(container) { exitApplication(container) }
@@ -57,6 +59,27 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** singleTop 下再次被「打开方式」选中时走这里，不新建 Activity。 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingAudio(intent)
+    }
+
+    /**
+     * 外部应用用 ACTION_VIEW 加音频 MIME 把本机文件交给悦音时，把 URI 存进待播放请求。
+     * 播放控制器此时可能还没连上，由 Compose 侧在链路就绪后消费。
+     */
+    private fun handleIncomingAudio(source: Intent?) {
+        if (source?.action != Intent.ACTION_VIEW) return
+        val uri = source.data ?: return
+        // 部分调用方给的是可持久化授权，尽量续上；不可持久化时 runCatching 直接忽略。
+        runCatching {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        LocalPlayRequests.submit(uri)
     }
 
     /**

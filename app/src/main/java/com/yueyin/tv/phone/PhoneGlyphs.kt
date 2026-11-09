@@ -81,6 +81,9 @@ internal enum class PhoneGlyph {
     /** 收起：向下箭头。 */
     ChevronDown,
 
+    /** 投播：屏幕 + 左下角两道信号弧。 */
+    Cast,
+
     /** 复制：两张错位的圆角纸。 */
     Copy,
 
@@ -476,6 +479,42 @@ internal fun PhoneIcon(
                 listOf(0.22f, 0.50f, 0.78f).forEach { x ->
                     drawCircle(tint, radius = w * 0.055f, center = Offset(w * x, h * 0.5f))
                 }
+            }
+
+            PhoneGlyph.Cast -> {
+                // 屏幕外框画成「缺角矩形」：右下角要留给两道信号弧，不画满。
+                drawPath(
+                    Path().apply {
+                        moveTo(w * 0.14f, h * 0.22f)
+                        lineTo(w * 0.88f, h * 0.22f)
+                        lineTo(w * 0.88f, h * 0.72f)
+                        lineTo(w * 0.58f, h * 0.72f)
+                    },
+                    color = tint,
+                    style = stroke,
+                )
+                drawPath(
+                    Path().apply {
+                        moveTo(w * 0.14f, h * 0.72f)
+                        lineTo(w * 0.14f, h * 0.22f)
+                    },
+                    color = tint,
+                    style = stroke,
+                )
+                // 左下角两道同心弧 + 实心点：投播的通用造型，缩小到 18dp 也认得出。
+                listOf(0.26f, 0.46f).forEach { ratio ->
+                    val r = w * ratio
+                    drawArc(
+                        color = tint,
+                        startAngle = 180f,
+                        sweepAngle = 90f,
+                        useCenter = false,
+                        topLeft = Offset(w * 0.12f - r, h * 0.74f - r),
+                        size = Size(r * 2, r * 2),
+                        style = stroke,
+                    )
+                }
+                drawCircle(tint, radius = w * 0.055f, center = Offset(w * 0.12f, h * 0.74f))
             }
 
             PhoneGlyph.ChevronDown -> {

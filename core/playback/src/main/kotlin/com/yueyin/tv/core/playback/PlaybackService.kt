@@ -7,6 +7,7 @@ import androidx.media3.common.C
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
@@ -156,6 +157,10 @@ class PlaybackService : MediaLibraryService() {
             .setUsage(C.USAGE_MEDIA)
             .build()
         val httpFactory = createPlaybackHttpDataSourceFactory()
+        // 本地音乐与外部 intent 会带 content:// / file:// URI。DefaultDataSource 会按 scheme
+        // 分发到 ContentDataSource / FileDataSource；http(s) 仍回落原来的鉴权 HTTP 工厂，
+        // 在线播放链路的行为完全不变。
+        val upstreamFactory = DefaultDataSource.Factory(this, httpFactory)
         // 歌曲磁盘缓存：对流式音频做本地缓存，方便断网续播，也可在设置中查看占用并一键清空。
         val cache = SimpleCache(
             File(filesDir, SONG_CACHE_DIRECTORY),
@@ -164,7 +169,7 @@ class PlaybackService : MediaLibraryService() {
         songCache = cache
         val cachingSourceFactory = CacheDataSource.Factory()
             .setCache(cache)
-            .setUpstreamDataSourceFactory(httpFactory)
+            .setUpstreamDataSourceFactory(upstreamFactory)
         // 音效处理器跟着服务生命周期走：服务在，链路在；服务销毁时从全局注册表摘掉。
         // 处理器恒在音频链上（FxAudioProcessor.isActive 恒 true），参数改动即时生效，
         // 不再需要「切开关时 seek 一次触发 flush」——那既会顿一下，又因为 flush 不会补

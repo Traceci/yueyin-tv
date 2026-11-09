@@ -1,5 +1,7 @@
 package com.yueyin.tv.ui
 
+import com.yueyin.tv.LocalPlayRequestConsumer
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -184,6 +186,7 @@ internal fun YueYinApp(container: AppUiDependencies, onExitApplication: () -> Un
                     }
                 }
             }
+            LocalPlayRequestConsumer(container, session)
             UpdateDialogHost(updateState, container.updateController)
             StartupSplash(visible = !splashDismissed)
             if (guideVisible) {

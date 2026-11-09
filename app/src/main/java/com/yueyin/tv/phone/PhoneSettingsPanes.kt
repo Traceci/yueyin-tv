@@ -131,7 +131,7 @@ internal fun PhonePlayerSettingsPane(onBack: () -> Unit) {
             PhoneSettingsDivider()
             PhoneSettingsChoiceRow(
                 title = "界面形态",
-                subtitle = "车机未正确识别时可手动指定，切换后界面会刷新",
+                subtitle = "设备形态识别不准时可手动指定（电视盒子误判成车机也在这里改）",
                 options = LayoutOverride.entries,
                 selected = layoutOverride,
                 label = { it.label },

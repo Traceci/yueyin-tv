@@ -12,6 +12,10 @@ import androidx.room.RoomDatabase
 import androidx.room.Upsert
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.yueyin.tv.core.data.localmusic.LocalFolderDao
+import com.yueyin.tv.core.data.localmusic.LocalFolderEntity
+import com.yueyin.tv.core.data.localmusic.LocalMusicDao
+import com.yueyin.tv.core.data.localmusic.LocalTrackEntity
 
 @Entity(tableName = "account_state", primaryKeys = ["namespace"])
 data class AccountStateEntity(
@@ -61,8 +65,12 @@ data class CachedIndexEntity(
 )
 
 /**
- * 本地收藏：文件类协议（WebDAV / SMB / 群晖 AudioStation）没有服务端收藏接口，
+ * 本地收藏：文件类协议（WebDAV / SMB / 群晖 AudioStation）和在线音源都没有服务端收藏接口，
  * 收藏落在本机 Room 里。这是**用户数据**，不参与缓存预算的淘汰。
+ *
+ * 在线音源的收藏除了展示信息，还要留下取链所需的元数据：在线歌曲的播放链接是音源脚本
+ * 用 platform / id / mediaId / albumId / sourceName 现场算出来的，而 songIndex 是纯内存结构，
+ * 进程一退出就没了。只存标题歌手的话，冷启动后收藏列表还在，但点播必然取不到链。
  */
 @Entity(tableName = "favorite_track", primaryKeys = ["namespace", "trackGuid"])
 data class FavoriteTrackEntity(
@@ -74,6 +82,12 @@ data class FavoriteTrackEntity(
     val coverId: String? = null,
     val durationMs: Long = 0L,
     val addedAt: Long,
+    /** 在线歌曲：平台内专辑 id（QQ 用 albumMid）。非在线源留空。 */
+    val albumId: String = "",
+    /** 在线歌曲：酷狗 hash / QQ songmid，与 id 不同时取链必须用它。非在线源留空。 */
+    val mediaId: String = "",
+    /** 在线歌曲：产生这条结果的音源脚本文件名，用于取链时优先选同一份脚本。 */
+    val sourceName: String = "",
 )
 
 @Dao
@@ -222,12 +236,20 @@ interface AppDao {
         CachedMatchedLyricEntity::class,
         CachedIndexEntity::class,
         FavoriteTrackEntity::class,
+        LocalTrackEntity::class,
+        LocalFolderEntity::class,
     ],
-    version = 4,
+    version = 7,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun dao(): AppDao
+
+    /** 本地曲库独立 DAO：与在线/协议平台的缓存表完全分开。 */
+    abstract fun localMusicDao(): LocalMusicDao
+
+    /** 手动添加的本地文件夹（SAF 目录授权）。 */
+    abstract fun localFolderDao(): LocalFolderDao
 
     companion object {
         const val NAME = "fn_music_tv.db"
@@ -275,9 +297,63 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** 本地收藏补齐在线取链元数据：老行留空，冷启动时按 guid 退化为最小取链对象。 */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE favorite_track ADD COLUMN albumId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE favorite_track ADD COLUMN mediaId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE favorite_track ADD COLUMN sourceName TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
+         * 本地曲库索引表。只新增表，不改动 favorite_track 等既有表，
+         * 因此 2.1.0 之前收藏的在线歌曲元数据不会丢。
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS local_track (" +
+                        "uri TEXT NOT NULL, " +
+                        "mediaStoreId INTEGER NOT NULL, " +
+                        "title TEXT NOT NULL, " +
+                        "artistName TEXT, " +
+                        "albumName TEXT, " +
+                        "durationMs INTEGER NOT NULL, " +
+                        "trackNo INTEGER NOT NULL, " +
+                        "year INTEGER, " +
+                        "mimeType TEXT, " +
+                        "sizeBytes INTEGER NOT NULL, " +
+                        "dateAddedSec INTEGER NOT NULL, " +
+                        "relativePath TEXT, " +
+                        "missing INTEGER NOT NULL, " +
+                        "lastVerifiedAt INTEGER NOT NULL, " +
+                        "PRIMARY KEY(uri))",
+                )
+            }
+        }
+
+        /**
+         * 6 → 7：新增「手动添加的文件夹」表，并给 local_track 补 folderUri 列。
+         * 只加不改：既有 MediaStore 曲目 folderUri 默认空串，收藏表一行不动。
+         */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS local_folder (" +
+                        "uri TEXT NOT NULL, " +
+                        "displayPath TEXT NOT NULL, " +
+                        "addedAt INTEGER NOT NULL, " +
+                        "lastScanAt INTEGER NOT NULL, " +
+                        "PRIMARY KEY(uri))",
+                )
+                db.execSQL("ALTER TABLE local_track ADD COLUMN folderUri TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun create(context: Context): AppDatabase = Room.databaseBuilder(context, AppDatabase::class.java, NAME)
             .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
             .addCallback(object : Callback() {
                 override fun onOpen(db: SupportSQLiteDatabase) {
                     val autoVacuum = db.query("PRAGMA auto_vacuum").use { cursor ->

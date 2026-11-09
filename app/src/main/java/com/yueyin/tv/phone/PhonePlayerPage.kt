@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.view.Window
+import android.widget.Toast
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -66,6 +67,7 @@ import androidx.tv.material3.Text
 import com.mocharealm.accompanist.lyrics.core.model.SyncedLyrics
 import com.yueyin.tv.NowPlayingResourceState
 import com.yueyin.tv.core.audiofx.FxSettings
+import com.yueyin.tv.core.cast.CastSource
 import com.yueyin.tv.core.lyrics.lyricText
 import com.yueyin.tv.core.model.CoverVariant
 import com.yueyin.tv.core.model.Track
@@ -136,6 +138,40 @@ internal fun PhonePlayerPage(
     var fullLyrics by remember { mutableStateOf(false) }
     var queueOpen by remember { mutableStateOf(false) }
     var fxOpen by remember { mutableStateOf(false) }
+    var castOpen by remember { mutableStateOf(false) }
+    val castState by deps.castController.state.collectAsStateWithLifecycle()
+
+    // 投播当前这一首：把播放器里真正的 URI 交给投播层（本地是 content://，
+    // 协议平台是 127.0.0.1 代理，在线是直链），统一由局域网中转服务转给电视。
+    val startCast: (com.yueyin.tv.core.cast.DlnaDevice) -> Unit = { device ->
+        val current = deps.playbackController.currentCastSource()
+        if (current == null) {
+            Toast.makeText(context, "当前没有可投播的曲目", Toast.LENGTH_SHORT).show()
+        } else {
+            val (track, uri, position) = current
+            scope.launch {
+                val result = deps.castController.castTo(
+                    device = device,
+                    source = CastSource(
+                        title = track.title,
+                        artist = track.artistName,
+                        album = track.albumName,
+                        mimeType = castMimeOf(track.audioFormat),
+                        uri = uri,
+                        durationMs = track.durationMs,
+                    ),
+                    positionMs = position,
+                )
+                if (result.isSuccess) {
+                    // 电视接管后本机必须静音，否则两边同时出声。
+                    deps.playbackController.pauseForCast()
+                    castOpen = false
+                } else {
+                    Toast.makeText(context, result.exceptionOrNull()?.message ?: "投播失败", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 
     val landscape = LocalPhoneWindow.current.isLandscape
     // 模糊背景（封面取色）开关：默认开。开了就在两种样式下共用同一张放大+模糊的封面背景。
@@ -221,6 +257,20 @@ internal fun PhonePlayerPage(
             current = fxSettings,
             onApply = { next: FxSettings -> AudioFxController.update(next) },
             onDismiss = { fxOpen = false },
+        )
+
+        PhoneCastSheet(
+            visible = castOpen,
+            state = castState,
+            onScan = { deps.castController.startScan() },
+            onStop = {
+                scope.launch { deps.castController.stopCast() }
+            },
+            onPick = startCast,
+            onDismiss = {
+                castOpen = false
+                deps.castController.stopScan()
+            },
         )
     }
 
@@ -341,7 +391,15 @@ internal fun PhonePlayerPage(
             }
             // 顶栏脱离排版、压在左上角：封面才能顶到屏幕最上沿，不被一条 52dp 的栏切掉。
             Box(Modifier.align(Alignment.TopCenter)) {
-                TopBar(onBack = onBack)
+                TopBar(
+                    onBack = onBack,
+                    castState = castState,
+                    onOpenCast = {
+                        castOpen = true
+                        deps.castController.startScan()
+                    },
+                    onStopCast = { scope.launch { deps.castController.stopCast() } },
+                )
             }
         } else {
             // 竖屏：顶栏 → 曲名/演唱者 → 封面/唱片 → 三行歌词 → 控制栏。
@@ -352,7 +410,15 @@ internal fun PhonePlayerPage(
             // ② 歌词条在「无歌词约 30dp / 有歌词约 96dp」之间变化，剩余空间一变，
             //    所有缝重新均分，封面跟着上移约 33dp。固定高度后封面位置与歌词有无解耦。
             Column(Modifier.fillMaxSize()) {
-                TopBar(onBack = onBack)
+                TopBar(
+                    onBack = onBack,
+                    castState = castState,
+                    onOpenCast = {
+                        castOpen = true
+                        deps.castController.startScan()
+                    },
+                    onStopCast = { scope.launch { deps.castController.stopCast() } },
+                )
                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                     // StageArt 自己会再扣掉两侧 screenHorizontal 与 SWIPE_EDGE_GUARD，
                     // 这里先算出同一条边长，盒子高度与封面一致。
@@ -501,24 +567,73 @@ private fun Context.findActivityWindow(): Window? {
 // ---------------------------------------------------------------------------
 
 @Composable
-private fun TopBar(onBack: () -> Unit) {
-    Row(
+private fun TopBar(
+    onBack: () -> Unit,
+    castState: com.yueyin.tv.core.cast.CastUiState,
+    onOpenCast: () -> Unit,
+    onStopCast: () -> Unit,
+) {
+    Column(
         Modifier
             .fillMaxWidth()
             // 状态栏内边距放在高度之外：系统栏隐藏时它是 0（真正的沉浸），
             // 从顶部下滑临时唤出系统栏时它会自己让出位置，返回键不会被盖住。
-            .statusBarsPadding()
-            .height(PhoneSize.TopBar)
-            .padding(horizontal = PhoneSpace.sm),
-        verticalAlignment = Alignment.CenterVertically,
+            .statusBarsPadding(),
     ) {
-        Box(
-            Modifier.size(LocalCarProfile.current.touchTarget).phoneTap(onBack),
-            contentAlignment = Alignment.Center,
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(PhoneSize.TopBar)
+                .padding(horizontal = PhoneSpace.sm),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            PhoneIcon(PhoneGlyph.ChevronDown, FnColors.Text, Modifier.size(22.dp))
+            Box(
+                Modifier.size(LocalCarProfile.current.touchTarget).phoneTap(onBack),
+                contentAlignment = Alignment.Center,
+            ) {
+                PhoneIcon(PhoneGlyph.ChevronDown, FnColors.Text, Modifier.size(22.dp))
+            }
+            Spacer(Modifier.weight(1f))
+            // 投播入口放右上角（AirPlay 习惯位）：不占操作行的五个槽位，
+            // 也不会被「收藏 / 队列 / 音效」的语义挤在一起。
+            Box(
+                Modifier.size(LocalCarProfile.current.touchTarget).phoneTap(onOpenCast),
+                contentAlignment = Alignment.Center,
+            ) {
+                PhoneIcon(
+                    PhoneGlyph.Cast,
+                    if (castState.hasActive) FnColors.Coral else FnColors.Text,
+                    Modifier.size(22.dp),
+                )
+            }
         }
-        Spacer(Modifier.weight(1f))
+        if (castState.hasActive) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = PhoneSpace.md)
+                    .padding(bottom = PhoneSpace.xs)
+                    .background(FnColors.Surface.copy(alpha = 0.78f), RoundedCornerShape(12.dp))
+                    .padding(horizontal = PhoneSpace.sm, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "正在 ${castState.active?.name.orEmpty()} 播放",
+                    color = FnColors.Text,
+                    fontSize = PhoneType.Micro,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "停止投播",
+                    color = FnColors.Coral,
+                    fontSize = PhoneType.Micro,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.phoneTap(onStopCast),
+                )
+            }
+        }
     }
 }
 
@@ -1397,4 +1512,17 @@ private fun PlaybackFailure.userHint(): String = when (code) {
     PlaybackException.ERROR_CODE_DECODER_INIT_FAILED -> "解码器起不来"
 
     else -> displayName
+}
+
+/** 投播给渲染器的 MIME：库里存的是 FLAC / MP3 这种短名，电视只认标准 MIME。 */
+private fun castMimeOf(audioFormat: String?): String = when (audioFormat?.trim()?.lowercase()) {
+    "flac" -> "audio/flac"
+    "wav", "wave" -> "audio/wav"
+    "aac" -> "audio/aac"
+    "m4a", "mp4", "alac" -> "audio/mp4"
+    "ogg", "opus" -> "audio/ogg"
+    "wma" -> "audio/x-ms-wma"
+    "ape" -> "audio/x-ape"
+    "dsf", "dff" -> "audio/x-dsd"
+    else -> "audio/mpeg"
 }

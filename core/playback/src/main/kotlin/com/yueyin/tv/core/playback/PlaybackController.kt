@@ -1,5 +1,7 @@
 package com.yueyin.tv.core.playback
 
+import com.yueyin.tv.core.model.TrackOrigin
+
 import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
@@ -543,6 +545,26 @@ class PlaybackController(
 
     fun retryRoam() {
         failedRoamDirection?.let(::advanceRoam)
+    }
+
+    /**
+     * 投播用：当前曲目 + 播放器里**真正的** URI + 当前位置。
+     *
+     * URI 以播放器里的 MediaItem 为准而不是 submittedTracks：在线曲目起播前是空串，
+     * 补链成功后由 patchStreamUrl 替换播放器项，submittedTracks 里仍是旧值。
+     * 返回值可能是 content://、127.0.0.1 代理地址或在线直链，投播层会统一中转。
+     */
+    fun currentCastSource(): Triple<Track, String, Long>? {
+        val player = controller ?: return null
+        val index = player.currentMediaItemIndex.coerceAtLeast(0)
+        val track = submittedTracks.getOrNull(index)?.track ?: return null
+        val uri = player.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
+        return Triple(track, uri, player.currentPosition.coerceAtLeast(0L))
+    }
+
+    /** 投播接管前把本机播放停下来，避免手机与电视同时出声。 */
+    fun pauseForCast() {
+        controller?.let { player -> if (player.isPlaying) player.pause() }
     }
 
     fun playPause() {
@@ -1353,6 +1375,12 @@ class PlaybackController(
         val track = submittedTracks.firstOrNull { it.track.guid.value == id }?.track
         if (track == null) {
             Log.w("YueyinPlayback", "requestStreamUrl: 找不到 id=$id 的曲目快照")
+            return
+        }
+        // 本地曲目的 content:// URI 已直接写进 MediaItem，不需要也不可能联网取链。
+        // 不在这里提前返回的话，播放失败会被误判成「在线直链没补到」，陷入无限重取。
+        if (track.origin == TrackOrigin.Local) {
+            Log.i("YueyinPlayback", "requestStreamUrl: 本地曲目跳过联网补链 id=$id")
             return
         }
         streamResolveJob = scope.launch {

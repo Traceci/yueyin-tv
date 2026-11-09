@@ -7,7 +7,19 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -35,6 +47,20 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+/**
+ * 快捷键反馈里用的图标。
+ *
+ * 与播放按钮那套 `TransportGlyph` 分开：那套只服务控制栏按钮（4 个图形），
+ * 这里要额外区分快进/快退，直接复用会牵动按钮的穷尽 `when`。
+ */
+internal enum class TransportOsdGlyph { Play, Pause, Previous, Next, Forward, Rewind }
+
+/** 一条快捷键反馈：图标与文字至少给一个，纯文字用于「不支持快进」这类说明。 */
+internal data class TransportOsd(
+    val glyph: TransportOsdGlyph? = null,
+    val text: String? = null,
+)
+
 /** 方向键单击一次对应的跳转步进。 */
 internal const val TRANSPORT_SEEK_STEP_MS = 10_000L
 
@@ -58,7 +84,7 @@ internal data class PlayerTransportActions(
     val previousTrack: () -> Unit,
     val playPause: () -> Unit,
     val revealChrome: () -> Unit,
-    val announce: (String) -> Unit,
+    val announce: (TransportOsd) -> Unit,
     val isPlaying: () -> Boolean,
 )
 
@@ -99,7 +125,7 @@ internal class PlayerTransportKeyState(private val scope: CoroutineScope) {
                     step = (step + TRANSPORT_SEEK_STEP_MS).coerceAtMost(HOLD_MAX_STEP_MS)
                 }
                 actions.seekBy(direction * step)
-                actions.announce(seekLabel(direction * step))
+                actions.announce(seekOsd(direction * step))
             }
         }
     }
@@ -129,10 +155,10 @@ internal class PlayerTransportKeyState(private val scope: CoroutineScope) {
                         if (lastLeftDownAt > 0L && now - lastLeftDownAt <= DOUBLE_PRESS_WINDOW_MS) {
                             lastLeftDownAt = 0L
                             actions.previousTrack()
-                            actions.announce("上一曲")
+                            actions.announce(TransportOsd(glyph = TransportOsdGlyph.Previous))
                         } else {
                             lastLeftDownAt = now
-                            actions.announce("当前曲目不支持快退")
+                            actions.announce(TransportOsd(text = "当前曲目不支持快退"))
                         }
                     }
                     return true
@@ -151,11 +177,11 @@ internal class PlayerTransportKeyState(private val scope: CoroutineScope) {
                     lastLeftDownAt = 0L
                     stopHold()
                     actions.previousTrack()
-                    actions.announce("上一曲")
+                    actions.announce(TransportOsd(glyph = TransportOsdGlyph.Previous))
                 } else {
                     lastLeftDownAt = now
                     actions.seekBy(-TRANSPORT_SEEK_STEP_MS)
-                    actions.announce(seekLabel(-TRANSPORT_SEEK_STEP_MS))
+                    actions.announce(seekOsd(-TRANSPORT_SEEK_STEP_MS))
                 }
                 return true
             }
@@ -173,10 +199,10 @@ internal class PlayerTransportKeyState(private val scope: CoroutineScope) {
                         if (lastRightDownAt > 0L && now - lastRightDownAt <= DOUBLE_PRESS_WINDOW_MS) {
                             lastRightDownAt = 0L
                             actions.next()
-                            actions.announce("下一曲")
+                            actions.announce(TransportOsd(glyph = TransportOsdGlyph.Next))
                         } else {
                             lastRightDownAt = now
-                            actions.announce("当前曲目不支持快进")
+                            actions.announce(TransportOsd(text = "当前曲目不支持快进"))
                         }
                     }
                     return true
@@ -195,11 +221,11 @@ internal class PlayerTransportKeyState(private val scope: CoroutineScope) {
                     lastRightDownAt = 0L
                     stopHold()
                     actions.next()
-                    actions.announce("下一曲")
+                    actions.announce(TransportOsd(glyph = TransportOsdGlyph.Next))
                 } else {
                     lastRightDownAt = now
                     actions.seekBy(TRANSPORT_SEEK_STEP_MS)
-                    actions.announce(seekLabel(TRANSPORT_SEEK_STEP_MS))
+                    actions.announce(seekOsd(TRANSPORT_SEEK_STEP_MS))
                 }
                 return true
             }
@@ -207,7 +233,7 @@ internal class PlayerTransportKeyState(private val scope: CoroutineScope) {
             Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
                 if (isDown) {
                     actions.playPause()
-                    actions.announce(if (actions.isPlaying()) "暂停" else "播放")
+                    actions.announce(TransportOsd(glyph = if (actions.isPlaying()) TransportOsdGlyph.Pause else TransportOsdGlyph.Play))
                 }
                 return true
             }
@@ -232,7 +258,7 @@ internal class PlayerTransportKeyState(private val scope: CoroutineScope) {
             -> {
                 if (isDown) {
                     actions.playPause()
-                    actions.announce(if (actions.isPlaying()) "暂停" else "播放")
+                    actions.announce(TransportOsd(glyph = if (actions.isPlaying()) TransportOsdGlyph.Pause else TransportOsdGlyph.Play))
                 }
                 return true
             }
@@ -240,7 +266,7 @@ internal class PlayerTransportKeyState(private val scope: CoroutineScope) {
             AndroidKeyEvent.KEYCODE_MEDIA_PLAY -> {
                 if (isDown) {
                     if (!actions.isPlaying()) actions.playPause()
-                    actions.announce("播放")
+                    actions.announce(TransportOsd(glyph = TransportOsdGlyph.Play))
                 }
                 return true
             }
@@ -248,7 +274,7 @@ internal class PlayerTransportKeyState(private val scope: CoroutineScope) {
             AndroidKeyEvent.KEYCODE_MEDIA_PAUSE -> {
                 if (isDown) {
                     if (actions.isPlaying()) actions.playPause()
-                    actions.announce("暂停")
+                    actions.announce(TransportOsd(glyph = TransportOsdGlyph.Pause))
                 }
                 return true
             }
@@ -256,7 +282,7 @@ internal class PlayerTransportKeyState(private val scope: CoroutineScope) {
             AndroidKeyEvent.KEYCODE_MEDIA_NEXT -> {
                 if (isDown) {
                     actions.next()
-                    actions.announce("下一曲")
+                    actions.announce(TransportOsd(glyph = TransportOsdGlyph.Next))
                 }
                 return true
             }
@@ -264,7 +290,7 @@ internal class PlayerTransportKeyState(private val scope: CoroutineScope) {
             AndroidKeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
                 if (isDown) {
                     actions.previousTrack()
-                    actions.announce("上一曲")
+                    actions.announce(TransportOsd(glyph = TransportOsdGlyph.Previous))
                 }
                 return true
             }
@@ -276,41 +302,136 @@ internal class PlayerTransportKeyState(private val scope: CoroutineScope) {
     private fun isHoldKey(key: Key): Boolean =
         key == Key.DirectionLeft || key == Key.DirectionRight
 
-    private fun seekLabel(deltaMs: Long): String {
-        val seconds = kotlin.math.abs(deltaMs) / 1000
-        return if (deltaMs >= 0) "快进 ${seconds} 秒" else "快退 ${seconds} 秒"
-    }
+    /**
+     * 快进/快退反馈：只给图标，不带「10 秒」数字。
+     *
+     * 步长是固定的 [TRANSPORT_SEEK_STEP_MS]，长按时会连续加速，写死数字反而会误导；
+     * 图标本身已经能表达方向。
+     */
+    private fun seekOsd(deltaMs: Long): TransportOsd =
+        TransportOsd(glyph = if (deltaMs >= 0) TransportOsdGlyph.Forward else TransportOsdGlyph.Rewind)
 }
 
-/** 遥控器快捷键的屏幕反馈条。 */
+/**
+ * 遥控器快捷键的屏幕反馈。
+ *
+ * 以前是一条「黑底 + 珊瑚描边」的文字胶囊，左侧还有一条 4dp 竖条；竖条只在左边，
+ * 文字因此永远偏右、不在胶囊中间。现在改成纯图标 + 很淡的投影：无底色、无边框，
+ * 图标与文字水平居中，浅色封面上靠投影保证轮廓可读。
+ */
 @Composable
-internal fun PlayerTransportOsd(message: String?, modifier: Modifier = Modifier) {
+internal fun PlayerTransportOsd(osd: TransportOsd?, modifier: Modifier = Modifier) {
     AnimatedVisibility(
-        visible = message != null,
+        visible = osd != null,
         modifier = modifier,
         enter = fadeIn(tween(90)) + scaleIn(initialScale = 0.9f, animationSpec = tween(200, easing = LinearEasing)),
         exit = fadeOut(tween(260)),
     ) {
-        val shape = RoundedCornerShape(999.dp)
-        Box(
-            Modifier
-                .background(FnColors.Background.copy(alpha = 0.82f), shape)
-                .border(1.dp, FnColors.Coral.copy(alpha = 0.55f), shape)
-                .padding(horizontal = 22.dp, vertical = 11.dp),
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .width(4.dp)
-                        .background(FnColors.Coral, RoundedCornerShape(2.dp)),
-                )
-                Spacer(Modifier.width(10.dp))
+            val glyph = osd?.glyph
+            if (glyph != null) {
+                Canvas(Modifier.size(46.dp)) {
+                    // 很淡的暗色投影：同一图形先向下偏移画一遍，浅色封面上海报模式下也能看清。
+                    drawOsdGlyph(glyph, Color.Black.copy(alpha = 0.32f), offsetY = 2.dp.toPx())
+                    drawOsdGlyph(glyph, Color.White)
+                }
+                if (!osd.text.isNullOrBlank()) Spacer(Modifier.width(12.dp))
+            }
+            val label = osd?.text
+            if (!label.isNullOrBlank()) {
                 Text(
-                    text = message.orEmpty(),
-                    color = FnColors.Text,
-                    fontSize = 17.sp,
-                    lineHeight = 20.sp,
+                    text = label,
+                    color = Color.White,
+                    fontSize = 19.sp,
+                    lineHeight = 22.sp,
                     fontWeight = FontWeight.SemiBold,
+                    style = TextStyle(
+                        shadow = Shadow(
+                            color = Color.Black.copy(alpha = 0.42f),
+                            offset = Offset(0f, 2f),
+                            blurRadius = 6f,
+                        ),
+                    ),
+                )
+            }
+        }
+    }
+}
+
+/** 在 [DrawScope] 里画一个反馈图标；[offsetY] 用于叠投影。 */
+private fun DrawScope.drawOsdGlyph(
+    glyph: TransportOsdGlyph,
+    color: Color,
+    offsetY: Float = 0f,
+) {
+    val w = size.width
+    val h = size.height
+    fun x(fraction: Float) = fraction * w
+    fun y(fraction: Float) = fraction * h + offsetY
+    when (glyph) {
+        TransportOsdGlyph.Play -> drawPath(
+            Path().apply {
+                moveTo(x(0.30f), y(0.18f))
+                lineTo(x(0.76f), y(0.50f))
+                lineTo(x(0.30f), y(0.82f))
+                close()
+            },
+            color,
+        )
+        TransportOsdGlyph.Pause -> {
+            val radius = CornerRadius(2.dp.toPx())
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(x(0.26f), y(0.18f)),
+                size = Size(w * 0.16f, h * 0.64f),
+                cornerRadius = radius,
+            )
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(x(0.58f), y(0.18f)),
+                size = Size(w * 0.16f, h * 0.64f),
+                cornerRadius = radius,
+            )
+        }
+        TransportOsdGlyph.Previous, TransportOsdGlyph.Next -> {
+            val reverse = glyph == TransportOsdGlyph.Previous
+            val near = if (reverse) 0.70f else 0.30f
+            val far = if (reverse) 0.32f else 0.68f
+            drawPath(
+                Path().apply {
+                    moveTo(x(near), y(0.18f))
+                    lineTo(x(far), y(0.50f))
+                    lineTo(x(near), y(0.82f))
+                    close()
+                },
+                color,
+            )
+            val lineX = x(if (reverse) 0.24f else 0.76f)
+            drawLine(
+                color = color,
+                start = Offset(lineX, y(0.18f)),
+                end = Offset(lineX, y(0.82f)),
+                strokeWidth = 2.5.dp.toPx(),
+                cap = StrokeCap.Round,
+            )
+        }
+        TransportOsdGlyph.Forward, TransportOsdGlyph.Rewind -> {
+            val reverse = glyph == TransportOsdGlyph.Rewind
+            val starts = if (reverse) floatArrayOf(0.86f, 0.48f) else floatArrayOf(0.14f, 0.52f)
+            starts.forEach { start ->
+                val tip = if (reverse) start - 0.34f else start + 0.34f
+                drawPath(
+                    Path().apply {
+                        moveTo(x(start), y(0.22f))
+                        lineTo(x(tip), y(0.50f))
+                        lineTo(x(start), y(0.78f))
+                        close()
+                    },
+                    color,
                 )
             }
         }

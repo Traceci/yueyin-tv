@@ -6,6 +6,7 @@ import com.yueyin.tv.core.data.repository.MusicRepository
 import com.yueyin.tv.core.data.preferences.AppPreferences
 import com.yueyin.tv.core.playback.PlaybackController
 import com.yueyin.tv.core.data.local.LocalStore
+import com.yueyin.tv.core.data.localmusic.LocalMusicLibrary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -25,7 +26,11 @@ class TvMusicApplication : Application() {
 
 internal class AppContainer(private val application: Application) : AppUiDependencies {
     private val localStore = LocalStore(application)
+    /** 本地曲库：与在线/协议平台并行，常驻，不参与 activeId 切换与 clearAll。 */
+    internal val localMusicLibrary = LocalMusicLibrary(application, localStore.database)
     override val sessionRepository = SessionRepository(application)
+    /** DLNA 投播：只在手机播放页用到，进程级单例，避免每次进页面重新开中转服务。 */
+    override val castController = com.yueyin.tv.core.cast.DlnaCastController(application)
     override val appPreferences = AppPreferences(application, localStore)
     override val musicRepository = MusicRepository(application, sessionRepository, appPreferences, localStore)
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)

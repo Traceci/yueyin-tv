@@ -342,6 +342,18 @@ class OnlineMusicProtocol(
         return url.orEmpty()
     }
 
+    /** 收藏落库时把取链元数据交给上层持久化。 */
+    override fun songOrNull(songId: String): OnlineSong? = songIndex[songId]
+
+    /**
+     * 冷启动重建：只补内存里没有的，别用落库的最小对象覆盖本轮刚搜到的完整结果
+     * （完整结果里有更全的 qualities / coverUrl）。
+     */
+    override fun restoreSongs(songs: List<OnlineSong>) {
+        val missing = songs.filter { !songIndex.containsKey(songIdOf(it.platform, it.id)) }
+        if (missing.isNotEmpty()) indexSongs(missing)
+    }
+
     override fun coverUrl(profile: ConnectProfile, coverId: String, size: Int): String = coverId
 
     override suspend fun lyrics(

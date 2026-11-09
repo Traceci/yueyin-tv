@@ -18,6 +18,8 @@ import com.yueyin.tv.core.data.local.CachedLyricEntity
 import com.yueyin.tv.core.data.local.CachedPageEntity
 import com.yueyin.tv.core.data.local.FavoriteTrackEntity
 import com.yueyin.tv.core.data.local.LocalStore
+import com.yueyin.tv.core.data.online.OnlinePlatform
+import com.yueyin.tv.core.data.online.OnlineSong
 import com.yueyin.tv.core.data.protocol.ProtocolLibrarySource
 import com.yueyin.tv.core.data.preferences.AppPreferences
 import com.yueyin.tv.core.model.Album
@@ -283,6 +285,32 @@ internal fun FavoriteTrackEntity.toFavoriteDomain(): Track = Track(
     isCue = false,
     isFavorite = true,
 )
+
+/**
+ * 冷启动重建在线取链对象：在线歌曲的 guid 形如 `kw:123`，冒号前是平台 key。
+ * 不是在线平台（文件类协议、飞牛）返回 null，交给各自协议自己取流。
+ *
+ * migration 之前的老收藏行没有 albumId / mediaId / sourceName，会退化成最小对象：
+ * 多数脚本靠 id + 歌名仍能取链，需要酷狗 hash 的脚本会失败，但不会崩、也不会影响别的歌。
+ */
+private fun FavoriteTrackEntity.toOnlineSongOrNull(): OnlineSong? {
+    val separator = trackGuid.indexOf(':')
+    if (separator <= 0 || separator == trackGuid.length - 1) return null
+    val platform = OnlinePlatform.fromKey(trackGuid.substring(0, separator)) ?: return null
+    return OnlineSong(
+        platform = platform,
+        id = trackGuid.substring(separator + 1),
+        name = title,
+        artist = artistName,
+        album = albumName,
+        albumId = albumId,
+        durationSeconds = (durationMs / 1000L).toInt(),
+        coverUrl = coverId.orEmpty(),
+        qualities = emptyList(),
+        mediaId = mediaId,
+        sourceName = sourceName,
+    )
+}
 
 data class FavoriteLibraryState(
     val namespace: String? = null,
@@ -609,6 +637,9 @@ class MusicRepository internal constructor(
                 total = total,
                 sort = FAVORITE_SORT,
             )
+            // 冷启动后 songIndex 是空的：把落库的取链元数据放回在线协议的内存索引，
+            // 否则收藏页点播时 resolveStreamUrl 会因缺项直接返回空，全部播不了。
+            protocolSource?.restoreSongs(entities.mapNotNull { it.toOnlineSongOrNull() })
             observeFavoriteTracks(result, namespace)
             return result
         }
@@ -690,6 +721,8 @@ class MusicRepository internal constructor(
             // 优先用调用方给的快照；拿不到才反查一次。反查在在线音源上失败率不低，
             // 一旦失败，收藏列表里就只有一条没有名字、没有封面的「未知曲目」。
             val track = snapshot ?: runCatching { trackMetadata(trackGuid) }.getOrNull()
+            // 在线音源：把 songIndex 里的取链元数据一并落库，供下次冷启动重建索引。
+            val online = protocolSource?.songOrNull(trackGuid)
             localStore.addFavorite(
                 FavoriteTrackEntity(
                     namespace = namespace,
@@ -700,6 +733,9 @@ class MusicRepository internal constructor(
                     coverId = track?.coverId,
                     durationMs = track?.durationMs ?: 0L,
                     addedAt = now(),
+                    albumId = online?.albumId.orEmpty(),
+                    mediaId = online?.mediaId.orEmpty(),
+                    sourceName = online?.sourceName.orEmpty(),
                 ),
             )
         } else {

@@ -1789,6 +1789,7 @@ private fun PhoneRouteHost(
             onAdd = { onOpen(LibraryRoute.PlatformPicker) },
 
             onOpenSources = { onOpen(LibraryRoute.MusicSources) },
+            onRelogin = { onOpen(LibraryRoute.PlatformFnLogin) },
 
 
         )
@@ -2031,6 +2032,18 @@ private fun PhoneRouteHost(
 
 
 
+        LibraryRoute.LocalMusic -> PhoneLocalMusicPage(
+
+
+            onBack = onBack,
+
+
+            playingTrackId = playingId,
+
+
+        )
+
+
         else -> PhonePlaceholderPage(
 
 
@@ -2170,6 +2183,9 @@ private fun LibraryRoute.tabRootOrNull(): LibraryRoute? = when (this) {
 
 
     LibraryRoute.AllPlaylists,
+
+
+    LibraryRoute.LocalMusic,
 
 
     -> LibraryRoute.Albums

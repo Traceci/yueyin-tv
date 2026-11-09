@@ -1,6 +1,7 @@
 package com.yueyin.tv.core.data.protocol
 
 import com.yueyin.tv.core.data.connect.ConnectProfile
+import com.yueyin.tv.core.data.online.OnlineSong
 import com.yueyin.tv.core.model.connect.ConnectType
 import com.yueyin.tv.core.model.connect.ServerCapabilities
 
@@ -84,6 +85,18 @@ interface MusicProtocol {
      * 默认实现直接退回同步 [streamUrl]。
      */
     suspend fun resolveStreamUrl(profile: ConnectProfile, songId: String): String = streamUrl(profile, songId)
+
+    /**
+     * 本地收藏落库时取这首在线歌曲的取链元数据。只有在线音源实现，其它协议返回 null。
+     * 收藏动作一定发生在某次搜索/详情之后，此时内存索引里有这首。
+     */
+    fun songOrNull(songId: String): OnlineSong? = null
+
+    /**
+     * 冷启动后把落库的在线歌曲元数据放回内存索引（收藏页加载时调用）。
+     * 不放回来的话 resolveStreamUrl 会因 songIndex 缺项直接返回空，收藏曲目全部播不了。
+     */
+    fun restoreSongs(songs: List<OnlineSong>) = Unit
 
     fun coverUrl(profile: ConnectProfile, coverId: String, size: Int = 512): String
 

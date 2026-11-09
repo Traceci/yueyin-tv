@@ -52,6 +52,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.Border
@@ -67,6 +68,9 @@ import com.yueyin.tv.core.playback.AudioFxController
 import com.yueyin.tv.core.model.preferences.CacheBudget
 import com.yueyin.tv.core.model.preferences.CacheUsage
 import com.yueyin.tv.core.model.preferences.UiScale
+import com.yueyin.tv.ui.device.DeviceLayoutOverride
+import com.yueyin.tv.ui.device.LayoutOverride
+import com.yueyin.tv.ui.device.findHostActivity
 import com.yueyin.tv.update.UpdateCheckSource
 import com.yueyin.tv.update.UpdateUiState
 import kotlinx.coroutines.launch
@@ -143,6 +147,11 @@ internal fun SettingsScreen(
     val compactScaleFocus = remember { FocusRequester() }
     val standardScaleFocus = remember { FocusRequester() }
     val relaxedScaleFocus = remember { FocusRequester() }
+    // 「界面形态」四档：自动 / 电视 / 车机 / 手机。电视盒子被固件信号误判成车机、手机时，
+    // 就在这里手选回来——电视端设置页也要有这条，否则选错之后没有回头路。
+    val layoutContext = LocalContext.current
+    val layoutFocuses = remember { List(LayoutOverride.entries.size) { FocusRequester() } }
+    var layoutOverride by remember { mutableStateOf(DeviceLayoutOverride.get(layoutContext)) }
     val onlineLyricsFocus = remember { FocusRequester() }
     val backgroundContinueFocus = remember { FocusRequester() }
 
@@ -442,6 +451,44 @@ internal fun SettingsScreen(
                                         .focusProperties { left = standardScaleFocus; right = FocusRequester.Cancel }
                                         .focusRequester(relaxedScaleFocus),
                                 )
+                            }
+                            Spacer(Modifier.height(GAP_GROUP))
+                            GroupLabel("界面形态")
+                            Text(
+                                "电视盒子 / 车机被系统信号误判时可手动指定；选「自动」按系统上报判断，切换后界面会刷新。",
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp,
+                                color = FnColors.Muted,
+                            )
+                            Spacer(Modifier.height(GAP_DESC))
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                val options = LayoutOverride.entries
+                                options.forEachIndexed { index, option ->
+                                    SettingsChoiceButton(
+                                        label = option.label,
+                                        selected = layoutOverride == option,
+                                        onClick = {
+                                            DeviceLayoutOverride.set(layoutContext, option)
+                                            layoutOverride = option
+                                            layoutContext.findHostActivity()?.recreate()
+                                        },
+                                        modifier = Modifier
+                                            .width(120.dp)
+                                            .focusProperties {
+                                                left = if (index == 0) {
+                                                    navFocusOf(SettingsSection.PLAYER)
+                                                } else {
+                                                    layoutFocuses[index - 1]
+                                                }
+                                                right = if (index == options.lastIndex) {
+                                                    FocusRequester.Cancel
+                                                } else {
+                                                    layoutFocuses[index + 1]
+                                                }
+                                            }
+                                            .focusRequester(layoutFocuses[index]),
+                                    )
+                                }
                             }
                             Spacer(Modifier.height(GAP_GROUP))
                             GroupLabel("歌词")

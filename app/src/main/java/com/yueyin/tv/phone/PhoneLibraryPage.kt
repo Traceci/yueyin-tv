@@ -1,5 +1,7 @@
 package com.yueyin.tv.phone
 
+import androidx.compose.foundation.border
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -25,7 +27,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +46,8 @@ import com.yueyin.tv.core.model.Artist
 import com.yueyin.tv.core.model.Page
 import com.yueyin.tv.core.model.Playlist
 import com.yueyin.tv.core.model.Track
+import com.yueyin.tv.core.model.library.LibraryCapabilities
+import com.yueyin.tv.core.model.library.LibraryCapability
 import com.yueyin.tv.ui.FnColors
 import com.yueyin.tv.ui.LibraryRetainedStateStore
 import com.yueyin.tv.ui.LibraryRoute
@@ -96,70 +103,84 @@ internal fun PhoneLibraryPage(
     val toggleFavorite: (Track, Boolean) -> Unit = { track, current ->
         scope.launch { deps.musicRepository.toggleFavorite(track.guid.value, current, track) }
     }
+    // 本地音乐入口受能力开关控制；关掉时整条来源切换行都不出现，在线曲库维持原样。
+    val localEnabled = LibraryCapabilities.has(LibraryCapability.LocalMusic)
+    var localSelected by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
         PhonePageTitle(
             title = "曲库",
             modifier = Modifier.padding(horizontal = PhoneSpace.screenHorizontal),
         )
-        SegmentBar(selected = segment, onSelect = onSelectSegment)
-        Box(Modifier.fillMaxSize().padding(horizontal = PhoneSpace.screenHorizontal)) {
-            when (segment) {
-                PhoneLibrarySegment.Albums -> PhonePagedGrid<Album>(
-                    stateKey = "phone:grid:albums",
-                    loader = { page -> deps.musicRepository.albums(page, GRID_PAGE_SIZE) },
-                    key = { it.guid.value },
-                    emptyTitle = "还没有专辑",
-                    emptyCaption = "当前平台的曲库里没有专辑信息",
-                ) { album -> PhoneAlbumCard(album = album, onClick = { onOpenAlbum(album) }) }
+        if (localEnabled) {
+            SourceSwitchBar(localSelected = localSelected, onSelect = { localSelected = it })
+        }
+        if (localEnabled && localSelected) {
+            // 本地分支：整块换成 PhoneLocalMusicPage，原来的 5 个分段一律不渲染。
+            PhoneLocalMusicPage(
+                onBack = { localSelected = false },
+                playingTrackId = playingTrackId,
+            )
+        } else {
+            SegmentBar(selected = segment, onSelect = onSelectSegment)
+            Box(Modifier.fillMaxSize().padding(horizontal = PhoneSpace.screenHorizontal)) {
+                when (segment) {
+                    PhoneLibrarySegment.Albums -> PhonePagedGrid<Album>(
+                        stateKey = "phone:grid:albums",
+                        loader = { page -> deps.musicRepository.albums(page, GRID_PAGE_SIZE) },
+                        key = { it.guid.value },
+                        emptyTitle = "还没有专辑",
+                        emptyCaption = "当前平台的曲库里没有专辑信息",
+                    ) { album -> PhoneAlbumCard(album = album, onClick = { onOpenAlbum(album) }) }
 
-                PhoneLibrarySegment.Playlists -> PhonePagedGrid<Playlist>(
-                    stateKey = "phone:grid:playlists",
-                    loader = {
-                        // 歌单接口一次返回全量，没有分页；包成单页 Page 复用同一套渲染，
-                        // 不必为「唯一一种不分页的数据」再写一个几乎相同的网格。
-                        deps.musicRepository.playlists().let { list ->
-                            Page(items = list, page = 1, pageSize = list.size, total = list.size, sort = "")
-                        }
-                    },
-                    key = { it.guid.value },
-                    emptyTitle = "还没有歌单",
-                    emptyCaption = "在音乐平台上建一个歌单，这里就会出现",
-                ) { playlist -> PhonePlaylistCard(playlist = playlist, onClick = { onOpenPlaylist(playlist) }) }
+                    PhoneLibrarySegment.Playlists -> PhonePagedGrid<Playlist>(
+                        stateKey = "phone:grid:playlists",
+                        loader = {
+                            // 歌单接口一次返回全量，没有分页；包成单页 Page 复用同一套渲染，
+                            // 不必为「唯一一种不分页的数据」再写一个几乎相同的网格。
+                            deps.musicRepository.playlists().let { list ->
+                                Page(items = list, page = 1, pageSize = list.size, total = list.size, sort = "")
+                            }
+                        },
+                        key = { it.guid.value },
+                        emptyTitle = "还没有歌单",
+                        emptyCaption = "在音乐平台上建一个歌单，这里就会出现",
+                    ) { playlist -> PhonePlaylistCard(playlist = playlist, onClick = { onOpenPlaylist(playlist) }) }
 
-                PhoneLibrarySegment.Artists -> PhonePagedGrid<Artist>(
-                    stateKey = "phone:grid:artists",
-                    loader = { page -> deps.musicRepository.artists(page, GRID_PAGE_SIZE) },
-                    key = { it.guid.value },
-                    emptyTitle = "还没有歌手",
-                    emptyCaption = "当前平台的曲库里没有歌手信息",
-                    // 歌手行是「圆形头像 + 名字 + 曲目数」的横向条，比专辑卡更吃宽度。
-                    // 上限由窗口给出：竖屏 2 列保持原样，横屏/平板放宽到 3 列，
-                    // 写死 2 会在 910dp 横屏上留下两条 400dp 的巨条。
-                    maxColumns = LocalPhoneWindow.current.artistColumns,
-                ) { artist -> PhoneArtistRow(artist = artist, onClick = { onOpenArtist(artist) }) }
+                    PhoneLibrarySegment.Artists -> PhonePagedGrid<Artist>(
+                        stateKey = "phone:grid:artists",
+                        loader = { page -> deps.musicRepository.artists(page, GRID_PAGE_SIZE) },
+                        key = { it.guid.value },
+                        emptyTitle = "还没有歌手",
+                        emptyCaption = "当前平台的曲库里没有歌手信息",
+                        // 歌手行是「圆形头像 + 名字 + 曲目数」的横向条，比专辑卡更吃宽度。
+                        // 上限由窗口给出：竖屏 2 列保持原样，横屏/平板放宽到 3 列，
+                        // 写死 2 会在 910dp 横屏上留下两条 400dp 的巨条。
+                        maxColumns = LocalPhoneWindow.current.artistColumns,
+                    ) { artist -> PhoneArtistRow(artist = artist, onClick = { onOpenArtist(artist) }) }
 
-                PhoneLibrarySegment.Tracks -> PhonePagedTracks(
-                    stateKey = "phone:rows:tracks",
-                    loader = { page -> deps.musicRepository.allTracks(page) },
-                    emptyTitle = "还没有歌曲",
-                    emptyCaption = "当前平台的曲库里没有可播放的曲目",
-                    playingTrackId = playingTrackId,
-                    onPlayTracks = onPlayTracks,
-                    favoriteStatuses = favoriteLibrary.statuses,
-                    onToggleFavorite = toggleFavorite,
-                )
+                    PhoneLibrarySegment.Tracks -> PhonePagedTracks(
+                        stateKey = "phone:rows:tracks",
+                        loader = { page -> deps.musicRepository.allTracks(page) },
+                        emptyTitle = "还没有歌曲",
+                        emptyCaption = "当前平台的曲库里没有可播放的曲目",
+                        playingTrackId = playingTrackId,
+                        onPlayTracks = onPlayTracks,
+                        favoriteStatuses = favoriteLibrary.statuses,
+                        onToggleFavorite = toggleFavorite,
+                    )
 
-                PhoneLibrarySegment.Favorites -> PhonePagedTracks(
-                    stateKey = "phone:rows:favorites",
-                    loader = { page -> deps.musicRepository.favoriteTracks(page) },
-                    emptyTitle = "还没有收藏",
-                    emptyCaption = "在播放页点心形按钮，曲子会出现在这里",
-                    playingTrackId = playingTrackId,
-                    onPlayTracks = onPlayTracks,
-                    trackFavorites = true,
-                    favoriteStatuses = favoriteLibrary.statuses,
-                    onToggleFavorite = toggleFavorite,
-                )
+                    PhoneLibrarySegment.Favorites -> PhonePagedTracks(
+                        stateKey = "phone:rows:favorites",
+                        loader = { page -> deps.musicRepository.favoriteTracks(page) },
+                        emptyTitle = "还没有收藏",
+                        emptyCaption = "在播放页点心形按钮，曲子会出现在这里",
+                        playingTrackId = playingTrackId,
+                        onPlayTracks = onPlayTracks,
+                        trackFavorites = true,
+                        favoriteStatuses = favoriteLibrary.statuses,
+                        onToggleFavorite = toggleFavorite,
+                    )
+                }
             }
         }
     }
@@ -239,6 +260,46 @@ private fun SegmentItem(
 
 /** 分隔线：白 10%，与卡片描边同一档。 */
 private fun hairline(): Color = Color.White.copy(alpha = 0.10f)
+
+/**
+ * 来源切换小胶囊行：在线 / 本地。
+ *
+ * 只在本地音乐能力开启时出现（由调用方守卫）。选中「本地」时下方整块换成
+ * [PhoneLocalMusicPage]，五个在线分段不再渲染；默认「在线」，在线曲库行为零变化。
+ */
+@Composable
+private fun SourceSwitchBar(localSelected: Boolean, onSelect: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = PhoneSpace.screenHorizontal, vertical = PhoneSpace.sm),
+        horizontalArrangement = Arrangement.spacedBy(PhoneSpace.sm),
+    ) {
+        SourcePill(label = "在线", active = !localSelected, onClick = { onSelect(false) })
+        SourcePill(label = "本地", active = localSelected, onClick = { onSelect(true) })
+    }
+}
+
+@Composable
+private fun SourcePill(label: String, active: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(999.dp)
+    Box(
+        Modifier
+            .background(if (active) FnColors.Coral else FnColors.Surface, shape)
+            .border(1.dp, if (active) Color.Transparent else Color.White.copy(alpha = 0.08f), shape)
+            .phoneTap(onClick)
+            .padding(horizontal = 16.dp, vertical = 7.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            color = if (active) FnColors.Background else FnColors.Muted,
+            fontSize = PhoneType.Row,
+            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1,
+        )
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 分页网格 / 分页列表

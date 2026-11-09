@@ -308,22 +308,29 @@ internal fun ImmersivePlayer(
     val fxSettings by AudioFxController.state.collectAsStateWithLifecycle()
     var consumeBackKeyUp by remember { mutableStateOf(false) }
     var interactionEpoch by remember { mutableStateOf(0) }
-    var osdMessage by remember { mutableStateOf<String?>(null) }
+    var osdMessage by remember { mutableStateOf<TransportOsd?>(null) }
     var osdToken by remember { mutableLongStateOf(0L) }
     var osdDurationMs by remember { mutableLongStateOf(1_100L) }
     val playerFocus = remember { FocusRequester() }
     var focusRecoveries by remember { mutableIntStateOf(0) }
-    // 从歌手/专辑详情进入播放页时，上一页的焦点恢复逻辑可能把焦点抢回去，
-    // 导致方向键（快进/快退）被上一页吃掉——表现就是"只有在歌手页进去听时快进失效"。
-    // 这里在首帧后主动把焦点收回到播放容器上。
+    val progressFocus = remember { FocusRequester() }
+    // 进播放页的默认落点：控制栏可见时直接停在进度条上（左右拖动进度、下键到暂停键）。
+    //
+    // 以前这里把焦点交给整页的根容器 playerFocus —— 那是个 focusable 的 Box，底下只有
+    // 它一个焦点节点，方向键在它身上找不到可去的邻居：用户看到的就是「进了播放页按什么
+    // 都没反应，必须先按一下 OK 才活过来」。按 OK 其实只是触发了系统的默认焦点恢复，
+    // 落到控制栏第一个可聚焦项（进度条）上，观感上像"按 OK 才把焦点放到进度条"。
+    //
+    // 逐帧重试：控制栏首帧可能还没挂载，requester 未 attach 时 requestFocus 会抛异常；
+    // 重试都失败就退回播放容器，保证沉浸态下左右快进/上下唤出控制栏的手势链路仍有焦点。
     LaunchedEffect(Unit) {
-        // 两次尝试：上一页的焦点恢复可能在页面切换动画结束后才触发
         delay(80)
-        runCatching { playerFocus.requestFocus() }
-        delay(320)
+        repeat(12) {
+            if (runCatching { progressFocus.requestFocus() }.isSuccess) return@LaunchedEffect
+            withFrameNanos { }
+        }
         runCatching { playerFocus.requestFocus() }
     }
-    val progressFocus = remember { FocusRequester() }
     val previousFocus = remember { FocusRequester() }
     val playFocus = remember { FocusRequester() }
     val nextFocus = remember { FocusRequester() }
@@ -339,11 +346,14 @@ internal fun ImmersivePlayer(
     val playbackProgress = container.playbackController.progress.collectAsStateWithLifecycle()
     val actionScope = rememberCoroutineScope()
     val transportKeys = remember { PlayerTransportKeyState(actionScope) }
-    fun announce(text: String, durationMs: Long = 1_100L) {
-        osdMessage = text
+    fun announce(osd: TransportOsd, durationMs: Long = 1_100L) {
+        osdMessage = osd
         osdDurationMs = durationMs
         osdToken++
     }
+    /** 纯文字提示（「当前曲目不支持快进 / 拖动」这类说明）走这个重载。 */
+    fun announce(text: String, durationMs: Long = 1_100L) =
+        announce(TransportOsd(text = text), durationMs)
     fun revealControls() {
         controlsVisible = true
         interactionEpoch++
@@ -635,7 +645,7 @@ internal fun ImmersivePlayer(
             )
         }
         PlayerTransportOsd(
-            message = osdMessage,
+            osd = osdMessage,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = if (controlsVisible && !queueVisible) 176.dp else 56.dp),
@@ -2239,8 +2249,10 @@ internal fun PlayerControlOverlay(
     modifier: Modifier = Modifier,
 ) {
     var progressFocused by remember { mutableStateOf(false) }
-    // 控制层挂载后即把焦点交给播放按钮（此时节点已挂载，不会抛 FocusRequester 未初始化）。
-    LaunchedEffect(Unit) { runCatching { playFocus.requestFocus() } }
+    // 控制层挂载后把焦点交给进度条，与「进播放页」的落点保持一致：
+    // 停在进度条上可以直接左右拖动、下键到暂停键；也让「上下键唤出控制栏」之后
+    // 焦点稳定落在进度条，而不是漂在页面上或停在暂停键。
+    LaunchedEffect(Unit) { runCatching { progressFocus.requestFocus() } }
     val fraction = playerProgressFraction(positionMs, durationMs)
     Column(
         modifier.fillMaxWidth().height(124.dp)

@@ -275,6 +275,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.tv.material)
     implementation(project(":third_party:accompanist-lyrics-ui"))
+    implementation(project(":core:cast"))
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
     implementation(libs.androidx.media3.exoplayer)

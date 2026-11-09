@@ -1,5 +1,9 @@
 package com.yueyin.tv.phone
 
+import com.yueyin.tv.TvMusicApplication
+import com.yueyin.tv.accountSubtitle
+import com.yueyin.tv.rememberFnAccountLabel
+
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -21,6 +25,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,11 +49,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.tv.material3.Text
 import com.yueyin.tv.core.data.connect.ConnectProfile
 import com.yueyin.tv.core.model.connect.ConnectType
+import com.yueyin.tv.core.model.library.LibraryCapabilities
+import com.yueyin.tv.core.model.library.LibraryCapability
 import com.yueyin.tv.ui.FnColors
 import com.yueyin.tv.ui.connect.ConnectRuntime
 import com.yueyin.tv.ui.connect.PlatformIcon
 import com.yueyin.tv.ui.connect.ensureOnlineMusicActive
 import com.yueyin.tv.ui.source.MusicSourceRuntime
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -57,10 +65,10 @@ import java.util.UUID
  *
  * 与电视端的差异：
  * - 电视是「一张大卡片 + 右侧两个独立按钮（编辑/删除）」，手机上宽按钮会挤掉平台名，
- *   改成**点卡片切换 + 右侧「管理」就地展开动作**。展开的是同一行，不弹层——
- *   平台管理是个低频但要求准确的操作，弹层里点错比就地展开更容易误触。
- * - 飞牛账号是登录账号本身，不是一条可编辑的 ConnectProfile：手机端只提供「设为当前」，
- *   重新登录与退出留在「我的」页（那里是账号语义，用户能找得到）。
+ *   所以改成**点卡片切换 + 右侧紧凑的文字按钮**，不弹层、不就地展开——
+ *   平台管理是个低频但要求准确的操作，弹层里点错比一行内点错更容易误触。
+ * - 飞牛账号是登录账号本身，不是一条 ConnectProfile：登录后才出现这一行，
+ *   右侧与电视端平权地提供「编辑」（换账号 / 改地址）和「删除」（断开账号，二次点击确认）。
  *
  * 列表只放**用户自己添加过的东西**。这里曾经把「飞牛音乐」和「在线音源」两节做成了常驻项：
  * 飞牛那行在没登录时是「未登录 · 用 NAS 账号接入」，音源那节固定写「已添加 0 个」——
@@ -73,15 +81,65 @@ internal fun PhonePlatformManagePage(
     onBack: () -> Unit,
     onAdd: () -> Unit,
     onOpenSources: () -> Unit,
+    /** 编辑飞牛：无条件进登录页，可换账号 / 改服务器地址（与电视端 onRelogin 同语义）。 */
+    onRelogin: () -> Unit,
 ) {
     val context = LocalContext.current
+    val deps = LocalPhoneDeps.current
+    val scope = rememberCoroutineScope()
     val store = ConnectRuntime.store
     val state by store.state.collectAsState()
     val sources by MusicSourceRuntime.state.collectAsState()
+    val fnAccountLabel = rememberFnAccountLabel()
+
+    // 本地音乐是本机曲库，不是可连接平台：只读展示索引数量，不进 profiles，不给编辑/删除。
+    val localEnabled = LibraryCapabilities.has(LibraryCapability.LocalMusic)
+    val lib = remember {
+        (context.applicationContext as TvMusicApplication).container.localMusicLibrary
+    }
+    var localCount by remember { mutableStateOf(0) }
+    var rescanning by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        localCount = runCatching { lib.count() }.getOrDefault(0)
+    }
+    fun rescan() {
+        if (rescanning) return
+        rescanning = true
+        scope.launch {
+            localCount = runCatching { lib.refresh() }.getOrDefault(localCount)
+            rescanning = false
+        }
+    }
+
+    // 断开飞牛账号二次点击确认，4 秒后自动复位（与电视端同一套防误触）。
+    var pendingDisconnect by remember { mutableStateOf(false) }
+    LaunchedEffect(pendingDisconnect) {
+        if (pendingDisconnect) {
+            delay(4000)
+            pendingDisconnect = false
+        }
+    }
 
     fun activate(profile: ConnectProfile?, label: String) {
         ConnectRuntime.activate(profile)
         Toast.makeText(context, "已切换到「$label」", Toast.LENGTH_SHORT).show()
+    }
+
+    fun disconnectFn() {
+        if (!pendingDisconnect) {
+            pendingDisconnect = true
+            return
+        }
+        pendingDisconnect = false
+        scope.launch {
+            deps.sessionRepository.signOutFnSession()
+            // 飞牛链路的 activeId 是 null；退出后它已不存在，必须回落到仍在的协议平台，
+            // 否则当前平台悬空，首页会停在「没有曲库」的状态。
+            if (state.activeId == null) {
+                ConnectRuntime.activate(store.state.value.profiles.firstOrNull())
+            }
+            Toast.makeText(context, "已断开飞牛账号", Toast.LENGTH_SHORT).show()
+        }
     }
 
     fun delete(profile: ConnectProfile) {
@@ -118,18 +176,71 @@ internal fun PhonePlatformManagePage(
             modifier = Modifier.padding(horizontal = 4.dp, vertical = PhoneSpace.sm),
         )
 
+        // 本地音乐状态条：只读，独立于下面的可连接平台列表。
+        if (localEnabled) {
+            LocalMusicStatusBar(
+                count = localCount,
+                rescanning = rescanning,
+                onRescan = { rescan() },
+            )
+            Spacer(Modifier.height(PhoneSpace.sm))
+        }
+
+        // 飞牛不是一条 ConnectProfile，它挂在登录账号上（登录成功时 activate(null)）。
+        // 只有真正登录过 fnOS 才出现这一行；没登录时不占位，避免看起来像预置的空平台。
+        // 与电视端平权：右侧「编辑」进登录页换账号/改地址，「删除」二次点击断开账号。
+        if (fnSessionActive) {
+            PlatformRow(
+                icon = { PlatformIcon(ConnectType.FEINIU, 34.dp) },
+                title = "飞牛音乐",
+                subtitle = if (pendingDisconnect) {
+                    "再点一次右侧「确认删除」即断开飞牛账号"
+                } else {
+                    fnAccountLabel
+                },
+                subtitleColor = if (pendingDisconnect) FnColors.Coral else FnColors.Muted,
+                active = state.activeId == null,
+                onActivate = { activate(null, "飞牛音乐") },
+                onDelete = { disconnectFn() },
+                deleteLabel = if (pendingDisconnect) "确认删除" else "删除",
+                trailing = {
+                    Box(
+                        Modifier
+                            .phoneTap {
+                                pendingDisconnect = false
+                                onRelogin()
+                            }
+                            .padding(horizontal = 4.dp, vertical = 6.dp)
+                            .background(
+                                FnColors.Coral.copy(alpha = 0.14f),
+                                RoundedCornerShape(7.dp),
+                            )
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                    ) {
+                        Text(
+                            "编辑",
+                            color = FnColors.Coral,
+                            fontSize = PhoneType.Micro,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                        )
+                    }
+                },
+            )
+            Spacer(Modifier.height(PhoneSpace.sm))
+        }
+
         state.profiles.forEach { profile ->
             PlatformRow(
                 icon = { PlatformIcon(profile.type, 34.dp) },
-                title = profile.displayName,
+                title = profile.type.displayName,
                 subtitle = when {
                     profile.type == ConnectType.ONLINE -> if (sources.count == 0) {
                         "还没有音源脚本 · 点「音源」添加"
                     } else {
                         "${sources.count} 个音源脚本 · 五平台聚合"
                     }
-                    profile.host.isBlank() -> profile.type.displayName
-                    else -> "${profile.username.ifBlank { profile.type.displayName }} · ${profile.host}"
+                    else -> profile.accountSubtitle()
                 },
                 active = profile.id == state.activeId,
                 onActivate = { activate(profile, profile.displayName) },
@@ -186,9 +297,12 @@ private fun PlatformRow(
     icon: @Composable () -> Unit,
     title: String,
     subtitle: String,
+    subtitleColor: Color = FnColors.Muted,
     active: Boolean,
     onActivate: () -> Unit,
-    onDelete: () -> Unit,
+    /** 传 null 即不渲染行尾按钮。 */
+    onDelete: (() -> Unit)?,
+    deleteLabel: String = "删除",
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val shape = RoundedCornerShape(PhoneRadius.md)
@@ -240,26 +354,28 @@ private fun PlatformRow(
                 Spacer(Modifier.height(3.dp))
                 Text(
                     subtitle,
-                    color = FnColors.Muted,
+                    color = subtitleColor,
                     fontSize = PhoneType.Caption,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
             trailing?.invoke()
-            Box(
-                Modifier
-                    .size(LocalCarProfile.current.touchTarget)
-                    .phoneTap(onDelete),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "删除",
-                    color = FnColors.Coral,
-                    fontSize = PhoneType.Label,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                )
+            onDelete?.let { delete ->
+                Box(
+                    Modifier
+                        .size(LocalCarProfile.current.touchTarget)
+                        .phoneTap(delete),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        deleteLabel,
+                        color = FnColors.Coral,
+                        fontSize = PhoneType.Label,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                    )
+                }
             }
         }
     }
@@ -637,3 +753,43 @@ internal fun activateOnlineMusic() {
  */
 internal fun onlineMusicAdded(): Boolean =
     ConnectRuntime.store.state.value.ofType(ConnectType.ONLINE) != null
+
+/** 平台管理里的本地音乐只读状态条：不是可连接平台，不进 profiles，无编辑/删除。 */
+@Composable
+private fun LocalMusicStatusBar(count: Int, rescanning: Boolean, onRescan: () -> Unit) {
+    val shape = RoundedCornerShape(PhoneRadius.md)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(FnColors.Surface, shape)
+            .border(1.dp, Color.White.copy(alpha = 0.05f), shape)
+            .padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        PhoneIcon(PhoneGlyph.Library, FnColors.Muted, Modifier.size(24.dp))
+        Spacer(Modifier.width(PhoneSpace.md))
+        Text(
+            "本地音乐 · 已索引 ${phoneCount(count)} 首",
+            color = FnColors.Text,
+            fontSize = PhoneType.Body,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        // 唯一动作是重新扫描；不给编辑/删除，也不把整行做成可切换平台。
+        Box(
+            Modifier
+                .phoneTap(onRescan)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                if (rescanning) "扫描中…" else "重新扫描",
+                color = if (rescanning) FnColors.Muted else FnColors.Coral,
+                fontSize = PhoneType.Label,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+            )
+        }
+    }
+}

@@ -1,6 +1,7 @@
 package com.yueyin.tv.core.data.protocol
 
 import com.yueyin.tv.core.data.connect.ConnectProfile
+import com.yueyin.tv.core.data.online.OnlineSong
 import com.mocharealm.accompanist.lyrics.core.model.SyncedLyrics
 import com.yueyin.tv.core.lyrics.parseLyrics
 import com.yueyin.tv.core.model.Album
@@ -120,7 +121,17 @@ class ProtocolLibrarySource(
 
     suspend fun allTracks(page: Int, pageSize: Int = 100): Page<Track> {
         val songs = mutex.withLock {
-            allSongs ?: protocol.songs(profile).also { allSongs = it }
+            val cached = allSongs
+            if (cached != null && cached.isNotEmpty()) {
+                cached
+            } else {
+                val fetched = protocol.songs(profile)
+                // 空结果不写缓存：首次进「全部歌曲」常赶上音源脚本未就绪 / 网络没通，
+                // 那一轮 songs() 会返回空。以前把空列表也缓存下来，这一页就永远显示
+                // 「暂无歌曲」，只有切平台清缓存才恢复——用户看到的就是「曲库突然空了」。
+                if (fetched.isNotEmpty()) allSongs = fetched
+                fetched
+            }
         }
         return songs.map { it.toTrack() }.paged(page, pageSize)
     }
@@ -163,6 +174,12 @@ class ProtocolLibrarySource(
     }
 
     // ---------------------------------------------------------------- 播放 / 封面 / 歌词
+
+    /** 本地收藏落库时取在线取链元数据（非在线协议返回 null）。 */
+    fun songOrNull(guid: String): OnlineSong? = protocol.songOrNull(guid)
+
+    /** 冷启动后把落库的元数据放回在线协议的内存索引。 */
+    fun restoreSongs(songs: List<OnlineSong>) = protocol.restoreSongs(songs)
 
     suspend fun prepare(track: Track): PlaybackTrack = PlaybackTrack(
         track = track,

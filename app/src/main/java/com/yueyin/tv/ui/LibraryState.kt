@@ -24,6 +24,8 @@ internal sealed interface LibraryRoute {
     data object Albums : LibraryRoute
     data object AllTracks : LibraryRoute
     data object Favorites : LibraryRoute
+    /** 本机曲库：与在线/平台音乐并行，不参与 activeId 切换。 */
+    data object LocalMusic : LibraryRoute
     data class ArtistDetail(val artist: Artist) : LibraryRoute
     data class AlbumDetail(val album: Album) : LibraryRoute
     data class Player(val track: Track?) : LibraryRoute
@@ -202,11 +204,18 @@ internal class LibraryRetainedStateStore(val scope: CoroutineScope) {
     fun <T> list(key: String): RetainedListState<T> =
         listStates.getOrPut(key) { RetainedListState<T>() } as RetainedListState<T>
 
-    /** 清空全部保留状态（切换平台 / 换账号后用，避免看到上一个数据源的旧曲库）。 */
+    /**
+     * 切换平台时只清平台域的保留状态；本地曲库状态以 [LOCAL_STATE_PREFIX] 开头，
+     * 永远不受 activeId 切换影响，因此本地列表、滚动位置与分页不会闪。
+     */
     fun clearAll() {
-        pagedStates.clear()
-        trackStates.clear()
-        listStates.clear()
+        pagedStates.entries.removeAll { !it.key.startsWith(LOCAL_STATE_PREFIX) }
+        trackStates.entries.removeAll { !it.key.startsWith(LOCAL_STATE_PREFIX) }
+        listStates.entries.removeAll { !it.key.startsWith(LOCAL_STATE_PREFIX) }
+    }
+
+    companion object {
+        const val LOCAL_STATE_PREFIX = "local:"
     }
 
     fun remove(keys: Set<String>) {
@@ -354,6 +363,7 @@ internal fun LibraryRoute.storageKey(): String = when (this) {
     LibraryRoute.Albums -> "albums"
     LibraryRoute.AllTracks -> "tracks"
     LibraryRoute.Favorites -> "favorites"
+    LibraryRoute.LocalMusic -> "local:music"
     is LibraryRoute.ArtistDetail -> "artist:${artist.guid.value}"
     is LibraryRoute.AlbumDetail -> "album:${album.guid.value}"
     is LibraryRoute.Player -> "player"
@@ -375,5 +385,6 @@ internal fun LibraryRoute.retainedStateKeys(): Set<String> = when (this) {
     )
     is LibraryRoute.AlbumDetail -> setOf("album:${album.guid.value}:tracks")
     LibraryRoute.Favorites -> setOf("favorites:tracks")
+    LibraryRoute.LocalMusic -> setOf("local:music:tracks")
     else -> emptySet()
 }
