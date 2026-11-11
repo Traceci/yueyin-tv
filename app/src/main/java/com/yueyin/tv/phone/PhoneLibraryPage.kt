@@ -6,12 +6,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,20 +24,25 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.Text
@@ -54,6 +61,7 @@ import com.yueyin.tv.ui.LibraryRoute
 import com.yueyin.tv.ui.RetainedPagedGridState
 import com.yueyin.tv.ui.retainLoadedPage
 import com.yueyin.tv.ui.shouldLoadInitialPage
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
 /**
@@ -121,9 +129,48 @@ internal fun PhoneLibraryPage(
                 playingTrackId = playingTrackId,
             )
         } else {
-            SegmentBar(selected = segment, onSelect = onSelectSegment)
-            Box(Modifier.fillMaxSize().padding(horizontal = PhoneSpace.screenHorizontal)) {
-                when (segment) {
+            // 五个分段 = 五页，左右滑动直接切段。
+            //
+            // 选中态只有一份真相：路由（`segment`）。点分段条、从首页「全部 ›」进来都改路由，
+            // Pager 只负责滑动表现，两个方向用 LaunchedEffect 来回同步——各自存一份状态的话，
+            // 「滑过去」和「点过去」早晚会出现分段条高亮跟内容对不上的情况。
+            val segments = PhoneLibrarySegment.entries
+            val pagerState = rememberPagerState(initialPage = segment.ordinal) { segments.size }
+            // 分段条的高亮完全跟着 Pager 的滚动进度走，而不是等路由回写：
+            // 拖动到两页之间时横条就应该停在两格之间，松手后自然落到目标格。
+            val pageProgress by remember(pagerState) {
+                derivedStateOf {
+                    (pagerState.currentPage + pagerState.currentPageOffsetFraction)
+                        .coerceIn(0f, (segments.size - 1).toFloat())
+                }
+            }
+            // collect 协程不随重组重启，直接闭包捕获的 segment 会永远停在进页那一刻的旧值
+            // （滑回原分段时 target == 旧值 → 不回写路由 → 横条卡在前一格）。用 UpdatedState 取最新值。
+            val currentSegment = rememberUpdatedState(segment)
+            LaunchedEffect(segment) {
+                // 用户正在滑动时不要抢手势：这段滚动只服务于「点分段条 / 从首页跳进来」。
+                if (!pagerState.isScrollInProgress && pagerState.currentPage != segment.ordinal) {
+                    pagerState.animateScrollToPage(segment.ordinal)
+                }
+            }
+            LaunchedEffect(pagerState) {
+                snapshotFlow { pagerState.currentPage to pagerState.isScrollInProgress }
+                    .collect { (page, scrolling) ->
+                        if (scrolling) return@collect
+                        val target = segments.getOrNull(page) ?: return@collect
+                        if (target != currentSegment.value) onSelectSegment(target)
+                    }
+            }
+            SegmentBar(pageProgress = pageProgress, onSelect = onSelectSegment)
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize().padding(horizontal = PhoneSpace.screenHorizontal),
+                // 不预组合相邻页：每个分段首次组合都会发起一次请求，
+                // 预组合等于让「用户还没打开的分段」也在后台拉数据。
+                beyondViewportPageCount = 0,
+                key = { segments[it].name },
+            ) { page ->
+                when (segments[page]) {
                     PhoneLibrarySegment.Albums -> PhonePagedGrid<Album>(
                         stateKey = "phone:grid:albums",
                         loader = { page -> deps.musicRepository.albums(page, GRID_PAGE_SIZE) },
@@ -187,47 +234,43 @@ internal fun PhoneLibraryPage(
 }
 
 /**
- * 分段条。
+ * 分段条：五等分铺满，下方一条会跟着手指走的橙色指示线。
  *
- * 两种排法：
- * - **窄屏**（竖屏手机）：横向滚动。五个中文标签在 390dp 上刚好卡在「放得下」与「放不下」
- *   的边界，系统字体放大到 1.3x 就一定会溢出。允许滚动比压缩字号安全——字不能为了排版变小。
- * - **宽屏**（横屏 / 平板）：等分铺满。横屏 810dp 内容区里若仍按固定间距排，
- *   五个标签只占左边三分之一，右边一大片空白，看着像没做完。
+ * 横条**不能**由路由 `segment` 驱动——路由只在 Pager 滑动结束后才回写，拖动全程横条
+ * 就会钉在旧格子上，松手再突然跳过去（用户看到的「跟不上 / 不切换」）。现在位置直接取
+ * `currentPage + currentPageOffsetFraction`，是同一个手势的连续量。
  */
 @Composable
-private fun SegmentBar(selected: PhoneLibrarySegment, onSelect: (PhoneLibrarySegment) -> Unit) {
-    val evenSplit = LocalPhoneWindow.current.contentWidthDp >= 480
-    if (evenSplit) {
+private fun SegmentBar(pageProgress: Float, onSelect: (PhoneLibrarySegment) -> Unit) {
+    val segments = PhoneLibrarySegment.entries
+    val activeIndex = pageProgress.roundToInt().coerceIn(0, segments.size - 1)
+    Column {
         Row(Modifier.fillMaxWidth().padding(horizontal = PhoneSpace.screenHorizontal)) {
-            PhoneLibrarySegment.entries.forEach { item ->
+            segments.forEachIndexed { index, item ->
                 SegmentItem(
                     label = item.label,
-                    active = item == selected,
+                    active = index == activeIndex,
                     modifier = Modifier.weight(1f),
                     onClick = { onSelect(item) },
                 )
             }
         }
-    } else {
-        Row(
+        BoxWithConstraints(
             Modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = PhoneSpace.screenHorizontal),
-            horizontalArrangement = Arrangement.spacedBy(PhoneSpace.xl),
+                .padding(horizontal = PhoneSpace.screenHorizontal)
+                .height(2.dp),
         ) {
-            PhoneLibrarySegment.entries.forEach { item ->
-                SegmentItem(
-                    label = item.label,
-                    active = item == selected,
-                    modifier = Modifier,
-                    onClick = { onSelect(item) },
-                )
-            }
+            val slotWidth = maxWidth / segments.size
+            Box(Modifier.fillMaxSize().background(hairline(), RoundedCornerShape(2.dp)))
+            Box(
+                Modifier
+                    .offset(x = slotWidth * pageProgress)
+                    .size(width = slotWidth, height = 2.dp)
+                    .background(FnColors.Coral, RoundedCornerShape(2.dp)),
+            )
         }
     }
-    Box(Modifier.fillMaxWidth().height(1.dp).background(hairline()))
 }
 
 @Composable
@@ -247,13 +290,10 @@ private fun SegmentItem(
             fontSize = PhoneType.Row,
             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
             maxLines = 1,
+            // 等分后每格只有 1/5 宽，极端字体缩放下宁可省略号也不挤出行外。
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(vertical = 11.dp),
-        )
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(2.dp)
-                .background(if (active) FnColors.Coral else hairline(), RoundedCornerShape(2.dp)),
         )
     }
 }

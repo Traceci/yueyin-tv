@@ -562,9 +562,19 @@ class PlaybackController(
         return Triple(track, uri, player.currentPosition.coerceAtLeast(0L))
     }
 
+    /**
+     * 暂停（幂等）：正在播就暂停，本来就没播就什么都不做。
+     *
+     * 与 [playPause] 的区别是不做「播完重头播 / 空闲时起播」的兜底——定时停止播放要的是
+     * 「停在那儿」，不能因为刚好播完就又从上一首开始。
+     */
+    fun pause() {
+        controller?.let { player -> if (player.isPlaying) player.pause() }
+    }
+
     /** 投播接管前把本机播放停下来，避免手机与电视同时出声。 */
     fun pauseForCast() {
-        controller?.let { player -> if (player.isPlaying) player.pause() }
+        pause()
     }
 
     fun playPause() {

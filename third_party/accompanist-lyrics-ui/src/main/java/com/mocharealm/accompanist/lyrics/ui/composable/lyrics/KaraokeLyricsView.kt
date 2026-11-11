@@ -136,6 +136,18 @@ fun KaraokeLyricsView(
     karaokeProgressEnabled: Boolean = true,
     /** 每行歌词水平居中。默认 false 保持原来的左/右对齐（电视端行为不变）。 */
     centerLines: Boolean = false,
+    /**
+     * 当前句不在可见区时，把「滚到当前句」的目标对齐到 `+offset`（居中）而不是 `-offset`（贴顶）。
+     * 默认 false 保持电视端原有行为；手机全歌词页传 true。
+     */
+    centerAlignCurrentLine: Boolean = false,
+    /** 手动滚动结束后暂停自动对齐的毫秒数；0 表示不暂停（电视端默认）。 */
+    manualScrollPauseMs: Long = 0L,
+    /**
+     * 时间窗口没命中任何一行时，仍把「最近一句」当作当前句（用于高亮与对齐目标）。
+     * 默认 false 保持电视端原有行为；手机全歌词页传 true。
+     */
+    fallbackFocusLine: Boolean = false,
 ) {
     val density = LocalDensity.current
     val stableNormalTextStyle = remember(normalLineTextStyle) { normalLineTextStyle }
@@ -267,6 +279,12 @@ fun KaraokeLyricsView(
 
             val first = if (activeIndex != null) {
                 activeIndex
+            } else if (fallbackFocusLine) {
+                // 时间窗口没命中时（例如歌词时间戳与播放进度有毫秒级偏差、或行尾时间缺失），
+                // 取「已经开始的最近一句」继续高亮与对齐，别让整屏歌词都变成 inactive。
+                lyrics.lines.indices.lastOrNull { idx -> time >= lyrics.lines[idx].start }
+                    ?: lyrics.lines.indexOfFirst { it.start > time }.takeIf { it != -1 }
+                    ?: lyrics.lines.lastIndex
             } else {
                 val nextIdx = lyrics.lines.indexOfFirst { it.start > time }
                 if (nextIdx != -1) nextIdx else lyrics.lines.lastIndex
@@ -275,7 +293,7 @@ fun KaraokeLyricsView(
             val base = lyrics.lines.indices.filter { index ->
                 time >= lyrics.lines[index].start && time < effectiveEndTimes[index]
             }
-            val result = base.toMutableSet()
+            val result = if (fallbackFocusLine && base.isEmpty()) mutableSetOf(first) else base.toMutableSet()
             base.forEach { index ->
                 val line = lyrics.lines.getOrNull(index)
                 if (line is KaraokeLine && line is KaraokeLine.AccompanimentKaraokeLine) {
@@ -302,12 +320,28 @@ fun KaraokeLyricsView(
         }
     }
 
+    // 用户手动翻看歌词后，给一个短暂的「不自动拽回」窗口，否则一松手就被拉走。
+    val manualPauseUntil = remember { mutableStateOf(0L) }
+    val wasManualScrolling = remember { mutableStateOf(false) }
+    if (manualScrollPauseMs > 0L) {
+        LaunchedEffect(listState) {
+            androidx.compose.runtime.snapshotFlow { listState.isScrollInProgress && !scrollInCode.value }
+                .collect { manual: Boolean ->
+                    if (wasManualScrolling.value && !manual) {
+                        manualPauseUntil.value = System.currentTimeMillis() + manualScrollPauseMs
+                    }
+                    wasManualScrolling.value = manual
+                }
+        }
+    }
+
     LaunchedEffect(
         layoutCache,
         stableOffsetPx,
     ) {
         androidx.compose.runtime.snapshotFlow { lyricsFocusState.firstIndex }
             .collect { firstIndex ->
+                if (System.currentTimeMillis() < manualPauseUntil.value) return@collect
                 if (!scrollInCode.value) {
                     val items = listState.layoutInfo.visibleItemsInfo
                     val targetItem = items.firstOrNull { it.index == firstIndex }
@@ -318,10 +352,15 @@ fun KaraokeLyricsView(
                         if (scrollOffset != null) {
                             listState.scrollBy(scrollOffset.toFloat())
                         } else {
-                            listState.animateScrollToItem(
-                                firstIndex,
-                                (-stableOffsetPx - keepAliveZonePx).toInt()
-                            )
+                            // 当前句不在可见区时，两条分支必须用同一个目标（距顶 stableOffsetPx）。
+                            // 原实现传负值，会把当前句推到 viewport 上方；offset 只有几十 dp 时
+                            // （电视端）误差看不出来，手机端 offset 是半个歌词区，误差被放大到整屏。
+                            val alignOffset = if (centerAlignCurrentLine) {
+                                stableOffsetPx + keepAliveZonePx.toInt()
+                            } else {
+                                -stableOffsetPx - keepAliveZonePx.toInt()
+                            }
+                            listState.animateScrollToItem(firstIndex, alignOffset.toInt())
                         }
                     } catch (_: Exception) {
                     } finally {

@@ -75,6 +75,9 @@ internal enum class PhoneGlyph {
     /** 音效：五条高低不同的均衡器竖条。 */
     Fx,
 
+    /** 定时：闹钟（圆环 + 指针 + 顶部小柄 + 两侧耳朵）。 */
+    Timer,
+
     /** 更多：三个实心圆点。 */
     More,
 
@@ -456,12 +459,16 @@ internal fun PhoneIcon(
 
             PhoneGlyph.Fx -> {
                 // 五条均衡器竖条，高低错落。用竖线而不是矩形，圆头天然有「推子」的观感。
+                //
+                // 半高原来取到 0.62h，画出来总高 1.24h，直接顶出 21dp 画布——
+                // 四个操作键并排时它是唯一「高一头」的那个，看着比心形/循环明显更大。
+                // 现在压到总高 0.72h 以内，与其它图标视觉重量一致。
                 val bars = listOf(
-                    w * 0.14f to h * 0.46f,
-                    w * 0.32f to h * 0.26f,
-                    w * 0.50f to h * 0.62f,
-                    w * 0.68f to h * 0.32f,
-                    w * 0.86f to h * 0.52f,
+                    w * 0.14f to h * 0.30f,
+                    w * 0.32f to h * 0.17f,
+                    w * 0.50f to h * 0.36f,
+                    w * 0.68f to h * 0.20f,
+                    w * 0.86f to h * 0.32f,
                 )
                 bars.forEach { (x, halfHeight) ->
                     drawLine(
@@ -472,6 +479,29 @@ internal fun PhoneIcon(
                         StrokeCap.Round,
                     )
                 }
+            }
+
+            PhoneGlyph.Timer -> {
+                // 闹钟：圆环 + 时针分针 + 顶部小柄 + 两侧耳朵。
+                // 与 History（也是个时钟）区分开靠的是小柄和耳朵——单独一个圆环加两根针，
+                // 在 21dp 上跟「最近播放」一模一样。
+                val radius = w * 0.32f
+                val center = Offset(w * 0.5f, h * 0.56f)
+                drawCircle(tint, radius = radius, center = center, style = Stroke(width = sw, cap = StrokeCap.Round))
+                // 指针：时针朝上、分针朝右，长度控制在半径的六成，避免贴到圆环
+                drawLine(tint, center, Offset(center.x, center.y - radius * 0.58f), sw, StrokeCap.Round)
+                drawLine(tint, center, Offset(center.x + radius * 0.46f, center.y), sw, StrokeCap.Round)
+                // 顶部小柄
+                drawLine(
+                    tint,
+                    Offset(w * 0.42f, h * 0.13f),
+                    Offset(w * 0.58f, h * 0.13f),
+                    sw,
+                    StrokeCap.Round,
+                )
+                // 两侧耳朵：两段短斜线，闹钟的通用符号特征
+                drawLine(tint, Offset(w * 0.24f, h * 0.22f), Offset(w * 0.16f, h * 0.30f), sw, StrokeCap.Round)
+                drawLine(tint, Offset(w * 0.76f, h * 0.22f), Offset(w * 0.84f, h * 0.30f), sw, StrokeCap.Round)
             }
 
             PhoneGlyph.More -> {

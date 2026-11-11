@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -139,7 +140,10 @@ internal fun PhonePlayerPage(
     var queueOpen by remember { mutableStateOf(false) }
     var fxOpen by remember { mutableStateOf(false) }
     var castOpen by remember { mutableStateOf(false) }
+    var sleepOpen by remember { mutableStateOf(false) }
     val castState by deps.castController.state.collectAsStateWithLifecycle()
+    // 定时状态活在 PhoneSleepTimer 里（进程级），这里只是订阅显示。
+    val sleepState by PhoneSleepTimer.state.collectAsStateWithLifecycle()
 
     // 投播当前这一首：把播放器里真正的 URI 交给投播层（本地是 content://，
     // 协议平台是 127.0.0.1 代理，在线是直链），统一由局域网中转服务转给电视。
@@ -226,6 +230,8 @@ internal fun PhonePlayerPage(
             onCyclePlayMode = { deps.playbackController.cyclePlayMode() },
             onOpenQueue = { queueOpen = true },
             onOpenFx = { fxOpen = true },
+            sleepMinutesLeft = sleepState.leftMinutes.takeIf { sleepState.running },
+            onOpenSleepTimer = { sleepOpen = true },
             // 控制层不再自己压渐变：可读性遮罩已经是整屏一张，
             // 再给面板套一层就会在面板顶边留下一条硬分界线（黑胶态那道缝就是这么来的）。
             backdrop = false,
@@ -271,6 +277,21 @@ internal fun PhonePlayerPage(
                 castOpen = false
                 deps.castController.stopScan()
             },
+        )
+
+        PhoneSleepSheet(
+            visible = sleepOpen,
+            state = sleepState,
+            onStart = { minutes ->
+                // 到点只暂停：不动队列、不改进度，醒来还能接着播。
+                PhoneSleepTimer.start(minutes) {
+                    deps.playbackController.pause()
+                    Toast.makeText(context, "定时结束，已停止播放", Toast.LENGTH_SHORT).show()
+                }
+                sleepOpen = false
+            },
+            onCancel = { PhoneSleepTimer.cancel() },
+            onDismiss = { sleepOpen = false },
         )
     }
 
@@ -1090,8 +1111,9 @@ private fun FullLyricsPage(
                 }
             }
             // 中部：整块全部给歌词，当前句由 PhoneLyrics 落在歌词区 42% 处。
-            // 点空白返回、点某句跳转：LazyColumn 会消费整块区域的按下事件，外层 clickable 收不到，
-            // 所以在上/下空白带各叠一个透明热区；中部留给歌词行自己的点击跳转。
+            // 这里**不再叠透明返回热区**：原来上/下各 120dp 的 clickable 盖在 LazyColumn 上，
+            // 吃掉按下事件，约三分之一歌词区起手拖不动，点一下还会直接退出全歌词页。
+            // 返回统一交给顶栏整行（本来就可点）与系统返回键；点歌词行仍是跳转播放进度。
             Box(Modifier.weight(1f)) {
                 PhoneLyrics(
                     syncedLyrics = syncedLyrics,
@@ -1102,20 +1124,6 @@ private fun FullLyricsPage(
                     onSeekLine = onSeekLine,
                     karaokeFill = karaokeFill,
                     modifier = Modifier.fillMaxSize(),
-                )
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(120.dp)
-                        .align(Alignment.TopCenter)
-                        .phoneTap(onBack),
-                )
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(120.dp)
-                        .align(Alignment.BottomCenter)
-                        .phoneTap(onBack),
                 )
             }
             // 底部：照搬播放页的常驻控制栏。控制层自己不压渐变（backdrop=false），
@@ -1226,6 +1234,9 @@ private fun ControlPanel(
     onCyclePlayMode: () -> Unit,
     onOpenQueue: () -> Unit,
     onOpenFx: () -> Unit,
+    /** 定时剩余分钟；null 表示没开定时。 */
+    sleepMinutesLeft: Int?,
+    onOpenSleepTimer: () -> Unit,
     /** 是否压一层「透明→深底」渐变。竖屏浮在模糊封面上需要它；横屏右栏已有统一背景，再压就成了深色方块。 */
     backdrop: Boolean = true,
     /** 是否自己吃系统导航条内边距。横屏右栏的外层已经吃过，这里不重复。 */
@@ -1294,7 +1305,9 @@ private fun ControlPanel(
             Modifier
                 .fillMaxWidth()
                 .padding(top = PhoneSpace.sm, bottom = PhoneSpace.md),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+            // 五个键等分铺满：原来 4 个固定 64dp 的键交给 SpaceEvenly 摊空隙，
+            // 411dp 上每键之间空出一大截，看着松散。
+            horizontalArrangement = Arrangement.spacedBy(PhoneSpace.xs),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             ActionKey(
@@ -1306,22 +1319,28 @@ private fun ControlPanel(
                 onClick = onToggleFavorite,
             )
             ActionKey(
+                glyph = PhoneGlyph.Timer,
+                label = sleepMinutesLeft?.let { "$it 分" } ?: "定时",
+                active = sleepMinutesLeft != null,
+                onClick = onOpenSleepTimer,
+            )
+            ActionKey(
                 glyph = playback.playMode.glyph(),
                 label = playModeLabel(playback.playMode),
                 active = false,
                 onClick = onCyclePlayMode,
             )
             ActionKey(
-                glyph = PhoneGlyph.Queue,
-                label = "队列",
-                active = false,
-                onClick = onOpenQueue,
-            )
-            ActionKey(
                 glyph = PhoneGlyph.Fx,
                 label = fxLabel ?: "音效",
                 active = fxLabel != null,
                 onClick = onOpenFx,
+            )
+            ActionKey(
+                glyph = PhoneGlyph.Queue,
+                label = "队列",
+                active = false,
+                onClick = onOpenQueue,
             )
         }
     }
@@ -1338,13 +1357,16 @@ private fun TransportKey(glyph: PhoneGlyph, onClick: () -> Unit) {
 }
 
 /**
- * 底部四个操作键。
+ * 底部五个操作键。
  *
  * 文字在图标下面（而不是只要图标）：手机上没有悬停提示，光看一个「均衡器竖条」
- * 猜不出那是音效。四个标签也顺便把当前状态说清楚了——「单曲循环」「已收藏」。
+ * 猜不出那是音效。标签也顺便把当前状态说清楚了——「单曲循环」「已收藏」「12 分」。
+ *
+ * 用 `weight(1f)` 而不是固定 64dp：5 个键要在一行里均匀铺满，固定宽 + SpaceEvenly
+ * 会随着键数变化露出不均匀的空隙。
  */
 @Composable
-private fun ActionKey(
+private fun RowScope.ActionKey(
     glyph: PhoneGlyph,
     label: String,
     active: Boolean,
@@ -1359,7 +1381,7 @@ private fun ActionKey(
     }
     Column(
         Modifier
-            .width(64.dp)
+            .weight(1f)
             .phoneTap { if (enabled) onClick() }
             .padding(vertical = PhoneSpace.xs),
         horizontalAlignment = Alignment.CenterHorizontally,

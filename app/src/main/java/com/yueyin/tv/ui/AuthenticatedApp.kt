@@ -15,7 +15,9 @@ import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -1210,6 +1212,9 @@ private fun LibraryTopBar(
     }
 }
 
+/** 连按方向键的判定间隔：两次焦点变化间小于它，就认为用户在快速连按，指示条直接吸附。 */
+private const val RAPID_NAV_MS = 160L
+
 @Composable
 private fun SegmentedLibraryTabs(
     selectedTab: LibraryNavTab,
@@ -1260,9 +1265,20 @@ private fun SegmentedLibraryTabs(
             }
         }
     }
+    // 焦点所在的 Tab（**不等切页完成**）。
+    // 指示条跟它走，而不是跟 selectedTab：切页被 View.post 推迟了一帧（原因见上面的注释），
+    // 跟 selectedTab 的话横条必然比白胶囊慢半拍。焦点是即时的，横条也就跟着即时。
+    var focusedTab by remember { mutableStateOf(selectedTab) }
+    // 选中页从别处变了（点内容区的「全部 ›」、系统恢复焦点）时把焦点目标同步回来。
+    // 这种情况下焦点不在导航条上，晚一帧没人看得出。
+    LaunchedEffect(selectedTab) { focusedTab = selectedTab }
+
     // Tab 拿到焦点时的统一处理。
     fun onTabFocused(tab: LibraryNavTab) {
-        if (selectedTab == tab) return
+        if (selectedTab == tab) {
+            focusedTab = tab
+            return
+        }
         if (navFocus.isTabSwitchBlocked()) {
             // 这次焦点来自"页面刚切换时系统自动恢复默认焦点"（落点是导航条第一个可聚焦项
             // ——「首页」Tab），不是用户按方向键移过来的。把焦点纠正回当前选中项，
@@ -1273,9 +1289,10 @@ private fun SegmentedLibraryTabs(
             return
         }
         navFocus.requestNavSwitch(tab.name.lowercase())
+        // 先记焦点目标，再排队切页：横条当场跟手，切页照旧延后一帧。
+        focusedTab = tab
         scheduleSwitch(tab)
     }
-    val containerShape = CircleShape
     val tabWidth = 78.dp
     val pillInset = 3.dp
     // 电视端不提供本地曲库：这一页是给手机壳用的（电视要用外接存储，扫描与遥控器选目录
@@ -1285,17 +1302,33 @@ private fun SegmentedLibraryTabs(
     val tabCount = if (showLocal) 6 else 5
     val containerWidth = tabWidth * tabCount + pillInset * 2
     // 指示器按「可见序号」算：隐藏本地项时，它后面的 Tab 序号要 -1，否则亮条会错位。
-    val hiddenOrdinalShift = if (!showLocal && selectedTab.ordinal > LibraryNavTab.Local.ordinal) 1 else 0
-    val visibleOrdinal = selectedTab.ordinal - hiddenOrdinalShift
+    fun visibleOrdinalOf(tab: LibraryNavTab): Int =
+        if (!showLocal && tab.ordinal > LibraryNavTab.Local.ordinal) tab.ordinal - 1 else tab.ordinal
     // 焦点左右链：显示本地项时在「专辑 → 歌单」之间插入它；隐藏时维持原来的直连。
     val albumsRight = if (showLocal) navRequesters.local else navRequesters.playlists
     val playlistsLeft = if (showLocal) navRequesters.local else navRequesters.albums
-    // 滑动指示器：随选中项平滑滑动
-    val indicatorX by animateDpAsState(
-        targetValue = pillInset + tabWidth * visibleOrdinal,
-        animationSpec = tween(durationMillis = FnMotion.Normal, easing = FastOutSlowInEasing),
-        label = "navIndicator",
-    )
+    val indicatorTarget = pillInset + tabWidth * visibleOrdinalOf(focusedTab)
+    // 指示条用 Animatable 手控，而不是 animateDpAsState：
+    // 连按方向键时 animateDpAsState 每按一次都重启一段动画，三段半截动画叠起来就是「追不上」
+    // 的拖影。这里记住上次目标变化的时间，间隔小于 RAPID_NAV_MS 就直接吸附到位，
+    // 停手后再由 spring 收尾——连按三下看到的是一次干脆的跳跃，而不是三次半截滑动。
+    val indicator = remember { Animatable(indicatorTarget, Dp.VectorConverter, label = "navIndicator") }
+    val lastIndicatorChangeAt = remember { longArrayOf(0L) }
+    LaunchedEffect(indicatorTarget) {
+        val now = System.currentTimeMillis()
+        val gap = now - lastIndicatorChangeAt[0]
+        lastIndicatorChangeAt[0] = now
+        if (gap in 1 until RAPID_NAV_MS) {
+            indicator.snapTo(indicatorTarget)
+        } else {
+            // 0.85 阻尼 + 700 刚度：约 120ms 到位，起步快、收尾软、不过冲。
+            // 距离长（首页 → 设置）自动加速，短距离（专辑 → 歌单）更柔和，这是 tween 做不到的。
+            indicator.animateTo(
+                targetValue = indicatorTarget,
+                animationSpec = spring(dampingRatio = 0.85f, stiffness = 700f),
+            )
+        }
+    }
     Box(
         Modifier.size(width = containerWidth, height = 53.dp),
     ) {
@@ -1303,8 +1336,8 @@ private fun SegmentedLibraryTabs(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .size(width = containerWidth, height = 49.dp)
-                .background(FnColors.SurfaceAlt, containerShape)
-                .border(0.5.dp, Color.White.copy(alpha = 0.10f), containerShape)
+                // 不再套外圈底色 + 描边：大框套小框会让整排 Tab 显得笨重，
+                // 选中态（白胶囊 + 下方亮条）本身就是最清楚的锚点，不需要再给一层容器。
                 .padding(3.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1403,12 +1436,14 @@ private fun SegmentedLibraryTabs(
                 onClick = { if (selectedTab != LibraryNavTab.Settings) onSettings() },
             )
         }
-        // 滑动指示器：选中项下方一段渐变亮条（比 tab 略窄、居中）
+        // 滑动指示器：选中项下方一段渐变亮条。
+        // 宽度收成 tab 的三分之一并水平居中——原来几乎与 tab 同宽，又因为整排没有外框衬托，
+        // 太长会像一条下划线；短条更像「指针」，也让焦点移动的方向更清楚。
         Box(
             Modifier
                 .align(Alignment.TopStart)
-                .offset(x = indicatorX + 11.dp, y = 49.5.dp)
-                .size(width = tabWidth - 22.dp, height = 2.5.dp)
+                .offset(x = indicator.value + 25.dp, y = 49.5.dp)
+                .size(width = 28.dp, height = 2.5.dp)
                 .background(FnGradients.Primary, RoundedCornerShape(FnRadius.sm)),
         )
     }
@@ -3411,10 +3446,11 @@ private fun AllPlaylists(
                                                 right = FocusRequester.Cancel
                                             }
                                         } else {
-                                            // 非排序模式：卡片按「上」回「歌单」Tab，
-                                            // 不再靠几何距离去猜（5 个 Tab 时容易落到别的 Tab）。
+                                            // 「上键回本页 Tab」只给第一排：第二排起必须按几何焦点
+                                            // 回到上一排，否则在内容区深处按一下上键就会整屏跳回顶栏，
+                                            // 用户根本没法逐行往上走。2.1.0 发布说明里写的就是「第一排」。
                                             Modifier.focusProperties {
-                                                up = navAnchors.playlists
+                                                if (index < playlistColumns) up = navAnchors.playlists
                                             }
                                         },
                                     )
@@ -3596,14 +3632,16 @@ private fun <T> PagedCatalogPage(
                     .fillMaxWidth()
                     .height(catalogGridHeight(maxHeight, rowHeightFor?.invoke(columnWidth))),
             ) {
-                items(entries, key = { key(it) }) { entry ->
+                gridItemsIndexed(entries, key = { _, entry -> key(entry) }) { index, entry ->
                     val entryKey = key(entry)
                     item(
                         entry,
                         Modifier
                             .then(if (focusedKey == entryKey) Modifier.focusRequester(contentFocus) else Modifier)
                             .then(
-                                if (upFocus != null) {
+                                // 只把「上键回本页 Tab」挂在第一排；下面各排交回 Compose 的几何焦点，
+                                // 按上键回到上一排而不是整屏跳顶栏（2.1.0 的设计意图就是第一排）。
+                                if (upFocus != null && index < columns) {
                                     Modifier.focusProperties { up = upFocus }
                                 } else {
                                     Modifier

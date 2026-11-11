@@ -51,6 +51,8 @@ import com.yueyin.tv.ui.LocalAuthenticatedDependencies
 import com.yueyin.tv.ui.MediaBand
 import com.yueyin.tv.ui.PlayerControlOverlay
 import com.yueyin.tv.ui.PlayerTransportOsd
+import com.yueyin.tv.ui.TransportOsd
+import com.yueyin.tv.ui.TransportOsdGlyph
 import com.yueyin.tv.ui.PlaylistTile
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.foundation.rememberScrollState
@@ -124,7 +126,7 @@ private fun PreviewPlayer() {
             Text("词：逃跑计划 · 曲：逃跑计划", color = FnColors.Muted, fontSize = 16.sp)
         }
         PlayerTransportOsd(
-            message = "下一曲 · 周杰伦 - 晴天",
+            osd = TransportOsd(TransportOsdGlyph.Next, "下一曲 · 周杰伦 - 晴天"),
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 190.dp),
         )
         Text(

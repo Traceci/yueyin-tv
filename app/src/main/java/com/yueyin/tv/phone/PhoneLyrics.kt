@@ -92,17 +92,19 @@ private fun KaraokeTimedLyrics(
     modifier: Modifier = Modifier,
 ) {
     // offset 在 KaraokeLyricsView 里的语义是「当前句被滚动到的距顶距离」，不是普通留白：
-    // 它同时用作 LazyColumn 首尾 contentPadding 与自动滚动的目标位置。写死 28.dp 会让
-    // 高亮句贴在头部歌名下面、歌词从顶部一路铺下来、下半屏留一大片空白。
+    // 它同时用作 LazyColumn 首尾 contentPadding 与自动滚动的目标位置。
     // 取歌词区高度的一半：当前句落在正中，上面的歌词与下面的歌词对称展开。
     BoxWithConstraints(modifier.fillMaxSize()) {
         val centerOffset = maxHeight * 0.5f
         val listState = rememberLazyListState()
         val positionState = rememberUpdatedState(positionMs.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt())
         val currentPosition = remember { { positionState.value } }
+        // 普通行压暗，当前句保持亮色：LyricsLineItem 用 activeAlpha=1 / inactiveAlpha=0.4
+        // 再拉一档差距；逐字扫填的 activeColor 也用亮色，两种歌词类型都能看出当前句。
+        val dimText = FnColors.Text.copy(alpha = 0.62f)
         CompositionLocalProvider(
             androidx.compose.material3.LocalTextStyle provides TextStyle(
-                color = FnColors.Text,
+                color = dimText,
                 fontSize = 20.sp,
                 lineHeight = 26.sp,
             ),
@@ -115,13 +117,13 @@ private fun KaraokeTimedLyrics(
                 onLinePressed = {},
                 modifier = Modifier.fillMaxSize(),
                 normalLineTextStyle = TextStyle(
-                    color = FnColors.Text,
+                    color = dimText,
                     fontSize = 21.sp,
                     lineHeight = 27.sp,
                     fontWeight = FontWeight.Bold,
                 ),
                 accompanimentLineTextStyle = TextStyle(
-                    color = FnColors.Text,
+                    color = dimText,
                     fontSize = 15.sp,
                     lineHeight = 19.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -141,6 +143,13 @@ private fun KaraokeTimedLyrics(
                 karaokeProgressEnabled = karaokeFill,
                 // 手机全歌词页要求歌词整块居中；这个参数默认 false，电视端不传、版式不变。
                 centerLines = true,
+                // 以下三项只在本页开启，电视端走默认值，行为零变化：
+                // ① 当前句不在可见区时也对齐到居中（原来用负偏移会把整块歌词推到顶上）；
+                // ② 手动翻看后 3 秒内不自动拽回；
+                // ③ 时间窗口没命中时仍高亮最近一句，避免整屏没有当前句。
+                centerAlignCurrentLine = true,
+                manualScrollPauseMs = 3_000L,
+                fallbackFocusLine = true,
             )
         }
     }
