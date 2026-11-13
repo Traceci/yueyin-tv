@@ -18,8 +18,11 @@ import com.yueyin.tv.core.data.local.CachedLyricEntity
 import com.yueyin.tv.core.data.local.CachedPageEntity
 import com.yueyin.tv.core.data.local.FavoriteTrackEntity
 import com.yueyin.tv.core.data.local.LocalStore
+import com.yueyin.tv.core.data.local.ProtocolSnapshotStore
 import com.yueyin.tv.core.data.online.OnlinePlatform
 import com.yueyin.tv.core.data.online.OnlineSong
+import com.yueyin.tv.core.data.connect.ConnectProfile
+import com.yueyin.tv.core.data.protocol.MusicProtocol
 import com.yueyin.tv.core.data.protocol.ProtocolLibrarySource
 import com.yueyin.tv.core.data.preferences.AppPreferences
 import com.yueyin.tv.core.model.Album
@@ -463,7 +466,37 @@ class MusicRepository internal constructor(
 
     val activeProtocolSource: ProtocolLibrarySource? get() = protocolSource
 
+    /** 协议平台集合曲目的磁盘快照（歌单 / 专辑 / 歌手曲目）。 */
+    private val protocolSnapshots by lazy { ProtocolSnapshotStore(localStore) }
+
+    /**
+     * 造一个协议数据源，并把「集合快照落盘」接上。
+     *
+     * 必须从这里创建，而不是在外面直接 new [ProtocolLibrarySource]：快照要用本仓库的
+     * [localStore]（容量预算、LRU 淘汰、设置页的「清理缓存」都挂在它上面）、
+     * [repositoryScope]（后台静默刷新），以及带平台维度的命名空间。
+     */
+    fun newProtocolSource(profile: ConnectProfile, protocol: MusicProtocol): ProtocolLibrarySource =
+        ProtocolLibrarySource(
+            profile = profile,
+            protocol = protocol,
+            snapshotStore = protocolSnapshots,
+            snapshotNamespace = { protocolNamespace(profile) },
+            refreshScope = repositoryScope,
+        )
+
+    /**
+     * 协议快照的命名空间：账号维度 + 平台维度。
+     *
+     * 平台维度是必须的——A 平台歌单的 guid 拿去 B 平台取链必然失败，而且两个平台的
+     * 歌单 id 完全可能撞车。未登录时返回 null，这一轮就不落盘，走纯内存，
+     * 等会话恢复后的正常路径再写。
+     */
+    private fun protocolNamespace(profile: ConnectProfile): String? =
+        runCatching { "${session.cacheNamespace()}|p:${profile.id}" }.getOrNull()
+
     fun setProtocolSource(source: ProtocolLibrarySource?) {
+        val previousSnapshotNamespace = protocolSource?.snapshotNamespaceOrNull()
         protocolSource = source
         // 换平台/换账号后旧的索引与缓存都不再有效
         searchTrackEntries = null
@@ -482,6 +515,18 @@ class MusicRepository internal constructor(
                 _favoriteState.update { state ->
                     val bound = if (state.namespace == namespace) state else state.bindNamespace(namespace)
                     bound.copy(statuses = bound.statuses + guids.associateWith { true })
+                }
+            }
+        }
+        // 换平台：旧平台的集合快照直接清掉。不清的话磁盘上会一直留着上一个平台的
+        // 歌单/专辑曲目（虽然命名空间不同、读不到，但白占容量预算）；
+        // 切回该平台时也会先闪一版可能已过期的列表。
+        // clearNamespace 只删 page/index/lyric 这些缓存表，收藏是用户数据，不在其中。
+        val nextSnapshotNamespace = source?.snapshotNamespaceOrNull()
+        if (previousSnapshotNamespace != null && previousSnapshotNamespace != nextSnapshotNamespace) {
+            repositoryScope.launch {
+                runCatching {
+                    localStore.clearNamespace(previousSnapshotNamespace, includeEssential = false)
                 }
             }
         }

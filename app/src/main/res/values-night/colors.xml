@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      夜间覆盖：与 designsystem/FnPalette.Dark 逐值一致。
+      页面目前仍读 FnColors（固定深色），因此本文件只影响显式使用 fn_token_* 的资源；
+      开放浅色入口时，values/colors.xml 已是浅色板，无需再改这里。
+    -->
+    <color name="fn_token_background">#FF070A10</color>
+    <color name="fn_token_surface">#FF10161F</color>
+    <color name="fn_token_surface_alt">#FF161D29</color>
+    <color name="fn_token_text">#FFF2F4F8</color>
+    <color name="fn_token_muted">#FF98A2B3</color>
+    <color name="fn_token_coral">#FFFF7A5C</color>
+    <color name="fn_token_focus_solid">#FFFF7A5C</color>
+    <color name="fn_token_focus_on_solid">#FF070A10</color>
+</resources>

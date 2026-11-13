@@ -27,6 +27,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -67,7 +68,9 @@ import com.yueyin.tv.core.audiofx.FxSettings
 import com.yueyin.tv.core.playback.AudioFxController
 import com.yueyin.tv.core.model.preferences.CacheBudget
 import com.yueyin.tv.core.model.preferences.CacheUsage
+import com.yueyin.tv.core.model.preferences.QualityTier
 import com.yueyin.tv.core.model.preferences.UiScale
+import com.yueyin.tv.ui.designsystem.tierLabel
 import com.yueyin.tv.ui.device.DeviceLayoutOverride
 import com.yueyin.tv.ui.device.LayoutOverride
 import com.yueyin.tv.ui.device.findHostActivity
@@ -96,12 +99,12 @@ private enum class SettingsSection(val title: String, val subtitle: String) {
 }
 
 /** 设置页统一间距，避免各分组视觉节奏不一致。 */
-private val GAP_TITLE = 20.dp // 副标题到首个分组的间隔
-private val GAP_GROUP = 22.dp // 分组之间的纵向间隔
+private val GAP_TITLE = 14.dp // 副标题到首个分组的间隔
+private val GAP_GROUP = 18.dp // 分组之间的纵向间隔（与首页网格 18dp 行距一致）
 private val GAP_LABEL = 10.dp // 分组标题到控件的间隔
-private val GAP_DESC = 12.dp // 说明文字到控件的间隔
-private val GAP_BLOCK = 16.dp // 说明块 / 操作按钮之间的间隔
-private val GAP_ROW = 10.dp // 同行多控件 / 多行之间的间隔
+private val GAP_DESC = 10.dp // 说明文字到控件的间隔
+private val GAP_BLOCK = 14.dp // 说明块 / 操作按钮之间的间隔
+private val GAP_ROW = 8.dp // 同行多控件 / 多行之间的间隔
 
 @Composable
 internal fun SettingsScreen(
@@ -245,7 +248,10 @@ internal fun SettingsScreen(
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(horizontal = 48.dp, vertical = 28.dp),
+                // 顶部留白 12dp：与首页（导航条下 8+4）、专辑页、我的页同一条基准线。
+                // 原先是 28dp，比其它一级页多出 16dp，切到设置时内容会明显往下坠。
+                .padding(horizontal = 48.dp)
+                .padding(top = 12.dp, bottom = 28.dp),
         ) {
             Text("设置", fontSize = 30.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(GAP_BLOCK))
@@ -375,13 +381,22 @@ internal fun SettingsScreen(
                 }
 
                 // —— 右侧内容区 ——
+                // 边框/背景必须画在「视口」上，不能画在滚动内容上：
+                // Modifier 按声明顺序逐层包裹，写在 verticalScroll 之后的 background / border
+                // 拿到的尺寸是内容的实际高度（可能远高于可视区），内容一长，边框就伸出可视区，
+                // 滚动时看起来是边框跟着内容走、还被裁掉一截。
+                // 所以顺序改为：背景 + 边框（视口层，高度由 fillMaxHeight 固定）
+                //   → clip（把滚动内容裁进圆角内，避免文字溢出到边框外）
+                //   → verticalScroll（这一层起才滚动）
+                //   → padding（内边距属于滚动内容，随内容一起走）。
                 Column(
                     Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .verticalScroll(rememberScrollState())
                         .background(SettingsPanel, RoundedCornerShape(FnRadius.md))
                         .border(1.dp, SettingsBorderColor, RoundedCornerShape(FnRadius.md))
+                        .clip(RoundedCornerShape(FnRadius.md))
+                        .verticalScroll(rememberScrollState())
                         .padding(horizontal = 28.dp, vertical = 24.dp),
                 ) {
                     Text(selected.title, fontSize = 18.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold)
@@ -451,6 +466,25 @@ internal fun SettingsScreen(
                                         .focusProperties { left = standardScaleFocus; right = FocusRequester.Cancel }
                                         .focusRequester(relaxedScaleFocus),
                                 )
+                            }
+                            Spacer(Modifier.height(GAP_GROUP))
+                            GroupLabel("画质档位")
+                            Text(
+                                "低配设备选「流畅」：关闭常驻动画与页面转场、用纯色替代渐变；焦点与播放功能不变。选「自动」按设备能力判定。",
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp,
+                                color = FnColors.Muted,
+                            )
+                            Spacer(Modifier.height(GAP_DESC))
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                QualityTier.entries.forEach { tier ->
+                                    SettingsChoiceButton(
+                                        label = tier.tierLabel(),
+                                        selected = preferences.qualityTier == tier,
+                                        onClick = { container.appPreferences.setQualityTier(tier) },
+                                        modifier = Modifier.width(120.dp),
+                                    )
+                                }
                             }
                             Spacer(Modifier.height(GAP_GROUP))
                             GroupLabel("界面形态")

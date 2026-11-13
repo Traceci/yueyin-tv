@@ -350,17 +350,21 @@ fun KaraokeLyricsView(
                     try {
                         scrollInCode.value = true
                         if (scrollOffset != null) {
-                            listState.scrollBy(scrollOffset.toFloat())
+                            listState.scrollBy(scrollOffset)
                         } else {
                             // 当前句不在可见区时，两条分支必须用同一个目标（距顶 stableOffsetPx）。
-                            // 原实现传负值，会把当前句推到 viewport 上方；offset 只有几十 dp 时
-                            // （电视端）误差看不出来，手机端 offset 是半个歌词区，误差被放大到整屏。
+                            // LazyList 的 scrollOffset 是「条目已经被滚出去多少」，不是「条目距顶多少」：
+                            // 条目落点 = contentPadding(offset) − scrollOffset。offset 已经被当成
+                            // contentPadding 用了一次，这里再传 +offset 就会两者相消，当前句正好贴到
+                            // 视口顶行（手机全屏歌词进入时「当前句跳顶」就是这么来的）。
+                            // 要落在 contentPadding 之后，scrollOffset 取 −keepAliveZone（保持与
+                            // scrollBy 分支的目标一致）；手机端 keepAliveZone=0，等价于传 0。
                             val alignOffset = if (centerAlignCurrentLine) {
-                                stableOffsetPx + keepAliveZonePx.toInt()
+                                -keepAliveZonePx.toInt()
                             } else {
                                 -stableOffsetPx - keepAliveZonePx.toInt()
                             }
-                            listState.animateScrollToItem(firstIndex, alignOffset.toInt())
+                            listState.animateScrollToItem(firstIndex, alignOffset)
                         }
                     } catch (_: Exception) {
                     } finally {

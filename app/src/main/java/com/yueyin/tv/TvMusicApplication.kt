@@ -63,8 +63,10 @@ internal class AppContainer(private val application: Application) : AppUiDepende
     }
 
     private fun applyProtocolSource(profile: com.yueyin.tv.core.data.connect.ConnectProfile?) {
+        // 走仓库的工厂，而不是直接 new：那里会把「集合曲目磁盘快照」、后台刷新作用域
+        // 和带平台维度的命名空间一并接上（见 MusicRepository.newProtocolSource）。
         val source = if (profile != null && profile.type != com.yueyin.tv.core.model.connect.ConnectType.FEINIU) {
-            com.yueyin.tv.core.data.protocol.ProtocolLibrarySource(
+            musicRepository.newProtocolSource(
                 profile = profile,
                 protocol = com.yueyin.tv.ui.connect.ConnectRuntime.registry.of(profile),
             )

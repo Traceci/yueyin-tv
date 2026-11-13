@@ -29,7 +29,7 @@ import com.mocharealm.accompanist.lyrics.core.model.SyncedLyrics
 import com.mocharealm.accompanist.lyrics.ui.composable.lyrics.KaraokeBreathingDotsDefaults
 import com.mocharealm.accompanist.lyrics.ui.composable.lyrics.KaraokeLyricsView
 import com.yueyin.tv.core.lyrics.lyricText
-import com.yueyin.tv.ui.FnColors
+import com.yueyin.tv.ui.designsystem.FnMediaColors
 
 /**
  * 手机端歌词视图。
@@ -96,12 +96,21 @@ private fun KaraokeTimedLyrics(
     // 取歌词区高度的一半：当前句落在正中，上面的歌词与下面的歌词对称展开。
     BoxWithConstraints(modifier.fillMaxSize()) {
         val centerOffset = maxHeight * 0.5f
-        val listState = rememberLazyListState()
+        // 进页时列表直接落在当前句上：否则从第 0 句起排，第一帧必然触发一次
+        // 「当前句不在可见区 → 滚过去」，肉眼能看到歌词从首句滑下来的闪动。
+        // 只在首次组合时按当时的播放进度取一次索引，后续进度变化交给库自己跟随。
+        val initialLineIndex = remember(lyrics) {
+            val lines = lyrics.lines
+            lines.indices.lastOrNull { positionMs >= lines[it].start.toLong() } ?: 0
+        }
+        val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialLineIndex)
         val positionState = rememberUpdatedState(positionMs.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt())
         val currentPosition = remember { { positionState.value } }
         // 普通行压暗，当前句保持亮色：LyricsLineItem 用 activeAlpha=1 / inactiveAlpha=0.4
         // 再拉一档差距；逐字扫填的 activeColor 也用亮色，两种歌词类型都能看出当前句。
-        val dimText = FnColors.Text.copy(alpha = 0.62f)
+        // 全屏歌词页背景恒为「封面模糊 + 深色压暗」，文字必须取 OnMedia 固定浅色，
+        // 不能跟随外观主题——浅色主题下深灰字压深底会看不清（与 PhonePlayerPage 同一约定）。
+        val dimText = FnMediaColors.Text.copy(alpha = 0.62f)
         CompositionLocalProvider(
             androidx.compose.material3.LocalTextStyle provides TextStyle(
                 color = dimText,
@@ -128,7 +137,7 @@ private fun KaraokeTimedLyrics(
                     lineHeight = 19.sp,
                     fontWeight = FontWeight.SemiBold,
                 ),
-                textColor = FnColors.Text,
+                textColor = FnMediaColors.Text,
                 blendMode = BlendMode.SrcOver,
                 useBlurEffect = false,
                 showTranslation = true,

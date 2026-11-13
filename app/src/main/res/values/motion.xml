@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      动效参数资源化（借鉴酷狗 538 个 anim XML / 13 个 interpolator 全引用资源的做法）。
+      时长与曲线只在这里定义，designsystem/FnMotion.kt 通过 rememberMotionTokens() 读取；
+      换机型档位或做 A/B 时改资源即可，不必逐个 Composable 改常量。
+    -->
+    <integer name="motion_short_ms">150</integer>
+    <integer name="motion_standard_ms">220</integer>
+    <integer name="motion_long_ms">320</integer>
+    <integer name="motion_stagger_count">8</integer>
+</resources>

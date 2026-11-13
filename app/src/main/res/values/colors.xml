@@ -1,4 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- 启动窗口底色：始终深色。浅色系统主题下冷启动若给浅底，会在 Compose 深色首帧前闪白。 -->
     <color name="fn_background">#101214</color>
+
+    <!--
+      语义色 token（浅色板）。系统夜间模式由 values-night/colors.xml 覆盖为深色板。
+      借鉴酷狗的 skin_* 语义色 + values-night 覆盖：颜色有名字，页面不再各写 0x...
+      Compose 侧对应 designsystem/FnPalette.kt 的 Light / Dark，两套逐值保持一致。
+    -->
+    <color name="fn_token_background">#FFF5F7FA</color>
+    <color name="fn_token_surface">#FFFFFFFF</color>
+    <color name="fn_token_surface_alt">#FFEDF1F6</color>
+    <color name="fn_token_text">#FF12161D</color>
+    <color name="fn_token_muted">#FF5A6472</color>
+    <color name="fn_token_coral">#FFB33D24</color>
+    <color name="fn_token_focus_solid">#FFB33D24</color>
+    <color name="fn_token_focus_on_solid">#FFF5F7FA</color>
 </resources>

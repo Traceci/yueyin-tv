@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
   "packageName": "com.yueyin.tv",
-  "versionName": "2.1.1",
-  "versionCode": 39,
-  "title": "悦音 2.1.1",
-  "notes": "# 悦音 2.1.1\n\n## 改动\n\n- **手机歌词**：当前句居中高亮，其余行压暗；手动滚动后不会立刻被拽回。\n- **手机曲库**：歌曲 / 专辑 / 歌手 / 歌单 / 文件夹支持左右滑动切换。\n- **电视 Tab 栏**：去掉外框与底色，只留白胶囊与亮条；亮条跟随焦点即时移动、收短居中。\n\n## 新增\n\n- **手机定时**：15 / 30 / 45 分钟、1 / 2 小时五档；退出播放页仍计时，到点暂停，队列与进度保留。\n\n## 说明\n\n- versionCode 39，versionName 2.1.1，签名与 2.1.0 一致，可直接覆盖安装。",
+  "versionName": "2.1.2",
+  "versionCode": 40,
+  "title": "悦音 2.1.2",
+  "notes": "# 悦音 2.1.2\n\n同一个安装包同时支持电视、手机与车机，签名与 2.1.0 一致，可直接覆盖安装。\n\n## 新增\n\n1. 手机端浅色 / 深色。\n\n## 优化\n\n1. 优化 DLNA 投播。\n2. 解决不能 FNID 登录的问题，现在可以 FNID 登录。\n3. 进一步优化流畅度；设置中增加选择。\n4. 其它系统界面 / 操作逻辑调优。",
   "apk": {
-    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v2.1.1/yueyin-2.1.1-release.apk",
-    "size": 8094779,
-    "sha256": "5523062c41ee0b72a1010a54f1435c096a2d452da865d86004e5c35125da6dd7"
+    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v2.1.2/yueyin-2.1.2-release.apk",
+    "size": 8112335,
+    "sha256": "9dbe7f015bbd738f693195ba1f484a2f2e489f4c29f594981355f76f59e006af"
   },
-  "publishedAt": "2026-11-11T11:25:00Z",
-  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v2.1.1"
+  "publishedAt": "2026-11-13T12:45:00Z",
+  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v2.1.2"
 }

@@ -1,5 +1,10 @@
 package com.yueyin.tv.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.view.Window
+
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -21,6 +26,8 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.key
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
@@ -36,14 +43,28 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.tv.material3.LocalContentColor
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.darkColorScheme
+import com.yueyin.tv.core.model.preferences.QualityTier
+import com.yueyin.tv.ui.designsystem.FnBrushes
+import com.yueyin.tv.ui.designsystem.FnPalette
+import com.yueyin.tv.ui.designsystem.FnPaletteHolder
+import com.yueyin.tv.ui.designsystem.LocalFnPalette
+import com.yueyin.tv.ui.designsystem.LocalMotionTokens
+import com.yueyin.tv.ui.designsystem.LocalRenderPolicy
+import com.yueyin.tv.ui.designsystem.policy
+import com.yueyin.tv.ui.designsystem.rememberIdleFloat
+import com.yueyin.tv.ui.designsystem.rememberMotionTokens
+import com.yueyin.tv.ui.designsystem.resolveEffectiveTier
 import com.yueyin.tv.ui.device.FormFactor
 
 /**
@@ -51,77 +72,69 @@ import com.yueyin.tv.ui.device.FormFactor
  * 全局统一使用本调色板，保证各页面颜色一致、焦点明确、明暗层次清晰。
  */
 object FnColors {
+    // 全部改为语义 token 的别名：值与改造前逐项一致，页面无需改动，
+    // 但颜色来源从此只有一个（designsystem/FnPalette.kt）。
+    private val palette get() = FnPaletteHolder.current
+
     /** 最深底色：近黑蓝，作为所有页面的基底。 */
-    val Background = Color(0xFF070A10)
+    val Background get() = palette.background
 
     /** 卡片/容器表面。 */
-    val Surface = Color(0xFF10161F)
+    val Surface get() = palette.surface
 
     /** 更高一级的表面（弹层、输入框、选中容器）。 */
-    val SurfaceAlt = Color(0xFF161D29)
+    val SurfaceAlt get() = palette.surfaceAlt
 
     /** 主文字。 */
-    val Text = Color(0xFFF2F4F8)
+    val Text get() = palette.text
 
     /** 次要文字。 */
-    val Muted = Color(0xFF98A2B3)
+    val Muted get() = palette.muted
 
     /** 主色：珊瑚橙，用于焦点、选中与品牌强调。 */
-    val Coral = Color(0xFFFF7A5C)
+    val Coral get() = palette.coral
 
     /** 主色渐变伴侣：暖金。 */
-    val Amber = Color(0xFFFFB46B)
+    val Amber get() = palette.amber
 
     /** 辅助色：青绿，用于随机漫游/播放相关。 */
-    val Teal = Color(0xFF4FD1A5)
+    val Teal get() = palette.teal
 
     /** 辅助色：湖蓝。 */
-    val Cyan = Color(0xFF5FC8FF)
+    val Cyan get() = palette.cyan
 
     /** 辅助色：紫罗兰，用于收藏/浪漫氛围。 */
-    val Violet = Color(0xFF9B8CFF)
+    val Violet get() = palette.violet
 
     /** 警示/歌单图标等。 */
-    val Warning = Color(0xFFE8C36A)
+    val Warning get() = palette.warning
 
-    /** 焦点填充：主色向表面融合的柔和底。 */
-    // 聚焦蒙版改为中性微提亮：珊瑚色只留给描边与光晕（见 fnFocusRing / focusGlow），
-    // 封面/卡片聚焦时不再被染成橙色，层次更干净。
-    val FocusFill = Color.White.copy(alpha = 0.06f)
+    /** 焦点填充：中性微提亮，珊瑚色只留给描边与光晕。 */
+    val FocusFill get() = palette.focusFill
 
-    /**
-     * 表单类控件的统一焦点实心：按钮、选项、开关、图标按钮聚焦时都铺这个色。
-     *
-     * 为什么要单列一个 token：设置页此前有五套焦点样式（珊瑚半透明 / 深灰蓝+琥珀金边 /
-     * 珊瑚实心 / 只加橙边 / 只有白环），同一页里换个控件焦点色就变一次，用户反而看不出
-     * 「我现在在哪」。现在统一成一种语言：
-     *   - 焦点实心 = 我在这个控件上（[FocusSolid] + [FocusOnSolid] 文字）
-     *   - 选中浅底 = 这个值被选定了，但焦点不在（[SelectedSoft] + [Coral] 文字/描边）
-     *   - 未选中   = 深色底 + 白发丝边
-     * 图片类卡片（封面、海报）不适用实心，仍用白环 + 缩放，避免盖住画面。
-     */
-    val FocusSolid = Coral
+    /** 焦点实心：按钮、选项、开关、图标按钮聚焦时统一铺这个色。 */
+    val FocusSolid get() = palette.focusSolid
 
-    /** 焦点实心上的文字与图标：珊瑚是亮色，白字对比度不够，用近黑底反色。 */
-    val FocusOnSolid = Background
+    /** 焦点实心上的文字与图标：用底色反色保证对比度。 */
+    val FocusOnSolid get() = palette.focusOnSolid
 
-    /** 选中态（焦点已离开该控件）的填充：主色低透明度底，与焦点实心一眼可分。 */
-    val SelectedSoft = Coral.copy(alpha = 0.16f)
+    /** 选中态（焦点已离开该控件）的填充。 */
+    val SelectedSoft get() = palette.selectedSoft
 }
 
 /** 常用渐变笔刷：横向统一的“流光”渐变，用于强调与氛围。 */
 object FnGradients {
     /** 珊瑚→暖金：主品牌/选中强调。 */
-    val Primary = Brush.linearGradient(listOf(FnColors.Coral, FnColors.Amber))
+    val Primary get() = Brush.linearGradient(listOf(FnColors.Coral, FnColors.Amber))
 
     /** 青绿→湖蓝：随机漫游、播放氛围。 */
-    val Calm = Brush.linearGradient(listOf(FnColors.Teal, FnColors.Cyan))
+    val Calm get() = Brush.linearGradient(listOf(FnColors.Teal, FnColors.Cyan))
 
     /** 紫罗兰→珊瑚：收藏、浪漫氛围。 */
-    val Twilight = Brush.linearGradient(listOf(FnColors.Violet, FnColors.Coral))
+    val Twilight get() = Brush.linearGradient(listOf(FnColors.Violet, FnColors.Coral))
 
     /** 深空：表面→更深的背景。 */
-    val Deep = Brush.verticalGradient(listOf(FnColors.Surface, FnColors.Background))
+    val Deep get() = Brush.verticalGradient(listOf(FnColors.Surface, FnColors.Background))
 }
 
 /**
@@ -468,16 +481,13 @@ fun FnSkeleton(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(FnRadius.md),
 ) {
-    val transition = rememberInfiniteTransition(label = "skeleton")
+    // 统一常驻动画入口：低档位返回静态 State，界面静止时不再产生动画帧。
     // 持有 State、在绘制阶段取值：高光每帧移动，但不产生重组（首屏 8 个骨架同时存在，这点很关键）
-    val sweep = transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1_400, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
+    val sweep = rememberIdleFloat(
         label = "skeletonSweep",
+        policy = LocalRenderPolicy.current,
+        durationMs = 1_400,
+        repeatMode = RepeatMode.Restart,
     )
     Box(
         modifier
@@ -492,11 +502,7 @@ fun FnSkeleton(
                     val startX = -bandWidth + (size.width + bandWidth * 2) * sweep.value
                     drawRect(
                         brush = Brush.linearGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                Color.White.copy(alpha = 0.07f),
-                                Color.Transparent,
-                            ),
+                            colors = FnBrushes.SkeletonHighlight,
                             // linearGradient 用起止 Offset 定位（不像 vertical/horizontalGradient 那样接受 startY/endY）
                             start = Offset(startX, 0f),
                             end = Offset(startX + bandWidth, size.height),
@@ -514,8 +520,32 @@ private const val CAR_FONT_SCALE = 1.12f
 fun YueYinTheme(
     uiScale: Float = 1f,
     formFactor: FormFactor = FormFactor.Tv,
+    qualityTier: QualityTier = QualityTier.Auto,
+    /** 深色为默认。浅色板与 values/ 资源已备好，是否开放切换入口由产品决定。 */
+    darkTheme: Boolean = true,
     content: @Composable () -> Unit,
 ) {
+    // 画质档位解析一次即可：设备能力不会在进程内变化，用户手选由 preferences 的
+    // StateFlow 驱动重组的 YueYinTheme 重新进入，remember 会按档位重算。
+    val context = LocalContext.current
+    val effectiveTier = remember(qualityTier, context) { resolveEffectiveTier(context, qualityTier) }
+    val renderPolicy = remember(effectiveTier) { effectiveTier.policy() }
+    val palette = if (darkTheme) FnPalette.Dark else FnPalette.Light
+    // 组合期同步：FnColors/FnGradients 是普通 object，无法读 CompositionLocal。
+    FnPaletteHolder.current = palette
+    // 状态栏/导航条图标颜色跟随主题：深色底用浅图标，浅色底用深图标。
+    // 放在 SideEffect 里，主题切换后每次成功组合都会重新应用。
+    val view = LocalView.current
+    val window = context.activityWindow()
+    SideEffect {
+        if (window != null) {
+            val controller = WindowInsetsControllerCompat(window, view)
+            controller.isAppearanceLightStatusBars = !darkTheme
+            controller.isAppearanceLightNavigationBars = !darkTheme
+        }
+    }
+    // 动效时长/曲线从 res/values/motion.xml 读取，不再散落在各页面的常量里。
+    val motionTokens = rememberMotionTokens()
     // 4K 电视（如 TCK65K）画布为 1920×1080dp，若按原密度渲染所有元素会显得只有
     // 1080p 电视的一半。这里做全局密度补偿：宽画布按 2× 折算，有效画布回到
     // 960×540dp，与 1080p 电视视觉完全一致；1080p 及以下设备不受影响。
@@ -543,22 +573,37 @@ fun YueYinTheme(
     val density = Density(original.density * scale * uiScale, fontScale)
     MaterialTheme(
         colorScheme = darkColorScheme(
-            primary = FnColors.Coral,
-            secondary = FnColors.Teal,
-            tertiary = FnColors.Violet,
-            background = FnColors.Background,
-            surface = FnColors.Surface,
-            onPrimary = FnColors.Background,
-            onSecondary = FnColors.Background,
-            onTertiary = FnColors.Background,
-            onBackground = FnColors.Text,
-            onSurface = FnColors.Text,
+            primary = palette.coral,
+            secondary = palette.teal,
+            tertiary = palette.violet,
+            background = palette.background,
+            surface = palette.surface,
+            onPrimary = palette.background,
+            onSecondary = palette.background,
+            onTertiary = palette.background,
+            onBackground = palette.text,
+            onSurface = palette.text,
         ),
     ) {
         CompositionLocalProvider(
             LocalDensity provides density,
-            LocalContentColor provides FnColors.Text,
-            content = content,
-        )
+            LocalContentColor provides palette.text,
+            LocalRenderPolicy provides renderPolicy,
+            LocalFnPalette provides palette,
+            LocalMotionTokens provides motionTokens,
+        ) {
+            // 切换深浅色时让整棵内容树重组一次，刷新所有 FnColors 读取处。
+            key(darkTheme) { content() }
+        }
     }
+}
+
+/** 从 ContextWrapper 链里取出 Activity 的 Window（Compose 的 LocalContext 常是包装过的）。 */
+private fun Context.activityWindow(): Window? {
+    var current: Context? = this
+    while (current is ContextWrapper) {
+        if (current is Activity) return current.window
+        current = current.baseContext
+    }
+    return null
 }

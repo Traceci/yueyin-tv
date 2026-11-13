@@ -8,7 +8,7 @@
 
 <p align="center">
   <img alt="Platform" src="https://img.shields.io/badge/Android%206.0%2B-Android%20TV%20%7C%20Phone-3DDC84?logo=android&logoColor=white">
-  <img alt="Version" src="https://img.shields.io/badge/version-2.0.4-orange">
+  <img alt="Version" src="https://img.shields.io/badge/version-2.1.2-orange">
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue">
 </p>
 
@@ -134,6 +134,8 @@
 
 正式安装包需要自备签名证书。**本仓库不包含任何签名私钥。**
 
+启用 FNID 远程登录还需在构建时提供 `FN_CONNECT_AUTHX_PREFIX` 与 `FN_CONNECT_API_KEY` 两个环境变量（必须成对）；未配置时 FNID 不可用，局域网 IP / 域名连接不受影响。**本仓库不包含任何凭据。**
+
 ## 首次使用
 
 1. 打开 App，直接进首页，不需要注册任何账号
@@ -145,7 +147,6 @@
 
 ## 已知限制
 
-- **飞牛远程登录（FNID）不可用**。请填局域网 IP，或能直接访问的域名。
 - **WebDAV / SMB 的歌曲信息来自目录和文件名**，元数据不如媒体服务器完整；封面取同目录下的图片文件。
 - **Plex 需要手动填 Token**，暂不支持电视上显示配对码、手机确认的授权方式。
 - **SMB / WebDAV 播放**个别文件可能没声音，兼容性还在完善。

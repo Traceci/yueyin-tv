@@ -44,6 +44,41 @@ enum class AmbientEffect {
     }
 }
 
+/**
+ * 画质档位：统一控制过渡动画、常驻动画、渐变/半透明层等装饰负载。
+ * 这是**设备级**设置，不随账号切换；Auto 由设备能力自动判定，其余为用户手选。
+ * 低档位只降装饰，焦点反馈、进度、列表、播放等功能完整保留。
+ */
+enum class QualityTier {
+    /** 自动：按低内存标记、可用内存、系统版本与设备形态判定。 */
+    Auto,
+
+    /** 流畅：关闭常驻动画与页面转场、纯色替渐变，供低端设备使用。 */
+    Smooth,
+
+    /** 均衡：保留必要反馈，简化转场与渐变层。 */
+    Balanced,
+
+    /** 精美：完整动效与图形效果。 */
+    Rich;
+
+    companion object {
+        fun of(name: String?): QualityTier = entries.firstOrNull { it.name == name } ?: Auto
+    }
+}
+
+/**
+ * 外观模式。电视端固定深色（暗环境 + 3 米观看距离），只有手机端开放三档。
+ * 设备级设置，切换账号不重置。
+ */
+enum class ThemeMode {
+    FollowSystem, Light, Dark;
+
+    companion object {
+        fun of(name: String?): ThemeMode = entries.firstOrNull { it.name == name } ?: Dark
+    }
+}
+
 data class AppPreferencesState(
     val playerStyle: PlayerStyle = PlayerStyle.Cover,
     val cacheBudget: CacheBudget = CacheBudget.Default,
@@ -62,6 +97,10 @@ data class AppPreferencesState(
     val karaokeFill: Boolean = true,
     /** 大海报模式是否把封面虚化为全屏背景。 */
     val blurredBackdrop: Boolean = true,
+    /** 画质档位（设备级，低配可整体降级装饰负载）。 */
+    val qualityTier: QualityTier = QualityTier.Auto,
+    /** 外观模式；电视端忽略此值，恒为深色。默认深色，避免装包后外观突变。 */
+    val themeMode: ThemeMode = ThemeMode.Dark,
 )
 
 data class CacheUsage(

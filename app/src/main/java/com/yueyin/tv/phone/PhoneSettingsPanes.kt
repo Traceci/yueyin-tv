@@ -55,7 +55,10 @@ import com.yueyin.tv.core.audiofx.FxSettings
 import com.yueyin.tv.core.model.preferences.AmbientEffect
 import com.yueyin.tv.core.model.preferences.CacheBudget
 import com.yueyin.tv.core.model.preferences.CacheUsage
+import com.yueyin.tv.core.model.preferences.QualityTier
+import com.yueyin.tv.core.model.preferences.ThemeMode
 import com.yueyin.tv.core.model.preferences.UiScale
+import com.yueyin.tv.ui.designsystem.tierLabel
 import com.yueyin.tv.core.playback.AudioFxController
 import com.yueyin.tv.ui.FnColors
 import com.yueyin.tv.ui.device.DeviceLayoutOverride
@@ -180,6 +183,24 @@ internal fun PhonePlayerSettingsPane(onBack: () -> Unit) {
                 selected = prefs.ambientEffect,
                 label = { it.effectName() },
                 onSelect = { prefsController.setAmbientEffect(it) },
+            )
+            PhoneSettingsDivider()
+            PhoneSettingsChoiceRow(
+                title = "画质档位",
+                subtitle = "低配设备选「流畅」可关闭常驻动画与转场",
+                options = QualityTier.entries,
+                selected = prefs.qualityTier,
+                label = { it.tierLabel() },
+                onSelect = { prefsController.setQualityTier(it) },
+            )
+            PhoneSettingsDivider()
+            PhoneSettingsChoiceRow(
+                title = "外观",
+                subtitle = "浅色仅手机端生效，电视端保持深色",
+                options = ThemeMode.entries,
+                selected = prefs.themeMode,
+                label = { it.themeModeLabel() },
+                onSelect = { prefsController.setThemeMode(it) },
             )
         }
 
@@ -942,4 +963,11 @@ private fun updateActionEnabled(state: UpdateUiState): Boolean = when (state) {
     -> false
 
     else -> true
+}
+
+/** 手机端外观三档的展示名；电视端不暴露此入口。 */
+private fun ThemeMode.themeModeLabel(): String = when (this) {
+    ThemeMode.FollowSystem -> "跟随系统"
+    ThemeMode.Light -> "浅色"
+    ThemeMode.Dark -> "深色"
 }

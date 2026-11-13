@@ -73,6 +73,14 @@ internal object PhonePlayback {
             }
         }
 
+        // 当前这首仍然取不到直链时，不能把队列提交给播放器。
+        // 播放器拿到空 URL 会抛 IO_FILE_NOT_FOUND，播放页显示「播放失败：音源文件不存在」；
+        // 更糟的是 playQueue 只要有曲目就返回非 null，于是这里会被误判成「起播成功」，
+        // 调用方的兜底重搜永远不会被触发 —— 用户看到的就是点一次报一次错。
+        // 在线音源冷启动后 songIndex 为空，而「最近播放」只有 guid、没有完整曲目元数据，
+        // 正是踩在这条路径上。返回 false，让上层去按歌名在当前平台重搜再播。
+        if (queue[currentIndex].streamUrl.isBlank()) return false
+
         val submitted = deps.playbackController.playQueue(queue, currentIndex) != null
         if (!submitted) return false
 

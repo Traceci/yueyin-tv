@@ -13,11 +13,16 @@ import com.yueyin.tv.core.model.Page
 import com.yueyin.tv.core.model.PlaybackTrack
 import com.yueyin.tv.core.model.Playlist
 import com.yueyin.tv.core.data.repository.SearchResults
+import com.yueyin.tv.core.data.local.ProtocolSnapshotStore
 import com.yueyin.tv.core.model.Track
 import com.yueyin.tv.core.model.TrackGuid
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -33,12 +38,20 @@ import java.util.concurrent.TimeUnit
  * 把数据源换成当前激活的平台，界面自然就跟着换了（这也是 Amcfy 的核心做法）。
  *
  * 各协议的列表接口都是"一次给一批"（上限 500），这里在内存里缓存并按页切片，
- * 避免 UI 翻页时反复打网络。
+ * 避免 UI 翻页时反复打网络；歌单/专辑/歌手曲目另有一层磁盘快照（见 [snapshotStore]），
+ * 冷启动时先读盘直接出列表，再后台静默刷新。
+ *
+ * @param snapshotStore 集合曲目的磁盘快照。为空则退化成纯内存缓存（单测 / 无存储场景）。
+ * @param snapshotNamespace 快照命名空间（含平台维度），调用时才求值——构造时可能还没登录。
+ * @param refreshScope 后台静默刷新用的作用域。为空则不做「读盘后刷新」。
  */
 class ProtocolLibrarySource(
     private val profile: ConnectProfile,
     private val protocol: MusicProtocol,
     private val client: OkHttpClient = defaultClient(),
+    private val snapshotStore: ProtocolSnapshotStore? = null,
+    private val snapshotNamespace: (() -> String?)? = null,
+    private val refreshScope: CoroutineScope? = null,
 ) {
     val displayName: String get() = profile.displayName
     val type = profile.type
@@ -46,11 +59,16 @@ class ProtocolLibrarySource(
     /** 当前协议是否有服务端收藏（false 时上层走本地收藏兜底）。 */
     val supportsServerFavorites: Boolean get() = protocol.supportsServerFavorites
 
+    /** 切平台时给上层做旧数据清理用。 */
+    internal fun snapshotNamespaceOrNull(): String? = snapshotNamespace?.invoke()
+
     private val mutex = Mutex()
     private val playlistCache = mutableMapOf<String, List<RemoteSong>>()
     private val albumSongCache = mutableMapOf<String, List<RemoteSong>>()
     private val artistSongCache = mutableMapOf<String, List<RemoteSong>>()
     private val artistAlbumCache = mutableMapOf<String, List<RemoteAlbum>>()
+    /** 正在后台刷新的快照，避免同一个集合被连续点进时刷多遍。 */
+    private val inflightRefreshes = ConcurrentHashMap.newKeySet<String>()
     private var allPlaylists: List<RemotePlaylist>? = null
     private var allArtists: List<RemoteArtist>? = null
     private var allAlbums: List<RemoteAlbum>? = null
@@ -70,9 +88,7 @@ class ProtocolLibrarySource(
         cachedPlaylists().firstOrNull { it.id == id }?.toDomain()
 
     suspend fun playlistTracks(id: String, page: Int, pageSize: Int = 100): Page<Track> {
-        val songs = mutex.withLock {
-            playlistCache[id] ?: protocol.playlistSongs(profile, id).also { playlistCache[id] = it }
-        }
+        val songs = songsOf(playlistCache, KIND_PLAYLIST_TRACKS, id) { protocol.playlistSongs(profile, id) }
         return songs.map { it.toTrack() }.paged(page, pageSize)
     }
 
@@ -89,9 +105,7 @@ class ProtocolLibrarySource(
         cachedArtists().firstOrNull { it.id == id }?.toDomain()
 
     suspend fun artistTracks(id: String, page: Int, pageSize: Int = 100): Page<Track> {
-        val songs = mutex.withLock {
-            artistSongCache[id] ?: protocol.artistSongs(profile, id).also { artistSongCache[id] = it }
-        }
+        val songs = songsOf(artistSongCache, KIND_ARTIST_TRACKS, id) { protocol.artistSongs(profile, id) }
         return songs.map { it.toTrack() }.paged(page, pageSize)
     }
 
@@ -113,9 +127,7 @@ class ProtocolLibrarySource(
         cachedAlbums().firstOrNull { it.id == id }?.toDomain()
 
     suspend fun albumTracks(id: String, page: Int, pageSize: Int = 100): Page<Track> {
-        val songs = mutex.withLock {
-            albumSongCache[id] ?: protocol.albumSongs(profile, id).also { albumSongCache[id] = it }
-        }
+        val songs = songsOf(albumSongCache, KIND_ALBUM_TRACKS, id) { protocol.albumSongs(profile, id) }
         return songs.map { it.toTrack() }.paged(page, pageSize)
     }
 
@@ -287,6 +299,82 @@ class ProtocolLibrarySource(
         allArtists ?: protocol.artists(profile).also { allArtists = it }
     }
 
+    // ---------------------------------------------------------------- 集合曲目取数
+
+    /**
+     * 内存 → 磁盘快照 → 网络。
+     *
+     * 读盘命中时**立刻返回**（进歌单不再干等音源脚本跑完），同时在后台静默拉一次最新数据，
+     * 下次再进这个列表就是新的；刷新失败就继续用磁盘里的快照，不给用户弹错。
+     *
+     * 没命中才走网络，成功后写内存 + 写盘。空结果只进内存、不写盘：
+     * 空列表落在盘上会让人以为歌单真的空了，而且永远不会自我纠正。
+     */
+    private suspend fun songsOf(
+        cache: MutableMap<String, List<RemoteSong>>,
+        kind: String,
+        id: String,
+        fetch: suspend () -> List<RemoteSong>,
+    ): List<RemoteSong> {
+        mutex.withLock { cache[id] }?.let { return it }
+
+        val store = snapshotStore
+        val namespace = snapshotNamespace?.invoke()
+        if (store != null && namespace != null) {
+            val stored = store.readSongs(namespace, kind, id, SNAPSHOT_TTL_MS)
+            if (stored != null) {
+                mutex.withLock { cache[id] = stored }
+                refreshInBackground(cache, kind, id, fetch)
+                return stored
+            }
+        }
+
+        // 同一集合的并发请求共用一次网络拉取（协议接口本来就是串行访问的，保持原语义）。
+        // 落盘放在锁外：写库虽然只有一条 upsert，但没必要在临界区里占着全局锁。
+        val fresh = mutex.withLock { cache[id] ?: fetch().also { cache[id] = it } }
+        if (fresh.isNotEmpty()) persist(kind, id, fresh)
+        return fresh
+    }
+
+    /** 后台补一次最新数据，成功后同时更新内存与磁盘。 */
+    private fun refreshInBackground(
+        cache: MutableMap<String, List<RemoteSong>>,
+        kind: String,
+        id: String,
+        fetch: suspend () -> List<RemoteSong>,
+    ) {
+        val scope = refreshScope ?: return
+        val key = "$kind|$id"
+        // 同一个集合连续被点进好几次时，只留一次刷新
+        if (!inflightRefreshes.add(key)) return
+        scope.launch {
+            try {
+                val fresh = fetch()
+                if (fresh.isNotEmpty()) {
+                    mutex.withLock { cache[id] = fresh }
+                    persist(kind, id, fresh)
+                }
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (_: Exception) {
+                // 静默失败：继续用磁盘里的快照，下次进页面再试
+            } finally {
+                inflightRefreshes.remove(key)
+            }
+        }
+    }
+
+    /**
+     * 落盘。同步等它写完，而不是 fire-and-forget：
+     * 写一条 upsert 是毫秒级，换来的是「刚返回的列表」与「盘里的快照」一致，
+     * 进程被立刻杀掉（用户点了列表就退出）时也不会丢。失败静默——缓存是优化，不是依赖。
+     */
+    private suspend fun persist(kind: String, id: String, songs: List<RemoteSong>) {
+        val store = snapshotStore ?: return
+        val namespace = snapshotNamespace?.invoke() ?: return
+        runCatching { store.writeSongs(namespace, kind, id, songs) }
+    }
+
     private suspend fun cachedAlbums(): List<RemoteAlbum> = mutex.withLock {
         allAlbums ?: protocol.albums(profile).also { allAlbums = it }
     }
@@ -338,6 +426,13 @@ class ProtocolLibrarySource(
     private companion object {
         const val BROWSER_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+        /** 集合快照有效期，与搜索歌曲索引保持一致。过期直接走网络，不做「先用旧的再补」。 */
+        const val SNAPSHOT_TTL_MS = 24L * 60 * 60 * 1000
+
+        const val KIND_PLAYLIST_TRACKS = "playlist-tracks"
+        const val KIND_ALBUM_TRACKS = "album-tracks"
+        const val KIND_ARTIST_TRACKS = "artist-tracks"
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)

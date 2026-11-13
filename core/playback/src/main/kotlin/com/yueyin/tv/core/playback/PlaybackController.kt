@@ -369,7 +369,7 @@ class PlaybackController(
         pendingStreamAutoPlay = !selectedReady && autoPlay
         if (selectedReady) {
             player.prepare()
-            if (autoPlay) player.play() else player.pause()
+            if (autoPlay) player.startIfAllowed() else player.pause()
         } else {
             // 当前首取链失败：立刻就地重取（早于后台补链那几十首，避免被串行取链排队堵住），
             // 拿到链后由 patchStreamUrl 统一 prepare/play。
@@ -572,9 +572,32 @@ class PlaybackController(
         controller?.let { player -> if (player.isPlaying) player.pause() }
     }
 
-    /** 投播接管前把本机播放停下来，避免手机与电视同时出声。 */
+    /**
+     * 投播期间压住本机起播。
+     *
+     * 进程内标志而不是持久化设置：退出投播由 [releaseCastSuppression] 释放，
+     * 万一 App 被杀或投播异常中断，进程重启后标志自动复位，不会出现「本机永久静音」。
+     * 只有手机端投播会话会置位，电视端不调用 [pauseForCast]，因此不受影响。
+     */
+    @Volatile
+    private var castSuppressPlay = false
+
+    fun isCastSuppressed(): Boolean = castSuppressPlay
+
+    /** 所有本机起播统一走这里，投播期间直接忽略。 */
+    private fun Player.startIfAllowed() {
+        if (!castSuppressPlay) play()
+    }
+
+    /** 投播接管前置位并停止本机播放；之后切歌、点播放键都不会让手机出声。 */
     fun pauseForCast() {
+        castSuppressPlay = true
         pause()
+    }
+
+    /** 退出投播时释放抑制。 */
+    fun releaseCastSuppression() {
+        castSuppressPlay = false
     }
 
     fun playPause() {
@@ -583,13 +606,13 @@ class PlaybackController(
                 player.isPlaying -> player.pause()
                 player.playbackState == Player.STATE_ENDED -> {
                     player.seekToDefaultPosition()
-                    player.play()
+                    player.startIfAllowed()
                 }
                 player.playbackState == Player.STATE_IDLE && player.mediaItemCount > 0 -> {
                     player.prepare()
-                    player.play()
+                    player.startIfAllowed()
                 }
-                else -> player.play()
+                else -> player.startIfAllowed()
             }
         }
     }
@@ -654,7 +677,7 @@ class PlaybackController(
         val player = controller ?: return null
         if (queueKind != QueueKind.Normal || queueIndex !in 0 until player.mediaItemCount) return null
         player.seekTo(queueIndex, 0L)
-        player.play()
+        player.startIfAllowed()
         return structuralSnapshot(player)
     }
 
@@ -1231,7 +1254,7 @@ class PlaybackController(
         player.repeatMode = Player.REPEAT_MODE_OFF
         player.shuffleModeEnabled = false
         player.prepare()
-        if (autoPlay) player.play() else player.pause()
+        if (autoPlay) player.startIfAllowed() else player.pause()
         project(player)
     }
 
@@ -1253,7 +1276,7 @@ class PlaybackController(
         }
 
         val shuffleOrderToRestore = applySnapshot(player, snapshot, activatePersistedShuffle = false)
-        if (snapshot.playIntent == PlaybackPlayIntent.Play) player.play() else player.pause()
+        if (snapshot.playIntent == PlaybackPlayIntent.Play) player.startIfAllowed() else player.pause()
         PlaybackTransportBridge.setOwnership(ownershipFor(snapshot.kind))
         project(player)
         shuffleOrderToRestore?.let { order ->
@@ -1368,7 +1391,7 @@ class PlaybackController(
             pendingStreamId = null
             pendingStreamAutoPlay = false
             player.prepare()
-            if (autoPlay) player.play() else player.pause()
+            if (autoPlay) player.startIfAllowed() else player.pause()
             Log.i("YueyinPlayback", "patchStreamUrl: id=$mediaId 已补到直链，启动播放")
         }
     }
@@ -1435,7 +1458,7 @@ class PlaybackController(
                 current.currentMediaItem?.mediaId?.takeIf { it.isNotBlank() }
                     ?.let { StreamUrlCache.invalidate(it) }
                 current.prepare()
-                current.play()
+                current.startIfAllowed()
             }
         }
     }
@@ -1464,7 +1487,7 @@ class PlaybackController(
                 runCatching {
                     player.seekToNextMediaItem()
                     player.prepare()
-                    player.play()
+                    player.startIfAllowed()
                 }
             }
             return
@@ -1484,7 +1507,7 @@ class PlaybackController(
             } ?: return@launch
             current.replaceMediaItem(index, current.getMediaItemAt(index).buildUpon().setUri(url).build())
             current.prepare()
-            current.play()
+            current.startIfAllowed()
             val host = runCatching { java.net.URI(url).host }.getOrNull()
             Log.i("YueyinPlayback", "retryCurrentPlayback: id=$id 已换新链 host=$host")
         }

@@ -42,7 +42,28 @@ internal object DlnaControl {
         )
     }
 
+    /**
+     * GetTransportInfo：当前传输状态（PLAYING / PAUSED_PLAYBACK / STOPPED / TRANSITIONING）。
+     *
+     * 失败时由调用方捕获——轮询里一次失败不算错，连续失败才判定设备掉线。
+     */
+    fun transportState(device: DlnaDevice): String =
+        tagText(post(device, "GetTransportInfo", "<InstanceID>0</InstanceID>"), "CurrentTransportState")
+            ?: "UNKNOWN"
+
+    /** GetPositionInfo：当前进度与总时长，单位毫秒；字段缺失时给 0。 */
+    fun position(device: DlnaDevice): Pair<Long, Long> {
+        val xml = post(device, "GetPositionInfo", "<InstanceID>0</InstanceID>")
+        return parseTime(tagText(xml, "RelTime").orEmpty()) to
+            parseTime(tagText(xml, "TrackDuration").orEmpty())
+    }
+
     private fun call(device: DlnaDevice, action: String, args: String) {
+        post(device, action, args)
+    }
+
+    /** 发一条 SOAP 动作并返回响应体（查询类动作要靠它解析结果）。 */
+    private fun post(device: DlnaDevice, action: String, args: String): String {
         val body = buildString {
             append("<?xml version=\"1.0\" encoding=\"utf-8\"?>")
             append("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" ")
@@ -69,9 +90,26 @@ internal object DlnaControl {
                 throw IllegalStateException("$action 失败（HTTP $code）${detail.take(160)}")
             }
             // 必须把响应读干净，否则连接不会复用/释放。
-            runCatching { connection.inputStream?.bufferedReader()?.use { it.readText() } }
+            return runCatching {
+                connection.inputStream?.bufferedReader()?.use { it.readText() }
+            }.getOrNull().orEmpty()
         } finally {
             runCatching { connection.disconnect() }
+        }
+    }
+
+    /** 取 `<u:Tag>value</u:Tag>` 里的文本，命名空间前缀可有可无。 */
+    private fun tagText(xml: String, tag: String): String? =
+        Regex("<(?:[A-Za-z0-9]+:)?" + Regex.escape(tag) + ">([^<]*)<")
+            .find(xml)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }
+
+    /** DLNA 的时间是 `HH:MM:SS`（个别设备给 `MM:SS` 或 `NOT_IMPLEMENTED`）。 */
+    private fun parseTime(text: String): Long {
+        val parts = text.split(":").mapNotNull { it.trim().toIntOrNull() }
+        return when (parts.size) {
+            3 -> (parts[0] * 3600L + parts[1] * 60L + parts[2]) * 1000L
+            2 -> (parts[0] * 60L + parts[1]) * 1000L
+            else -> 0L
         }
     }
 

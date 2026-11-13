@@ -31,8 +31,7 @@ internal object PhoneSystemBars {
         } else {
             controller.show(WindowInsetsCompat.Type.statusBars())
         }
-        // 应用整体是深蓝黑底，状态栏图标固定浅色：交给 auto 会跟随系统明暗，
-        // 系统处于浅色模式时图标变深，在深色底上看不见。
-        controller.isAppearanceLightStatusBars = false
+        // 图标明暗统一由 YueYinTheme 的 SideEffect 按当前主题设置，
+        // 这里只管显示/隐藏，避免转屏时把浅色模式的深色图标又改回浅色。
     }
 }

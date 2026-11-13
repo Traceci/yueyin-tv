@@ -3883,7 +3883,7 @@ private fun ArtistAlbumGrid(
     ) {
         if (albums.isEmpty() && loading) {
             // 骨架屏：占位块的尺寸/排布与真实专辑卡一致，首屏加载不再“先空一片再弹出”
-            items(6) {
+            items(count = 6, key = { "home:skeleton:$it" }) {
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -4546,7 +4546,7 @@ private fun DetailTrackCollection(
                 }
                 if (tracks.isEmpty() && loading) {
                     // 骨架屏：与真实歌曲行同高同结构，加载过程不再只有一行灰字
-                    items(8) {
+                    items(count = 8, key = { "tracks:skeleton:$it" }) {
                         Row(
                             Modifier.fillMaxWidth().height(TrackRowHeight),
                             verticalAlignment = Alignment.CenterVertically,

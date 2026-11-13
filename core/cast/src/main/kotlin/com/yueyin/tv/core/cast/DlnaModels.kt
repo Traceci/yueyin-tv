@@ -26,9 +26,30 @@ data class CastUiState(
     val casting: Boolean = false,
     val connecting: Boolean = false,
     val error: String? = null,
+    /** 当前投出去的这一条，用于 UI 显示曲名/时长。 */
+    val current: CastSource? = null,
+    /** 渲染器上报的播放状态。遥控器模型下，手机端进度与播放键都看它。 */
+    val playback: CastPlaybackState = CastPlaybackState(),
 ) {
     val hasActive: Boolean get() = active != null && casting
 }
+
+/**
+ * 渲染器上报的播放状态（遥控器模型的「回传」）。
+ *
+ * DLNA 是「手机把地址交给音响、音响自己播」，本机播放器并不知道音响播到哪，
+ * 所以投播期间进度、时长、播放/暂停全部以这里为准。
+ */
+data class CastPlaybackState(
+    val positionMs: Long = 0L,
+    val durationMs: Long = 0L,
+    /** TRANSITIONING 也算在播，避免切歌瞬间按钮闪一下。 */
+    val playing: Boolean = false,
+    /** 原始 TransportState，出问题时便于排查。 */
+    val transport: String = "STOPPED",
+    /** 最近一次轮询是否成功；连续失败说明设备掉线。 */
+    val reachable: Boolean = true,
+)
 
 /**
  * 要投出去的一条音频。

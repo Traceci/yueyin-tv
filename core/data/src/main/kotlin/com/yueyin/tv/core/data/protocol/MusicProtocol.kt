@@ -4,6 +4,7 @@ import com.yueyin.tv.core.data.connect.ConnectProfile
 import com.yueyin.tv.core.data.online.OnlineSong
 import com.yueyin.tv.core.model.connect.ConnectType
 import com.yueyin.tv.core.model.connect.ServerCapabilities
+import kotlinx.serialization.Serializable
 
 /** 跨平台统一的轻量实体（刻意不复用 fnOS 的 DTO，避免把某一家服务的字段泄漏到上层）。 */
 data class RemoteArtist(val id: String, val name: String, val coverId: String? = null)
@@ -16,6 +17,12 @@ data class RemoteAlbum(
     /** 发行日期，`yyyy-MM-dd`；没有就是空串。卡片上只取年份。 */
     val releaseDate: String = "",
 )
+/**
+ * [Serializable] 只为「集合快照落盘」服务（见 `ProtocolSnapshotStore`）：
+ * 协议平台的歌单/专辑/歌手曲目本来只在内存里，进程一退就要重新拉一遍，
+ * 在线音源还要跑一遍隐藏 WebView 的脚本。序列化后可以落盘，冷启动直接读。
+ */
+@Serializable
 data class RemoteSong(
     val id: String,
     val title: String,
