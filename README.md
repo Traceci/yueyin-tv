@@ -8,7 +8,7 @@
 
 <p align="center">
   <img alt="Platform" src="https://img.shields.io/badge/Android%206.0%2B-Android%20TV%20%7C%20Phone-3DDC84?logo=android&logoColor=white">
-  <img alt="Version" src="https://img.shields.io/badge/version-2.1.2-orange">
+  <img alt="Version" src="https://img.shields.io/badge/version-2.1.3-orange">
   <img alt="License" src="https://img.shields.io/badge/license-GPL--3.0-blue">
 </p>
 
