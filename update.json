@@ -4,12 +4,12 @@
   "versionName": "2.1.2",
   "versionCode": 41,
   "title": "悦音 2.1.2",
-  "notes": "修复 FNID 登录问题",
+  "notes": "# 悦音 2.1.2\n\n同一个安装包同时支持电视、手机与车机，签名与 2.1.0 一致，可直接覆盖安装。\n\n## 新增\n\n1. 手机端浅色 / 深色。\n\n## 优化\n\n1. 优化 DLNA 投播。\n2. 解决不能 FNID 登录的问题，现在可以 FNID 登录。\n3. 进一步优化流畅度；设置中增加选择。\n4. 其它系统界面 / 操作逻辑调优。",
   "apk": {
     "url": "https://github.com/Traceci/yueyin-tv/releases/download/v2.1.2/yueyin-2.1.2-release.apk",
-    "size": 8128731,
-    "sha256": "2fb40d1c9d75ccf64cbd25ee64d104566b3b2f71ff3cb39ca3ed95c3da9a7562"
+    "size": 8112345,
+    "sha256": "84f5de12e411d0dbe3ccc20f061bc276e5a1ec98272f9b31cca4553d34335270"
   },
-  "publishedAt": "2026-11-14T02:41:05Z",
+  "publishedAt": "2026-11-14T03:30:00Z",
   "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v2.1.2"
 }
