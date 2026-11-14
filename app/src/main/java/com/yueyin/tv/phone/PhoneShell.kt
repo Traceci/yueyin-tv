@@ -616,7 +616,7 @@ internal fun PhoneApp(
                 // 键里带平台维度：换平台后列表内容完全不同，沿用上一个平台的位置会让用户
                 // 落到一个不该在的地方；加前缀后新平台天然从顶部开始，旧槽不再被引用。
                 pageStateHolder.SaveableStateProvider(
-                    "${connectState.activeId ?: "fn"}|${target.storageKey()}",
+                    "${connectState.activeId ?: "fn"}|${target.phoneStorageKey()}",
                 ) {
 
                     PhoneReadingFrame(enabled = target.needsReadingWidth()) {
@@ -3308,3 +3308,24 @@ private fun StageProgress(currentIndex: Int) {
 }
 
 
+
+/**
+ * 页面保存槽的键：曲库的五个分段共用一个槽。
+ *
+ * 五个分段在电视端是五个顶级路由（左栏切换、各自一页），手机端却是**同一个 Pager 的五页**。
+ * 如果沿用 [storageKey] 按路由分槽，那么每次滑到下一段、路由回写时，`SaveableStateProvider`
+ * 的键就变了——整棵子树连同 `rememberPagerState` 一起被销毁重建，Pager 从手指位置掉回
+ * `initialPage`，用户看到的就是「滑到一半内容跳一下、闪一下」。
+ *
+ * 只合并这五个路由，其它页面（详情、搜索、设置）仍然一页一槽，各自回到原位。
+ */
+private fun LibraryRoute.phoneStorageKey(): String = when (this) {
+    LibraryRoute.Albums,
+    LibraryRoute.Artists,
+    LibraryRoute.AllPlaylists,
+    LibraryRoute.AllTracks,
+    LibraryRoute.Favorites,
+    -> "library"
+
+    else -> storageKey()
+}

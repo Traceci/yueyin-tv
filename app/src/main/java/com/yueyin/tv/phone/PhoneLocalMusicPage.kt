@@ -276,7 +276,12 @@ internal fun PhoneLocalMusicPage(
 @Composable
 private fun LocalPermissionGuide(onGrant: () -> Unit, modifier: Modifier = Modifier) {
     Column(
-        modifier.padding(horizontal = PhoneSpace.screenHorizontal),
+        // 必须 fillMaxWidth：Column 的宽默认是「最宽子项」而不是父宽，
+        // 只给 weight(1f) 时整块会缩成一行文字的宽度并靠左，里面的 CenterHorizontally
+        // 变成「在一行文字里居中」，看起来就是整页文字都偏左。
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = PhoneSpace.screenHorizontal),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {

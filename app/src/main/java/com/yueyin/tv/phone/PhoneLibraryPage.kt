@@ -10,12 +10,15 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -56,6 +59,7 @@ import com.yueyin.tv.core.model.Track
 import com.yueyin.tv.core.model.library.LibraryCapabilities
 import com.yueyin.tv.core.model.library.LibraryCapability
 import com.yueyin.tv.ui.FnColors
+import com.yueyin.tv.ui.FnSkeleton
 import com.yueyin.tv.ui.LibraryRetainedStateStore
 import com.yueyin.tv.ui.LibraryRoute
 import com.yueyin.tv.ui.RetainedPagedGridState
@@ -165,9 +169,10 @@ internal fun PhoneLibraryPage(
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize().padding(horizontal = PhoneSpace.screenHorizontal),
-                // 不预组合相邻页：每个分段首次组合都会发起一次请求，
-                // 预组合等于让「用户还没打开的分段」也在后台拉数据。
-                beyondViewportPageCount = 0,
+                // 预组合左右各一页：翻页时相邻分段已经画好，滑过去直接是内容，
+                // 不会先滑进一块空白再「啪」地长出列表（用户看到的跳动/闪动就是它）。
+                // 只多预组合一页，第三页起仍然按需加载，不会在进页时把所有分段都请求一遍。
+                beyondViewportPageCount = 1,
                 key = { segments[it].name },
             ) { page ->
                 when (segments[page]) {
@@ -389,7 +394,9 @@ private fun <T> PhonePagedGrid(
     }
 
     if (snapshot.entries.isEmpty() && !snapshot.initialLoadCompleted) {
-        PhoneInitialLoading()
+        // 骨架屏而不是居中的「正在加载…」：占位块与真实网格同一套列宽/间距，
+        // 数据到位时是「内容填进原位置」，不是内容从屏幕中间跳回顶部。
+        PhoneGridSkeleton(columns = resolvedColumns)
         return
     }
     LazyVerticalGrid(
@@ -467,7 +474,7 @@ private fun PhonePagedTracks(
     }
 
     if (snapshot.entries.isEmpty() && !snapshot.initialLoadCompleted) {
-        PhoneInitialLoading()
+        PhoneRowSkeleton()
         return
     }
     LazyColumn(
@@ -496,6 +503,62 @@ private fun PhonePagedTracks(
                 error = snapshot.error,
                 onRetry = { load(if (snapshot.entries.isEmpty()) 1 else snapshot.page + 1) },
             )
+        }
+    }
+}
+
+/**
+ * 网格首屏骨架：列数、水平间距、垂直间距与 [PhonePagedGrid] 的真实网格逐项对齐。
+ *
+ * 只在「首屏还没回来」时出现，目的不是好看，而是别让内容换位——
+ * 之前用整屏居中的「正在加载…」，数据一到整块内容从屏幕中间跳到顶部，翻页时尤其明显。
+ */
+@Composable
+private fun PhoneGridSkeleton(columns: Int) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(top = PhoneSpace.sm),
+        verticalArrangement = Arrangement.spacedBy(PhoneSpace.lg),
+    ) {
+        repeat(3) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(PhoneSpace.md),
+            ) {
+                repeat(columns.coerceAtLeast(1)) {
+                    Column(Modifier.weight(1f)) {
+                        FnSkeleton(Modifier.fillMaxWidth().aspectRatio(1f))
+                        Spacer(Modifier.height(PhoneSpace.sm))
+                        FnSkeleton(Modifier.fillMaxWidth(0.72f).height(10.dp))
+                        Spacer(Modifier.height(6.dp))
+                        FnSkeleton(Modifier.fillMaxWidth(0.45f).height(8.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 曲目列表首屏骨架：与 [PhoneTrackRow] 同高（[PhoneSize.RowItem]）、同缩略图尺寸。 */
+@Composable
+private fun PhoneRowSkeleton() {
+    Column(Modifier.fillMaxSize().padding(top = PhoneSpace.sm)) {
+        repeat(8) {
+            Row(
+                Modifier.fillMaxWidth().height(PhoneSize.RowItem),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.width(22.dp))
+                Spacer(Modifier.width(PhoneSpace.sm))
+                FnSkeleton(Modifier.size(PhoneSize.RowArt), RoundedCornerShape(PhoneRadius.sm))
+                Spacer(Modifier.width(PhoneSpace.md))
+                Column(Modifier.weight(1f)) {
+                    FnSkeleton(Modifier.fillMaxWidth(0.55f).height(11.dp))
+                    Spacer(Modifier.height(6.dp))
+                    FnSkeleton(Modifier.fillMaxWidth(0.32f).height(9.dp))
+                }
+            }
         }
     }
 }
