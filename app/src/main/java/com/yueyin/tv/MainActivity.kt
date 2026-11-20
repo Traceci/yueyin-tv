@@ -132,6 +132,7 @@ class MainActivity : ComponentActivity() {
             window = window,
             landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE,
         )
+        WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightNavigationBars = false
     }
 
     /**

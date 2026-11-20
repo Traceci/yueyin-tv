@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
   "packageName": "com.yueyin.tv",
-  "versionName": "2.1.3",
-  "versionCode": 42,
-  "title": "悦音 2.1.3",
-  "notes": "# 悦音 2.1.3\n\n同一个安装包同时支持电视、手机与车机，签名与 2.1.2 一致，可直接覆盖安装。\n\n## 修复\n\n1. 修复 FNID 登录问题。\n2. 修复手机端曲库滑动闪屏问题。\n3. 修复 DLNA 投播问题。",
+  "versionName": "2.1.4",
+  "versionCode": 43,
+  "title": "悦音 2.1.4",
+  "notes": "# 悦音 2.1.4\n\n同一个安装包同时支持电视、手机与车机，签名与 2.1.3 一致，可直接覆盖安装。\n\n## 改进\n\n1. 电视歌词定位与滚动（CD 唱片 / 大海报）\n   - 当前句对齐到歌词区的垂直中心；原来是贴顶，偏上将近四分之一屏。\n   - 换句改为按播放进度连续上滑，不再是「整行跳一下」。\n   - 亚像素补偿，消除慢速滚动时的细微抖动。\n   - 手动翻看时自动让位（手机端 3 秒内不会被拽回）。\n\n2. 大海报模式过渡重做\n   - 封面完整显示，不裁切、不横向拉伸。\n   - 右缘经同尺寸模糊层自然淡出到取色背景。\n   - 修复上一版的重影与竖直分界线。\n\n3. 手机投播提示更低调\n   - 通栏改为贴左短胶囊，底色不透明度 78% 降到 40%。\n   - 「停止投播」改为淡色「停止」。\n   - 设备名不再显示 IP。\n\n## 修复\n\n4. 播放中断减少\n   - 当前曲目进入最后 20 秒时提前为下一首取直链，原来要等切歌才发现没链。\n   - 取链失败重试从 2 次 / 500ms 改为 3 次退避（600ms 到 1200ms）。\n\n## 已知问题\n\n- 首次投播仍可能从头播放（DLNA 设备侧 Seek 时机问题，未解决）。\n- 个别曲目音源失效时会自动跳过，属音源侧。\n",
   "apk": {
-    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v2.1.3/yueyin-2.1.3-release.apk",
-    "size": 8128723,
-    "sha256": "b15b1bc0494f6f0c75186ce15101c01bbe09584048b203e1bcf40a1102135895"
+    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v2.1.4/yueyin-2.1.4-release.apk",
+    "size": 8111164,
+    "sha256": "aa50f3d9db2ef2fc24dacb81e890374ed0aca0561b1a1af6da3c28f8d328247e"
   },
-  "publishedAt": "2026-11-14T12:35:00Z",
-  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v2.1.3"
+  "publishedAt": "2026-11-21T00:50:00Z",
+  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v2.1.4"
 }

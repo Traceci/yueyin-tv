@@ -79,7 +79,9 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -91,6 +93,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.RectangleShape
@@ -113,6 +116,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
@@ -133,10 +137,6 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
 import com.yueyin.tv.core.lyrics.lyricText
-import com.yueyin.tv.ui.designsystem.FnMediaColors
-import com.yueyin.tv.ui.designsystem.LocalRenderPolicy
-import com.yueyin.tv.ui.designsystem.rememberIdleFloat
-import com.yueyin.tv.ui.designsystem.rememberScrimBrushes
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.palette.graphics.Palette
 import androidx.tv.material3.Button as TvMaterialButton
@@ -148,7 +148,6 @@ import com.yueyin.tv.AuthenticatedAppDependencies
 import com.yueyin.tv.NowPlayingPresentation
 import com.yueyin.tv.NowPlayingResourceState
 import com.yueyin.tv.decodeArtwork
-import com.yueyin.tv.rememberArtworkBackdrop
 import com.yueyin.tv.core.data.repository.CurrentLyrics
 import com.yueyin.tv.core.data.repository.SessionState
 import com.yueyin.tv.core.model.Album
@@ -394,10 +393,8 @@ internal fun ImmersivePlayer(
         continuity = visualContinuity,
     )
     val artworkBitmap = artwork?.bitmap
-    // 动态取色：关闭时退回固定兜底色，不再跟随封面主色。
-    // 流畅档进一步强制关闭——封面主色提取与多层渐变在低端设备上不划算。
-    val renderPolicy = LocalRenderPolicy.current
-    val dynamicColorEnabled = preferences.dynamicColor && renderPolicy.gradientLayers
+    // 动态取色：关闭时退回固定兜底色，不再跟随封面主色
+    val dynamicColorEnabled = preferences.dynamicColor
     val fallbackAmbience = fallbackAmbienceColor()
     val ambienceColor = if (dynamicColorEnabled) (artwork?.ambienceColor ?: fallbackAmbience) else fallbackAmbience
     val posterPanelColor = if (dynamicColorEnabled) {
@@ -476,7 +473,7 @@ internal fun ImmersivePlayer(
     }
     Box(
         Modifier.fillMaxSize()
-            .background(FnMediaColors.Background)
+            .background(FnColors.Background)
             .focusRequester(playerFocus)
             .dismissPlayerChromeOnBack(
                 // 只拦真正的浮层。控制条可见时不拦，让返回键直达 BackHandler 直接退页。
@@ -508,13 +505,8 @@ internal fun ImmersivePlayer(
             .focusable(),
     ) {
         when {
-            // 流畅档不进入 LiquidBackdrop：省掉 5 路慢速时钟与每帧 4 支全屏径向渐变。
-            lyrics -> if (renderPolicy.gradientLayers) {
-                LiquidBackdrop(Modifier.fillMaxSize())
-            } else {
-                Box(Modifier.fillMaxSize().background(FnMediaColors.Background))
-            }
-            poster -> if (preferences.blurredBackdrop && renderPolicy.glass && artworkBitmap != null) {
+            lyrics -> LiquidBackdrop(Modifier.fillMaxSize())
+            poster -> if (preferences.blurredBackdrop && artworkBitmap != null) {
                 PosterBlurredBackdrop(artworkBitmap, posterPanelColor, Modifier.fillMaxSize())
             } else {
                 PlayerPosterBackdrop(posterPanelColor, Modifier.fillMaxSize())
@@ -749,16 +741,16 @@ private fun PlayerBackdrop(targetColor: Color, modifier: Modifier = Modifier) {
         progress.animateTo(1f, tween(durationMillis = 650, easing = LinearEasing))
     }
     val animatedColor = androidx.compose.ui.graphics.lerp(fromColor, toColor, progress.value)
-    val glowColor = androidx.compose.ui.graphics.lerp(animatedColor, FnMediaColors.Background, 0.30f)
+    val glowColor = androidx.compose.ui.graphics.lerp(animatedColor, FnColors.Background, 0.30f)
     Canvas(modifier) {
         val w = size.width
         val h = size.height
         // 基底：深蓝黑到主题色的横向渐变
         drawRect(
             brush = Brush.horizontalGradient(
-                0f to FnMediaColors.Background,
+                0f to FnColors.Background,
                 0.42f to animatedColor,
-                1f to androidx.compose.ui.graphics.lerp(animatedColor, FnMediaColors.Background, 0.62f),
+                1f to androidx.compose.ui.graphics.lerp(animatedColor, FnColors.Background, 0.62f),
             ),
         )
         // 左上暖光晕：让画面像“深夜唱片机旁的一盏灯”
@@ -808,7 +800,7 @@ private fun PlayerPosterBackdrop(targetColor: Color, modifier: Modifier = Modifi
         drawRect(
             brush = Brush.horizontalGradient(
                 0f to animatedColor,
-                1f to androidx.compose.ui.graphics.lerp(animatedColor, FnMediaColors.Background, 0.06f),
+                1f to androidx.compose.ui.graphics.lerp(animatedColor, FnColors.Background, 0.06f),
             ),
         )
         // 底部轻微压暗，让海报氛围更沉浸
@@ -834,7 +826,7 @@ private fun AmbientGlowOverlay(color: Color, modifier: Modifier = Modifier) {
     // RepeatMode.Reverse 行为。相位只在绘制阶段读取，既不会每帧重组，
     // 也不会每帧都重画两层整屏径向渐变。
     val phaseState = rememberSlowPhase(periodMillis = 16_000)
-    val coolColor = androidx.compose.ui.graphics.lerp(color, FnMediaColors.Violet, 0.62f)
+    val coolColor = androidx.compose.ui.graphics.lerp(color, FnColors.Violet, 0.62f)
     Canvas(modifier) {
         val raw = phaseState.value
         val phase = if (raw < 0.5f) raw * 2f else 2f - raw * 2f
@@ -877,29 +869,23 @@ private fun AmbientGlowOverlay(color: Color, modifier: Modifier = Modifier) {
 }
 
 /**
- * 大海报模式的毛玻璃背板：切歌时预生成一张模糊位图，播放期间只做静态绘制。
- *
- * 借鉴酷狗「预生成高斯模糊图 → 上下翻转 → 拉伸 → 边缘渐变」流水线，整条链路
- * 只在封面变化时跑一次（见 ArtworkBackdropGenerator）。这样既绕开 API 30 及以下
- * Modifier.blur 无效/被忽略的问题，也不会在播放的每一帧做离屏模糊。
+ * 大海报模式下的毛玻璃背板：把封面放大虚化铺满全屏，右侧叠一层主题色渐变，
+ * 让海报与信息面板之间有一层"雾面"过渡（Android 12 以下 blur 自动降级为虚化前的暗化底）。
  */
 @Composable
 private fun PosterBlurredBackdrop(bitmap: Bitmap, panelColor: Color, modifier: Modifier = Modifier) {
-    // 960×540 是项目统一设计画布；底图按 1/4 降采样后约 240×135，
-    // 拉伸到 4K 也只是柔光背景，固定尺寸还能让缓存跨设备复用。
-    val backdrop = rememberArtworkBackdrop(bitmap, 960, 540)
-    val image = remember(backdrop) { backdrop?.asImageBitmap() }
     Box(modifier) {
-        if (image != null) {
-            Image(
-                image,
-                null,
-                Modifier.fillMaxSize().graphicsLayer { alpha = 0.62f },
-                contentScale = ContentScale.Crop,
-            )
-        } else {
-            Box(Modifier.fillMaxSize().background(FnMediaColors.Surface))
-        }
+        // 同一张封面在这里只包一次：播放页会随进度/控制条状态重组，反复包会反复上传纹理。
+        val image = remember(bitmap) { bitmap.asImageBitmap() }
+        Image(
+            image,
+            null,
+            Modifier
+                .fillMaxSize()
+                .blur(56.dp)
+                .graphicsLayer { alpha = 0.62f },
+            contentScale = ContentScale.Crop,
+        )
         Box(
             Modifier.fillMaxSize().background(
                 Brush.horizontalGradient(
@@ -935,11 +921,9 @@ private fun LiquidBackdrop(modifier: Modifier = Modifier) {
     val t3 = rememberSlowPhase(periodMillis = 19_000)
     val t4 = rememberSlowPhase(periodMillis = 25_000)
     val hue = rememberSlowPhase(periodMillis = 26_000)
-    // 上下压暗笔刷只创建一次，不再每帧按 size.height 重建。
-    val (scrimBottom, scrimTop) = rememberScrimBrushes()
 
     Canvas(modifier) {
-        drawRect(FnMediaColors.Background)
+        drawRect(FnColors.Background)
         val hueShift = hue.value * 360f
         // 这段每帧都会跑，直接展开四次绘制，避免临时 List/Pair 分配。
         fun blob(t: Float, baseHue: Float, saturation: Float, alpha: Float) {
@@ -965,8 +949,20 @@ private fun LiquidBackdrop(modifier: Modifier = Modifier) {
         blob(t2.value, 190f, 0.62f, 0.45f)
         blob(t3.value, 265f, 0.60f, 0.41f)
         blob(t4.value, 35f, 0.65f, 0.41f)
-        drawRect(scrimBottom)
-        drawRect(scrimTop)
+        drawRect(
+            Brush.verticalGradient(
+                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.55f)),
+                startY = size.height * 0.5f,
+                endY = size.height,
+            ),
+        )
+        drawRect(
+            Brush.verticalGradient(
+                colors = listOf(Color.Black.copy(alpha = 0.25f), Color.Transparent),
+                startY = 0f,
+                endY = size.height * 0.25f,
+            ),
+        )
         // 抖动噪点：8bit 面板上跨几百 px 的渐变会浮出同心色阶环，1/255 的抖动正好抹掉它
         drawRect(brush = dither, alpha = 0.05f, blendMode = BlendMode.Overlay)
     }
@@ -1233,12 +1229,19 @@ private fun LyricSlot(
     modifier: Modifier = Modifier,
 ) {
     val slotHeight = if (isCurrent) 118.dp else 42.dp
-    // 常驻动画统一由画质档位控制：流畅档下每行歌词都不再创建 InfiniteTransition。
+    val transition = rememberInfiniteTransition(label = "lyricFloat$seed")
     // 注意：这里不做 by 解构，把 State 直接读在 graphicsLayer 里 —— 只触发绘制阶段，
     // 不产生每帧重组/重排（用 offset(dp) 会是 layout 阶段，老电视上就容易一顿一顿）。
-    val policy = LocalRenderPolicy.current
-    val phaseA = rememberIdleFloat("lyricPhaseA$seed", policy, 19_000)
-    val phaseB = rememberIdleFloat("lyricPhaseB$seed", policy, 27_000)
+    val phaseA = transition.animateFloat(
+        0f, 1f,
+        infiniteRepeatable(tween(durationMillis = 19_000, easing = LinearEasing)),
+        label = "lyricPhaseA$seed",
+    )
+    val phaseB = transition.animateFloat(
+        0f, 1f,
+        infiniteRepeatable(tween(durationMillis = 27_000, easing = LinearEasing)),
+        label = "lyricPhaseB$seed",
+    )
     val ampX = if (isCurrent) 44f else 20f
     val ampY = if (isCurrent) 8f else 4f
     val driftA = seed * 0.37f + 0.11f
@@ -1363,42 +1366,38 @@ private fun PlayerMainContent(
     }
     if (poster) {
         Box(Modifier.fillMaxSize()) {
+            // 暂不做 alpha 羽化：直接让封面铺到 62%，右缘交给上层渐变压过去。
+            // （羽化时下层是放大模糊版封面，两张不同缩放的图叠在一起会出重影。）
             if (artworkBitmap != null) {
                 val image = remember(artworkBitmap) { artworkBitmap.asImageBitmap() }
                 Image(
                     image,
                     null,
-                    Modifier.fillMaxWidth(0.58f).fillMaxHeight(),
+                    Modifier.fillMaxWidth(0.62f).fillMaxHeight(),
                     contentScale = ContentScale.Crop,
                 )
             } else {
                 PlayerArtworkPlaceholder(
                     placeholder,
                     placeholderAccent,
-                    Modifier.fillMaxWidth(0.58f).fillMaxHeight(),
+                    Modifier.fillMaxWidth(0.62f).fillMaxHeight(),
                     RectangleShape,
                 )
             }
+            // 一层渐变在 60% 处压到完全不透明：封面右缘（62%）还没露出来就被盖住了，
+            // 所以既看不到硬边，下层那张放大模糊版也透不上来——重影随之消失。
             Box(
                 Modifier.fillMaxSize().background(
                     Brush.horizontalGradient(
                         0.34f to Color.Transparent,
-                        0.50f to posterPanelColor,
-                    ),
-                ),
-            )
-            Box(
-                Modifier.fillMaxWidth(0.50f).fillMaxHeight().align(Alignment.CenterEnd)
-                    .background(
-                        Brush.horizontalGradient(
-                            0f to posterPanelColor,
-                            1f to androidx.compose.ui.graphics.lerp(
-                                posterPanelColor,
-                                FnMediaColors.Background,
-                                0.10f,
-                            ),
+                        0.60f to posterPanelColor,
+                        1f to androidx.compose.ui.graphics.lerp(
+                            posterPanelColor,
+                            FnColors.Background,
+                            0.10f,
                         ),
                     ),
+                ),
             )
             PlayerDetails(
                 title = title,
@@ -1533,7 +1532,7 @@ private fun PlayerDetails(
         Spacer(Modifier.height(4.dp))
         Text(
             artist.ifBlank { "未知演唱者" },
-            color = FnMediaColors.Muted,
+            color = FnColors.Muted,
             fontSize = if (poster) 16.sp else 20.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -1569,7 +1568,7 @@ private fun PlayerDetails(
         )
         if (status != null) {
             Row(Modifier.fillMaxWidth().height(42.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(status.message, color = FnMediaColors.Coral, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Text(status.message, color = FnColors.Coral, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 val retryAction = when (status.retry) {
                     PlayerStatusRetry.Roam -> onRetryRoam
                     PlayerStatusRetry.Queue -> onRetryQueue
@@ -1617,7 +1616,7 @@ internal fun PlayerStatusRetryButton(
 
 @Composable
 private fun AudioFormatBadge(audioFormat: String, poster: Boolean) {
-    val color = FnMediaColors.Text.copy(alpha = 0.72f)
+    val color = FnColors.Text.copy(alpha = 0.72f)
     Box(
         Modifier.border(1.dp, color, RoundedCornerShape(2.dp))
             .padding(horizontal = if (poster) 5.dp else 6.dp, vertical = 2.dp),
@@ -1636,11 +1635,11 @@ private fun AudioFormatBadge(audioFormat: String, poster: Boolean) {
 
 @Composable
 private fun PlayerArtworkPlaceholder(text: String, accent: Color, modifier: Modifier, shape: Shape) {
-    val background = androidx.compose.ui.graphics.lerp(accent, FnMediaColors.Background, 0.58f)
+    val background = androidx.compose.ui.graphics.lerp(accent, FnColors.Background, 0.58f)
     Box(modifier.clip(shape).background(background), contentAlignment = Alignment.Center) {
         Text(
             text.take(1).ifBlank { "音" },
-            color = FnMediaColors.Text.copy(alpha = 0.9f),
+            color = FnColors.Text.copy(alpha = 0.9f),
             fontSize = 64.sp,
             fontWeight = FontWeight.Bold,
         )
@@ -1654,7 +1653,7 @@ internal fun InitialArtworkPlaceholder(
     modifier: Modifier,
     shape: Shape,
 ) {
-    val background = androidx.compose.ui.graphics.lerp(accent, FnMediaColors.Background, 0.76f)
+    val background = androidx.compose.ui.graphics.lerp(accent, FnColors.Background, 0.76f)
     BoxWithConstraints(
         modifier = modifier.clip(shape).background(background),
         contentAlignment = Alignment.Center,
@@ -1694,19 +1693,26 @@ private fun DiscArtwork(
 ) {
     val rotation = remember { Animatable(0f) }
     // 播放中：唱片外圈柔光缓慢“呼吸”（3.6s 一个来回），让静止的画面有生命感
-    val policy = LocalRenderPolicy.current
-    val breath by rememberIdleFloat(
+    val breathTransition = rememberInfiniteTransition(label = "discBreath")
+    val breath by breathTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 3_600, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
         label = "discBreathPhase",
-        policy = policy,
-        durationMs = 3_600,
-        repeatMode = RepeatMode.Reverse,
     )
     // 3D 唱片涟漪：4 圈错峰扩散的圆环，播放时持续向外推开
-    val ripplePhase by rememberIdleFloat(
+    val rippleTransition = rememberInfiniteTransition(label = "discRipple")
+    val ripplePhase by rippleTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 4_000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
         label = "discRipplePhase",
-        policy = policy,
-        durationMs = 4_000,
-        repeatMode = RepeatMode.Restart,
     )
     // 暂停：唱片整体轻微“回落”，用 spring 让起停都有吸附质感（与停止转动的语义一致）
     val discScale by animateFloatAsState(
@@ -1835,10 +1841,22 @@ internal fun TvLyrics(
     controlsVisible: Boolean = false,
     karaokeProgressEnabled: Boolean = true,
 ) {
+    // 当前句要落在歌词区的垂直中心。
+    // 组件里的 offset 就是「当前句行顶距视口顶部」的对齐目标，同时充当列表上下的留白，
+    // 所以它必须等于半个视口减半行高；原来写死 42/48dp 只够贴顶，看着就像整块被顶到上面。
+    val lyricLineHeight = if (poster) 29.dp else 32.dp
+    val density = LocalDensity.current
+    // 名义高度只做首帧兜底：调用方传进来的是 weight(1f)，会把 .height() 顶掉，
+    // 控制栏显隐、窗口尺寸变化都会让真实高度和名义值对不上（实测差十几像素）。
+    var viewportHeight by remember(poster, controlsVisible) {
+        mutableStateOf(defaultLyricsViewportHeight(poster, controlsVisible))
+    }
+    val centerOffset = (viewportHeight - lyricLineHeight) / 2
     Box(
         modifier
             .fillMaxWidth()
-            .height(defaultLyricsViewportHeight(poster, controlsVisible))
+            .height(viewportHeight)
+            .onSizeChanged { viewportHeight = with(density) { it.height.toDp() } }
             .focusProperties {
                 canFocus = false
                 onEnter = { cancelFocusChange() }
@@ -1853,7 +1871,7 @@ internal fun TvLyrics(
                 val currentPosition = remember { { positionState.value } }
                 androidx.compose.runtime.CompositionLocalProvider(
                     androidx.compose.material3.LocalTextStyle provides TextStyle(
-                        color = FnMediaColors.Text,
+                        color = FnColors.Text,
                         fontSize = if (poster) 20.sp else 23.sp,
                         lineHeight = if (poster) 24.sp else 27.sp,
                     ),
@@ -1866,23 +1884,29 @@ internal fun TvLyrics(
                         onLinePressed = {},
                         modifier = Modifier.fillMaxSize().focusProperties { canFocus = false },
                         normalLineTextStyle = TextStyle(
-                            color = FnMediaColors.Text,
+                            color = FnColors.Text,
                             fontSize = if (poster) 24.sp else 27.sp,
                             lineHeight = if (poster) 29.sp else 32.sp,
                             fontWeight = FontWeight.Bold,
                         ),
                         accompanimentLineTextStyle = TextStyle(
-                            color = FnMediaColors.Text,
+                            color = FnColors.Text,
                             fontSize = if (poster) 19.sp else 21.sp,
                             lineHeight = if (poster) 23.sp else 25.sp,
                             fontWeight = FontWeight.SemiBold,
                         ),
-                        textColor = FnMediaColors.Text,
+                        textColor = FnColors.Text,
                         blendMode = BlendMode.SrcOver,
                         useBlurEffect = false,
                         showTranslation = true,
                         showPhonetic = false,
-                        offset = if (poster) 42.dp else 48.dp,
+                        offset = centerOffset,
+                        // 让「当前句不在可见区时」也滚到居中位置（默认分支是贴顶）。
+                        centerAlignCurrentLine = true,
+                        // 换句时缓动滑过去，而不是整块瞬间平移一行。
+                        smoothScroll = true,
+                        // 主路径：按播放进度连续上滑，句间不再静止。
+                        continuousScroll = true,
                         keepAliveZone = 0.dp,
                         breathingDotsDefaults = KaraokeBreathingDotsDefaults(
                             number = 1,
@@ -1902,17 +1926,17 @@ internal fun TvLyrics(
             )
             loading -> Text(
                 "歌词加载中",
-                color = FnMediaColors.Text.copy(alpha = 0.4f),
+                color = FnColors.Text.copy(alpha = 0.4f),
                 fontSize = if (poster) 20.sp else 26.sp,
             )
             failed -> Text(
                 "歌词暂时无法加载",
-                color = FnMediaColors.Text.copy(alpha = 0.4f),
+                color = FnColors.Text.copy(alpha = 0.4f),
                 fontSize = if (poster) 20.sp else 26.sp,
             )
             else -> Text(
                 "纯音乐或暂无歌词",
-                color = FnMediaColors.Text.copy(alpha = 0.4f),
+                color = FnColors.Text.copy(alpha = 0.4f),
                 fontSize = if (poster) 20.sp else 26.sp,
             )
         }
@@ -1955,13 +1979,20 @@ private fun SmoothLyricProgress(
         while (isActive) {
             withFrameNanos {
                 val latest = currentAnchor
-                interpolatedPositionMs = interpolatedLyricPosition(
+                val next = interpolatedLyricPosition(
                     anchorPositionMs = latest.positionMs,
                     anchorObservedAtMs = latest.observedAtMs,
                     frameObservedAtMs = SystemClock.uptimeMillis(),
                     durationMs = latest.durationMs,
                     isPlaying = true,
                 )
+                // 播放器上报的位置偶尔会往回跳（缓冲、回调抖动、内部校正）。
+                // 连续滚动是每帧朝目标修正的，位置一回退歌词就被往回拽，看着像被拖住。
+                // 这里让时间只前进；只有偏差超过 2 秒才当成真 seek（拖进度 / 切歌）允许跳变。
+                val seeked = kotlin.math.abs(next - interpolatedPositionMs) > 2_000L
+                if (next >= interpolatedPositionMs || seeked) {
+                    interpolatedPositionMs = next
+                }
             }
         }
     }
@@ -2055,11 +2086,11 @@ internal fun PlaybackQueueOverlay(
                             scale = ButtonDefaults.scale(focusedScale = 1f),
                             colors = ButtonDefaults.colors(
                                 containerColor = if (item.isCurrent) Color.White.copy(alpha = 0.055f) else Color.Transparent,
-                                contentColor = FnMediaColors.Text,
+                                contentColor = FnColors.Text,
                                 focusedContainerColor = Color.White.copy(alpha = 0.075f),
-                                focusedContentColor = FnMediaColors.Text,
+                                focusedContentColor = FnColors.Text,
                                 pressedContainerColor = Color.White.copy(alpha = 0.10f),
-                                pressedContentColor = FnMediaColors.Text,
+                                pressedContentColor = FnColors.Text,
                             ),
                             border = ButtonDefaults.border(
                                 border = Border(
@@ -2080,7 +2111,7 @@ internal fun PlaybackQueueOverlay(
                             ) {
                             Text(
                                 "${index + 1}",
-                                color = FnMediaColors.Muted,
+                                color = FnColors.Muted,
                                 fontSize = 13.sp,
                                 lineHeight = 16.sp,
                                 modifier = Modifier.width(30.dp),
@@ -2098,7 +2129,7 @@ internal fun PlaybackQueueOverlay(
                                 )
                                 Text(
                                     item.artist.ifBlank { "未知演唱者" },
-                                    color = FnMediaColors.Muted,
+                                    color = FnColors.Muted,
                                     fontSize = 12.sp,
                                     lineHeight = 15.sp,
                                     maxLines = 1,
@@ -2108,7 +2139,7 @@ internal fun PlaybackQueueOverlay(
                             if (item.isCurrent) {
                                 Text(
                                     "正在播放",
-                                    color = FnMediaColors.Coral,
+                                    color = FnColors.Coral,
                                     fontSize = 11.sp,
                                     lineHeight = 14.sp,
                                     fontWeight = FontWeight.Medium,
@@ -2140,11 +2171,11 @@ internal fun PlaybackQueueOverlay(
                             scale = ButtonDefaults.scale(focusedScale = 1f),
                             colors = ButtonDefaults.colors(
                                 containerColor = Color.Transparent,
-                                contentColor = FnMediaColors.Muted.copy(alpha = 0.82f),
+                                contentColor = FnColors.Muted.copy(alpha = 0.82f),
                                 focusedContainerColor = Color.White.copy(alpha = 0.10f),
-                                focusedContentColor = FnMediaColors.Coral,
+                                focusedContentColor = FnColors.Coral,
                                 pressedContainerColor = Color.White.copy(alpha = 0.14f),
-                                pressedContentColor = FnMediaColors.Coral,
+                                pressedContentColor = FnColors.Coral,
                             ),
                             border = ButtonDefaults.border(
                                 focusedBorder = Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.34f)), shape = rowShape),
@@ -2323,8 +2354,8 @@ internal fun PlayerControlOverlay(
                 )
             }
             // 已播放段：主色
-            drawLine(FnMediaColors.Coral, androidx.compose.ui.geometry.Offset(0f, centerY), androidx.compose.ui.geometry.Offset(playedX, centerY), 2.dp.toPx(), StrokeCap.Round)
-            if (progressFocused) drawCircle(FnMediaColors.Coral.copy(alpha = 0.24f), 8.dp.toPx(), androidx.compose.ui.geometry.Offset(playedX, centerY))
+            drawLine(FnColors.Coral, androidx.compose.ui.geometry.Offset(0f, centerY), androidx.compose.ui.geometry.Offset(playedX, centerY), 2.dp.toPx(), StrokeCap.Round)
+            if (progressFocused) drawCircle(FnColors.Coral.copy(alpha = 0.24f), 8.dp.toPx(), androidx.compose.ui.geometry.Offset(playedX, centerY))
             drawCircle(Color.White, if (progressFocused) 5.dp.toPx() else 3.5.dp.toPx(), androidx.compose.ui.geometry.Offset(playedX, centerY))
         }
         Row(
@@ -2509,12 +2540,12 @@ private fun PlayerFxPanel(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("音效", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = FnMediaColors.Text)
+            Text("音效", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = FnColors.Text)
             Spacer(Modifier.width(8.dp))
             Text(
                 if (current.effectLabel == FxPreset.NONE.displayName) "未开启" else "已开启 · ${current.effectLabel}",
                 fontSize = 10.sp,
-                color = if (current.effectLabel == FxPreset.NONE.displayName) FnMediaColors.Muted else FnMediaColors.Coral,
+                color = if (current.effectLabel == FxPreset.NONE.displayName) FnColors.Muted else FnColors.Coral,
             )
         }
         Spacer(Modifier.height(10.dp))
@@ -2546,11 +2577,11 @@ private fun PlayerFxPanel(
                     scale = ButtonDefaults.scale(focusedScale = 1.08f),
                     colors = ButtonDefaults.colors(
                         containerColor = if (selected) Color(0x33FF3B4D) else Color.White.copy(alpha = 0.08f),
-                        contentColor = if (selected) Color(0xFFFF3B4D) else FnMediaColors.Text,
-                        focusedContainerColor = FnMediaColors.Coral,
-                        focusedContentColor = FnMediaColors.Background,
-                        pressedContainerColor = FnMediaColors.Coral,
-                        pressedContentColor = FnMediaColors.Background,
+                        contentColor = if (selected) Color(0xFFFF3B4D) else FnColors.Text,
+                        focusedContainerColor = FnColors.Coral,
+                        focusedContentColor = FnColors.Background,
+                        pressedContainerColor = FnColors.Coral,
+                        pressedContentColor = FnColors.Background,
                     ),
                     contentPadding = PaddingValues(0.dp),
                 ) {
@@ -2619,12 +2650,12 @@ private fun PlayerSideActionButton(
                 contentColor = when {
                     selected -> Color(0xFFFF3B4D)
                     emphasized -> Color(0xFFF0D9D1)
-                    else -> FnMediaColors.Text
+                    else -> FnColors.Text
                 },
-                focusedContainerColor = if (selected) Color(0xFFF8F3EE) else FnMediaColors.Coral,
-                focusedContentColor = if (selected) Color(0xFFFF3B4D) else FnMediaColors.Background,
-                pressedContainerColor = if (selected) Color(0xFFEDE7E2) else FnMediaColors.Coral,
-                pressedContentColor = if (selected) Color(0xFFFF3B4D) else FnMediaColors.Background,
+                focusedContainerColor = if (selected) Color(0xFFF8F3EE) else FnColors.Coral,
+                focusedContentColor = if (selected) Color(0xFFFF3B4D) else FnColors.Background,
+                pressedContainerColor = if (selected) Color(0xFFEDE7E2) else FnColors.Coral,
+                pressedContentColor = if (selected) Color(0xFFFF3B4D) else FnColors.Background,
             ),
             contentPadding = PaddingValues(0.dp),
         ) {
@@ -2831,14 +2862,14 @@ private fun PlayerTransportButton(
                 .semantics { contentDescription = description },
             scale = ButtonDefaults.scale(focusedScale = 1.1f),
             colors = ButtonDefaults.colors(
-                containerColor = if (emphasized) FnMediaColors.Text else Color.Transparent,
-                contentColor = if (emphasized) FnMediaColors.Background else FnMediaColors.Text,
-                focusedContainerColor = FnMediaColors.Coral,
-                focusedContentColor = FnMediaColors.Background,
-                pressedContainerColor = FnMediaColors.Coral,
-                pressedContentColor = FnMediaColors.Background,
+                containerColor = if (emphasized) FnColors.Text else Color.Transparent,
+                contentColor = if (emphasized) FnColors.Background else FnColors.Text,
+                focusedContainerColor = FnColors.Coral,
+                focusedContentColor = FnColors.Background,
+                pressedContainerColor = FnColors.Coral,
+                pressedContentColor = FnColors.Background,
                 disabledContainerColor = Color.Transparent,
-                disabledContentColor = FnMediaColors.Muted.copy(alpha = 0.45f),
+                disabledContentColor = FnColors.Muted.copy(alpha = 0.45f),
             ),
             contentPadding = PaddingValues(0.dp),
         ) {
@@ -3028,7 +3059,7 @@ private fun toneMapPosterColor(source: OklabColor): Color {
     )
     var surface = oklabToColor(mapped)
     while (
-        colorContrastRatio(FnMediaColors.Text, surface) < POSTER_TEXT_CONTRAST &&
+        colorContrastRatio(FnColors.Text, surface) < POSTER_TEXT_CONTRAST &&
         mapped.lightness > POSTER_MIN_LIGHTNESS
     ) {
         mapped = mapped.copy(

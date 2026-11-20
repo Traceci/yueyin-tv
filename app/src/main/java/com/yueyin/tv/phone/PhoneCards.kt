@@ -146,7 +146,7 @@ internal fun PhoneArtwork(
 }
 
 @Composable
-internal fun rememberPhoneArtwork(
+private fun rememberPhoneArtwork(
     deps: AppUiDependencies,
     coverId: String?,
     variant: CoverVariant,

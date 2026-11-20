@@ -11,7 +11,6 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -44,6 +43,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -51,10 +51,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -69,9 +67,6 @@ import androidx.media3.common.PlaybackException
 import androidx.tv.material3.Text
 import com.mocharealm.accompanist.lyrics.core.model.SyncedLyrics
 import com.yueyin.tv.NowPlayingResourceState
-import com.yueyin.tv.rememberArtworkBackdrop
-import com.yueyin.tv.ui.designsystem.LocalRenderPolicy
-import com.yueyin.tv.ui.designsystem.rememberIdleFloat
 import com.yueyin.tv.core.audiofx.FxSettings
 import com.yueyin.tv.core.cast.CastSource
 import com.yueyin.tv.core.lyrics.lyricText
@@ -83,10 +78,10 @@ import com.yueyin.tv.core.playback.AudioFxController
 import com.yueyin.tv.core.playback.PlaybackFailure
 import com.yueyin.tv.core.playback.PlaybackUiState
 import com.yueyin.tv.ui.FnColors
-import com.yueyin.tv.ui.designsystem.FnMediaColors
 import com.yueyin.tv.ui.formatDuration
 import com.yueyin.tv.ui.playModeLabel
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -125,10 +120,7 @@ internal fun PhonePlayerPage(
     val syncedLyrics = currentLyrics?.syncedLyrics
     val staticLyric = currentLyrics?.document?.content?.takeIf { syncedLyrics == null }
 
-    // 播放进度优先用 progress 流：它按播放器回调更新，比 PlaybackUiState 里的快照更跟手。
-    // 但刚起播或缓冲时 progress 还是 0，这时回退到快照，避免进度条突然跳回开头。
-    val positionMs = progress.positionMs.takeIf { it > 0L } ?: playback.positionMs
-    val durationMs = progress.durationMs.takeIf { it > 0L } ?: playback.durationMs
+    // 进度在下面 castState 之后统一算：投播时要改用音响上报的进度，不能再用本机播放器的。
 
     val isFavorite = favoriteState.statuses[playback.mediaId] ?: metadata?.isFavorite ?: false
     val favoritePending = playback.mediaId in favoriteState.pending
@@ -151,79 +143,92 @@ internal fun PhonePlayerPage(
     // 定时状态活在 PhoneSleepTimer 里（进程级），这里只是订阅显示。
     val sleepState by PhoneSleepTimer.state.collectAsStateWithLifecycle()
 
-    // 投播当前这一首：把播放器里真正的 URI 交给投播层（本地是 content://，
-    // 协议平台是 127.0.0.1 代理，在线是直链），统一由局域网中转服务转给电视。
-    fun currentCastSource(): CastSource? {
-        val current = deps.playbackController.currentCastSource() ?: return null
-        val (track, uri, _) = current
-        return CastSource(
-            title = track.title,
-            artist = track.artistName,
-            album = track.albumName,
-            mimeType = castMimeOf(track.audioFormat),
-            uri = uri,
-            durationMs = track.durationMs,
-        )
+    // 投播中一切以音响为准：本机播放器投完就暂停了，它的 position 不会前进。
+    val castActive = castState.hasActive
+    val castPlayback = castState.playback
+
+    // 播放进度优先用 progress 流：它按播放器回调更新，比 PlaybackUiState 里的快照更跟手。
+    // 但刚起播或缓冲时 progress 还是 0，这时回退到快照，避免进度条突然跳回开头。
+    val positionMs = if (castActive) {
+        castPlayback.positionMs
+    } else {
+        progress.positionMs.takeIf { it > 0L } ?: playback.positionMs
+    }
+    val durationMs = if (castActive) {
+        castPlayback.durationMs.takeIf { it > 0L } ?: playback.durationMs
+    } else {
+        progress.durationMs.takeIf { it > 0L } ?: playback.durationMs
     }
 
+    // 投播当前这一首：把播放器里真正的 URI 交给投播层（本地是 content://，
+    // 协议平台是 127.0.0.1 代理，在线是直链），统一由局域网中转服务转给电视。
     val startCast: (com.yueyin.tv.core.cast.DlnaDevice) -> Unit = { device ->
         val current = deps.playbackController.currentCastSource()
         if (current == null) {
             Toast.makeText(context, "当前没有可投播的曲目", Toast.LENGTH_SHORT).show()
         } else {
-            val (_, _, position) = current
-            // 先置抑制并静音，不等 castTo 返回：设备收到 Play 就出声，
-            // 若等回调才静音，中间这一段就是两边同时响的双声窗口。
+            val (track, uri, position) = current
+            // 先静音再投：握手要几百毫秒，等 castTo 返回再静音，这段时间手机会一直出声。
             deps.playbackController.pauseForCast()
             scope.launch {
                 val result = deps.castController.castTo(
                     device = device,
-                    source = currentCastSource() ?: return@launch,
+                    source = CastSource(
+                        title = track.title,
+                        artist = track.artistName,
+                        album = track.albumName,
+                        mimeType = castMimeOf(track.audioFormat),
+                        uri = uri,
+                        durationMs = track.durationMs,
+                    ),
                     positionMs = position,
                 )
                 if (result.isSuccess) {
                     castOpen = false
                 } else {
-                    // 投播失败必须放开抑制并恢复本机，否则手机会一直静音。
+                    // 投播失败：把本机起播放回来，否则用户按播放会没反应。
                     deps.playbackController.releaseCastSuppression()
-                    deps.playbackController.playPause()
                     Toast.makeText(context, result.exceptionOrNull()?.message ?: "投播失败", Toast.LENGTH_SHORT).show()
                 }
             }
         }
     }
 
-    // 遥控器模型：投播期间进度、播放键一律以设备上报的状态为准，
-    // 按键转发给渲染器，不再驱动本机播放器（避免双声与「按键没反应」）。
+    val landscape = LocalPhoneWindow.current.isLandscape
+    // 模糊背景（封面取色）开关：默认开。开了就在两种样式下共用同一张放大+模糊的封面背景。
+    val blurredBackdrop = prefs.blurredBackdrop
+
+    // 投播中这几个键都是「遥控」：直接发给音响，不再驱动本机播放器。
     val togglePlay: () -> Unit = {
-        if (castState.hasActive) {
+        if (castActive) {
             scope.launch {
-                if (castState.playback.playing) deps.castController.pauseCast()
-                else deps.castController.resumeCast()
+                if (castPlayback.playing) {
+                    deps.castController.pauseCast()
+                } else {
+                    deps.castController.resumeCast()
+                }
             }
         } else {
             deps.playbackController.playPause()
         }
     }
-    val seekTo: (Long) -> Unit = { target ->
-        if (castState.hasActive) {
-            scope.launch { deps.castController.seekCast(target) }
+    val next: () -> Unit = {
+        if (castActive) {
+            // 本机只切索引、不播放；真正的重投交给下面的 LaunchedEffect 统一处理。
+            deps.playbackController.pause()
+            deps.playbackController.next()
         } else {
-            deps.playbackController.seekTo(target)
+            deps.playbackController.next()
         }
     }
-    // 退出投播后的「释放抑制 + 从设备位置续播」统一由壳层 PhoneCastFollow 处理，
-    // 这里只结束会话，避免两条路径各播一次（旧版双声/不续播的根因之一）。
-    val stopCast: () -> Unit = {
-        scope.launch { deps.castController.stopCast() }
+    val previous: () -> Unit = {
+        if (castActive) {
+            deps.playbackController.pause()
+            deps.playbackController.previous()
+        } else {
+            deps.playbackController.previous()
+        }
     }
-
-    val landscape = LocalPhoneWindow.current.isLandscape
-    // 模糊背景（封面取色）开关：默认开。流畅档强制关闭，避免低端设备做全屏模糊。
-    val blurredBackdrop = prefs.blurredBackdrop && LocalRenderPolicy.current.glass
-
-    val next = { deps.playbackController.next() }
-    val previous = { deps.playbackController.previous() }
 
     // 控制面板竖屏直接作为页面最后一段、横屏挂在右侧常驻栏，两处显示同一套内容。
     // 写成 lambda 而不抽私有函数：它的入参几乎全是本作用域里的局部量（进度、收藏态、四个回调），
@@ -233,18 +238,11 @@ internal fun PhonePlayerPage(
     // 控制面板自己再压一层渐变就会变成一块孤零零的深色卡片（横屏截图里那个方块就是这么来的）。
     val controlPanel: @Composable (Boolean) -> Unit = { sidePanel ->
         ControlPanel(
-            // 投播期间控制面板显示设备状态，不再显示本机暂停态。
-            playback = if (castState.hasActive) {
-                playback.copy(isPlaying = castState.playback.playing)
-            } else {
-                playback
-            },
-            positionMs = if (castState.hasActive) castState.playback.positionMs else positionMs,
-            durationMs = if (castState.hasActive && castState.playback.durationMs > 0L) {
-                castState.playback.durationMs
-            } else {
-                durationMs
-            },
+            playback = playback,
+            // 投播中本机是暂停状态，图标要用音响的播放状态，否则一直显示「播放」。
+            isPlayingOverride = if (castActive) castPlayback.playing else null,
+            positionMs = positionMs,
+            durationMs = durationMs,
             bufferedMs = progress.bufferedMs,
             isFavorite = isFavorite,
             favoritePending = favoritePending,
@@ -252,7 +250,13 @@ internal fun PhonePlayerPage(
             onTogglePlay = togglePlay,
             onNext = next,
             onPrevious = previous,
-            onSeek = seekTo,
+            onSeek = { target ->
+                if (castActive) {
+                    scope.launch { deps.castController.seekCast(target) }
+                } else {
+                    deps.playbackController.seekTo(target)
+                }
+            },
             onToggleFavorite = {
                 // 元数据还在加载时用播放状态自己拼一个快照，而不是直接跳过。
                 // 早先的写法是「没有 metadata 就不收藏」，结果是点了心形毫无反应——
@@ -318,7 +322,9 @@ internal fun PhonePlayerPage(
             visible = castOpen,
             state = castState,
             onScan = { deps.castController.startScan() },
-            onStop = stopCast,
+            onStop = {
+                scope.launch { deps.castController.stopCast() }
+            },
             onPick = startCast,
             onDismiss = {
                 castOpen = false
@@ -361,7 +367,13 @@ internal fun PhonePlayerPage(
                 failed = lyricsResource is NowPlayingResourceState.RetryableFailure,
                 positionMs = positionMs,
                 karaokeFill = prefs.karaokeFill,
-                onSeekLine = seekTo,
+                onSeekLine = { target ->
+                    if (castActive) {
+                        scope.launch { deps.castController.seekCast(target) }
+                    } else {
+                        deps.playbackController.seekTo(target)
+                    }
+                },
                 onBack = { fullLyrics = false },
                 // 全歌词页照搬播放页那套常驻控制栏；失败提示条是错误态才出现的条件元素，
                 // 不属于控制栏，也不带进全歌词页。
@@ -381,9 +393,9 @@ internal fun PhonePlayerPage(
     Box(Modifier.fillMaxSize()) {
         // ① 底：模糊封面铺满整屏（含状态栏与导航条区域），两种样式共用。
         if (blurredBackdrop) {
-            PlayerBackdrop(playback.coverId)
+            PlayerBackdrop(playback.coverId, playback.title)
         } else {
-            Box(Modifier.fillMaxSize().background(FnMediaColors.Background))
+            Box(Modifier.fillMaxSize().background(FnColors.Background))
         }
 
         // ② 可读性遮罩：只此一张，整屏渐变。顶部压一点保住顶栏图标，中部留出封面取色，
@@ -466,7 +478,7 @@ internal fun PhonePlayerPage(
                         castOpen = true
                         deps.castController.startScan()
                     },
-                    onStopCast = stopCast,
+                    onStopCast = { scope.launch { deps.castController.stopCast() } },
                 )
             }
         } else {
@@ -485,7 +497,7 @@ internal fun PhonePlayerPage(
                         castOpen = true
                         deps.castController.startScan()
                     },
-                    onStopCast = stopCast,
+                    onStopCast = { scope.launch { deps.castController.stopCast() } },
                 )
                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                     // StageArt 自己会再扣掉两侧 screenHorizontal 与 SWIPE_EDGE_GUARD，
@@ -659,7 +671,7 @@ private fun TopBar(
                 Modifier.size(LocalCarProfile.current.touchTarget).phoneTap(onBack),
                 contentAlignment = Alignment.Center,
             ) {
-                PhoneIcon(PhoneGlyph.ChevronDown, FnMediaColors.Text, Modifier.size(22.dp))
+                PhoneIcon(PhoneGlyph.ChevronDown, FnColors.Text, Modifier.size(22.dp))
             }
             Spacer(Modifier.weight(1f))
             // 投播入口放右上角（AirPlay 习惯位）：不占操作行的五个槽位，
@@ -670,46 +682,41 @@ private fun TopBar(
             ) {
                 PhoneIcon(
                     PhoneGlyph.Cast,
-                    if (castState.hasActive) FnMediaColors.Coral else FnMediaColors.Text,
+                    if (castState.hasActive) FnColors.Coral else FnColors.Text,
                     Modifier.size(22.dp),
                 )
             }
         }
         if (castState.hasActive) {
+            // 只用一段贴着左边的短胶囊：原来通栏 + 橙红按钮，横屏时会横贯整个封面，
+            // 比封面本身还抢眼。设备名只取括号前的主名（IP 对用户没意义）。
+            val castDeviceName = castState.active?.name
+                ?.substringBefore('(')
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: castState.active?.name.orEmpty()
             Row(
                 Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = PhoneSpace.md)
+                    .padding(start = PhoneSpace.md)
                     .padding(bottom = PhoneSpace.xs)
-                    .background(FnMediaColors.Surface.copy(alpha = 0.78f), RoundedCornerShape(12.dp))
-                    .padding(horizontal = PhoneSpace.sm, vertical = 7.dp),
+                    .background(FnColors.Surface.copy(alpha = 0.40f), RoundedCornerShape(999.dp))
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "正在 ${castState.active?.name.orEmpty()} 播放",
-                    color = FnMediaColors.Text,
+                    "正在 $castDeviceName 播放",
+                    color = FnColors.Text.copy(alpha = 0.72f),
                     fontSize = PhoneType.Micro,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
                 )
+                Spacer(Modifier.width(10.dp))
                 Text(
-                    "停止投播",
-                    color = FnMediaColors.Coral,
+                    "停止",
+                    color = FnColors.Text.copy(alpha = 0.58f),
                     fontSize = PhoneType.Micro,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.phoneTap(onStopCast),
-                )
-            }
-            // 投播过程中的非致命问题（如设备拒绝进度定位）让用户看见，不静默失败。
-            castState.error?.let { warning ->
-                Text(
-                    warning,
-                    color = FnMediaColors.Warning,
-                    fontSize = PhoneType.Micro,
-                    modifier = Modifier
-                        .padding(horizontal = PhoneSpace.md)
-                        .padding(bottom = PhoneSpace.xs),
                 )
             }
         }
@@ -816,11 +823,13 @@ private fun StageArt(
  */
 @Composable
 private fun VinylDisc(coverId: String?, title: String) {
-    val rotation = rememberIdleFloat(
-        label = "vinyl-rotation",
-        policy = LocalRenderPolicy.current,
-        durationMs = 20_000,
+    val rotation = rememberInfiniteTransition().animateFloat(
+        initialValue = 0f,
         targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 20_000, easing = LinearEasing),
+        ),
+        label = "vinyl-rotation",
     )
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         // 柔光：电视端是随播放呼吸的一圈光，手机竖屏保留静态版就够——
@@ -830,8 +839,8 @@ private fun VinylDisc(coverId: String?, title: String) {
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        FnMediaColors.Coral.copy(alpha = 0.16f),
-                        FnMediaColors.Coral.copy(alpha = 0.05f),
+                        FnColors.Coral.copy(alpha = 0.16f),
+                        FnColors.Coral.copy(alpha = 0.05f),
                         Color.Transparent,
                     ),
                     center = center,
@@ -879,7 +888,7 @@ private fun VinylDisc(coverId: String?, title: String) {
                     radius = radius,
                 )
                 drawArc(
-                    color = FnMediaColors.Coral.copy(alpha = 0.42f),
+                    color = FnColors.Coral.copy(alpha = 0.42f),
                     startAngle = -18f,
                     sweepAngle = 36f,
                     useCenter = false,
@@ -912,29 +921,27 @@ private fun VinylDisc(coverId: String?, title: String) {
     }
 }
 
-/** 沉浸式背景：两种样式共用。切歌时预生成一张模糊封面位图，铺满整屏后只叠一层很轻的渐变——
+/** 沉浸式背景：两种样式共用。放大 + 模糊后的封面铺满全屏，只盖一层很轻的渐变——
  * 顶部压一点黑保住状态栏文字可读，中部保住封面取色，只有底部才加深到近不透明，
- * 给歌词与控制栏留可读底。绝不用重黑把整屏吃成黑的。
- *
- * 借鉴酷狗的预生成模糊底图：不再用 Modifier.blur（API 30 及以下无效/被忽略，
- * 高版本又每帧离屏模糊），播放期间只是一张静态 Image。 */
+ * 给歌词与控制栏留可读底。绝不用重黑把整屏吃成黑的。 */
 @Composable
-private fun PlayerBackdrop(coverId: String?) {
-    val deps = LocalPhoneDeps.current
-    // 与 PhoneArtwork 共用同一份封面缓存；背景只需 Grid 档，未命中退 Compact。
-    val bitmap = rememberPhoneArtwork(deps, coverId, CoverVariant.Grid, CoverVariant.Compact)
-    val backdrop = rememberArtworkBackdrop(bitmap, 720, 1280)
-    val image = remember(backdrop) { backdrop?.asImageBitmap() }
+private fun PlayerBackdrop(coverId: String?, title: String) {
     Box(Modifier.fillMaxSize()) {
-        if (image != null) {
-            Image(
-                bitmap = image,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
+        // 先放大再模糊：blur 会把画面边缘往外晕开，放大 1.3 倍让那圈毛边落到屏幕之外。
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = 1.3f
+                    scaleY = 1.3f
+                },
+        ) {
+            PhoneArtwork(
+                coverId = coverId,
+                title = title,
+                modifier = Modifier.fillMaxSize().blur(60.dp),
+                shape = RoundedCornerShape(0.dp),
             )
-        } else {
-            Box(Modifier.fillMaxSize().background(FnMediaColors.Surface))
         }
         Box(
             Modifier.fillMaxSize().background(
@@ -946,7 +953,7 @@ private fun PlayerBackdrop(coverId: String?) {
                     0.12f to Color.Black.copy(alpha = 0.14f),
                     0.35f to Color.Black.copy(alpha = 0.16f),
                     0.65f to Color.Black.copy(alpha = 0.28f),
-                    1.0f to Color.Black.copy(alpha = 0.64f),
+                    1.0f to FnColors.Background.copy(alpha = 0.64f),
                 ),
             ),
         )
@@ -1001,7 +1008,7 @@ private fun MiniLyricsStrip(
                 val isCurrent = offset == 0
                 Text(
                     text.ifBlank { " " },
-                    color = if (isCurrent) FnMediaColors.Coral else Color.White.copy(alpha = 0.42f),
+                    color = if (isCurrent) FnColors.Coral else Color.White.copy(alpha = 0.42f),
                     fontSize = if (isCurrent) PhoneType.Section else PhoneType.Body,
                     fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
@@ -1081,7 +1088,7 @@ private fun LandscapeLyrics(
             Text(
                 text,
                 color = when {
-                    isCurrent -> FnMediaColors.Coral
+                    isCurrent -> FnColors.Coral
                     // 越远越淡：上下各一句半亮，再往外只留一点轮廓，形成「正在唱」的纵深感。
                     kotlin.math.abs(offset) == 1 -> Color.White.copy(alpha = 0.44f)
                     else -> Color.White.copy(alpha = 0.22f)
@@ -1125,7 +1132,7 @@ private fun FullLyricsPage(
     Box(Modifier.fillMaxSize()) {
         // 与播放页同构的沉浸式背景：进全歌词页也不打断沉浸感。
         if (blurredBackdrop) {
-            PlayerBackdrop(coverId)
+            PlayerBackdrop(coverId, title)
         }
         Column(Modifier.fillMaxSize()) {
             // 头部：返回 + 曲名，与播放页顶栏同构。
@@ -1145,13 +1152,13 @@ private fun FullLyricsPage(
                     Modifier.size(LocalCarProfile.current.touchTarget).phoneTap(onBack),
                     contentAlignment = Alignment.Center,
                 ) {
-                    PhoneIcon(PhoneGlyph.ChevronDown, FnMediaColors.Text, Modifier.size(22.dp))
+                    PhoneIcon(PhoneGlyph.ChevronDown, FnColors.Text, Modifier.size(22.dp))
                 }
                 Spacer(Modifier.width(PhoneSpace.sm))
                 Column(Modifier.weight(1f)) {
                     Text(
                         title.ifBlank { "未在播放" },
-                        color = FnMediaColors.Text,
+                        color = FnColors.Text,
                         fontSize = PhoneType.Body,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
@@ -1160,7 +1167,7 @@ private fun FullLyricsPage(
                     if (artist.isNotBlank()) {
                         Text(
                             artist,
-                            color = FnMediaColors.Muted,
+                            color = FnColors.Muted,
                             fontSize = PhoneType.Micro,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -1192,7 +1199,7 @@ private fun FullLyricsPage(
                     .background(
                         Brush.verticalGradient(
                             0f to Color.Transparent,
-                            1f to Color.Black.copy(alpha = 0.88f),
+                            1f to FnColors.Background.copy(alpha = 0.88f),
                         ),
                     ),
             ) {
@@ -1209,7 +1216,7 @@ private fun StageTitle(title: String, artist: String, maxLines: Int = 2) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             title.ifBlank { "未在播放" },
-            color = FnMediaColors.Text,
+            color = FnColors.Text,
             fontSize = PhoneType.Headline,
             fontWeight = FontWeight.SemiBold,
             maxLines = maxLines,
@@ -1220,7 +1227,7 @@ private fun StageTitle(title: String, artist: String, maxLines: Int = 2) {
         Spacer(Modifier.height(PhoneSpace.sm))
         Text(
             artist.ifBlank { "—" },
-            color = FnMediaColors.Muted,
+            color = FnColors.Muted,
             fontSize = PhoneType.Row,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -1250,13 +1257,13 @@ private fun PlaybackErrorBar(
         modifier
             .fillMaxWidth()
             .padding(horizontal = PhoneSpace.screenHorizontal)
-            .background(FnMediaColors.Coral.copy(alpha = 0.16f), RoundedCornerShape(PhoneRadius.md))
+            .background(FnColors.Coral.copy(alpha = 0.16f), RoundedCornerShape(PhoneRadius.md))
             .padding(horizontal = PhoneSpace.md, vertical = PhoneSpace.sm),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             "播放失败：${failure.userHint()}",
-            color = FnMediaColors.Coral,
+            color = FnColors.Coral,
             fontSize = PhoneType.Caption,
             maxLines = 2,
             modifier = Modifier.weight(1f),
@@ -1264,7 +1271,7 @@ private fun PlaybackErrorBar(
         Spacer(Modifier.width(PhoneSpace.md))
         Text(
             "重试",
-            color = FnMediaColors.Text,
+            color = FnColors.Text,
             fontSize = PhoneType.Caption,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
@@ -1278,6 +1285,8 @@ private fun PlaybackErrorBar(
 @Composable
 private fun ControlPanel(
     playback: PlaybackUiState,
+    /** 投播中传音响的播放状态；null 表示按本机播放器判断。 */
+    isPlayingOverride: Boolean? = null,
     positionMs: Long,
     durationMs: Long,
     bufferedMs: Long,
@@ -1311,8 +1320,8 @@ private fun ControlPanel(
                         Brush.verticalGradient(
                             listOf(
                                 Color.Transparent,
-                                Color.Black.copy(alpha = 0.86f),
-                                FnMediaColors.Background,
+                                FnColors.Background.copy(alpha = 0.86f),
+                                FnColors.Background,
                             ),
                         ),
                     )
@@ -1331,8 +1340,8 @@ private fun ControlPanel(
             onSeek = onSeek,
         )
         Row(Modifier.fillMaxWidth()) {
-            Text(formatDuration(positionMs), color = FnMediaColors.Muted, fontSize = PhoneType.Micro, modifier = Modifier.weight(1f))
-            Text(formatDuration(durationMs), color = FnMediaColors.Muted, fontSize = PhoneType.Micro)
+            Text(formatDuration(positionMs), color = FnColors.Muted, fontSize = PhoneType.Micro, modifier = Modifier.weight(1f))
+            Text(formatDuration(durationMs), color = FnColors.Muted, fontSize = PhoneType.Micro)
         }
 
         Row(
@@ -1345,13 +1354,13 @@ private fun ControlPanel(
             Box(
                 Modifier
                     .size(64.dp)
-                    .background(FnMediaColors.Coral, CircleShape)
+                    .background(FnColors.Coral, CircleShape)
                     .phoneTap(onTogglePlay),
                 contentAlignment = Alignment.Center,
             ) {
                 PhoneIcon(
-                    glyph = if (playback.isPlaying) PhoneGlyph.Pause else PhoneGlyph.Play,
-                    tint = FnMediaColors.Background,
+                    glyph = if (isPlayingOverride ?: playback.isPlaying) PhoneGlyph.Pause else PhoneGlyph.Play,
+                    tint = FnColors.Background,
                     modifier = Modifier.size(26.dp),
                 )
             }
@@ -1410,7 +1419,7 @@ private fun TransportKey(glyph: PhoneGlyph, onClick: () -> Unit) {
         Modifier.size(52.dp).phoneTap(onClick),
         contentAlignment = Alignment.Center,
     ) {
-        PhoneIcon(glyph, FnMediaColors.Text, Modifier.size(24.dp))
+        PhoneIcon(glyph, FnColors.Text, Modifier.size(24.dp))
     }
 }
 
@@ -1433,9 +1442,9 @@ private fun RowScope.ActionKey(
     filled: Boolean = false,
 ) {
     val tint = when {
-        !enabled -> FnMediaColors.Muted.copy(alpha = 0.36f)
-        active -> FnMediaColors.Coral
-        else -> FnMediaColors.Text.copy(alpha = 0.86f)
+        !enabled -> FnColors.Muted.copy(alpha = 0.36f)
+        active -> FnColors.Coral
+        else -> FnColors.Text.copy(alpha = 0.86f)
     }
     Column(
         Modifier
@@ -1529,7 +1538,7 @@ private fun SeekBar(
                     .fillMaxWidth(shownFraction)
                     .fillMaxHeight()
                     .clip(CircleShape)
-                    .background(FnMediaColors.Coral),
+                    .background(FnColors.Coral),
             )
         }
         // 拖动时出现的圆点：没有它用户不知道自己有没有按准

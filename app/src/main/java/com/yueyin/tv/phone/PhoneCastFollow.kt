@@ -1,6 +1,6 @@
 package com.yueyin.tv.phone
 
-import android.util.Log
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -8,31 +8,28 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.yueyin.tv.core.cast.CastSource
 import com.yueyin.tv.core.playback.PlaybackUiState
 import kotlinx.coroutines.delay
 
-private const val TAG = "YueyinCast"
-
 /**
- * 投播跟随：投播期间只要当前曲目变了，就把新曲目重新投给渲染器；退出投播时把本机接回来。
+ * 投播跟随：投播期间只要「当前曲目」变了，就把新曲目重新投到音响；
+ * 退出投播时把手机接回来接着放。
  *
- * 必须挂在**壳层**（PhoneApp）而不是播放页：用户换歌最常见的路径是回到曲库点另一首，
- * 那时播放页已经不在组合树上，页内的 LaunchedEffect 根本不会运行——表现就是
- * 「手机放手机的、音响放音响的」。这是昨晚调试里反复出现、加了又撤的老问题。
- *
- * 状态机只有三个变量，且与 core:cast 的单一会话状态对齐：
- * - wasActive：区分「刚进入投播」（castTo 已经投过当前曲）与「投播中切歌」；
- * - lastGuid：上一次的 mediaId，避免同一首歌被重复重投；
- * - lastCastPositionMs：持续记住设备进度，供退出投播时本机续播。
+ * 为什么挂在壳层而不是播放页：用户换歌最常见的路径是**回到列表里点另一首**，
+ * 那时播放页已经不在组合树上，页内的 `LaunchedEffect` 根本不会运行——
+ * 表现就是「手机放手机的、音响放音响的」。放在壳层后，不论从哪个页面换歌都能覆盖。
  */
 @Composable
 internal fun PhoneCastFollow(playback: PlaybackUiState) {
     val deps = LocalPhoneDeps.current
+    val context = LocalContext.current
     val castState by deps.castController.state.collectAsStateWithLifecycle()
     var lastGuid by remember { mutableStateOf<String?>(null) }
     var wasActive by remember { mutableStateOf(false) }
+    // 持续记住音响播到哪：stopCast 会把 playback 状态一起清零，退出时就没得用了。
     var lastCastPositionMs by remember { mutableLongStateOf(0L) }
 
     LaunchedEffect(castState.hasActive, castState.playback.positionMs) {
@@ -44,20 +41,20 @@ internal fun PhoneCastFollow(playback: PlaybackUiState) {
             if (wasActive) {
                 wasActive = false
                 lastGuid = null
-                // 退出投播：先放开抑制，再从音响停下的位置接着放本机，
-                // 否则会跳回投播开始的位置，或者干脆按播放没反应。
+                // 退出投播：先放开本机起播限制（否则按播放也没声音），
+                // 再从音响停下的位置接着放——直接从本机暂停点续播会跳回投播开始的位置。
                 deps.playbackController.releaseCastSuppression()
                 if (lastCastPositionMs > 0L) {
-                    deps.playbackController.seekTo(lastCastPositionMs)
+                    runCatching { deps.playbackController.seekTo(lastCastPositionMs) }
                 }
-                deps.playbackController.playPause()
+                runCatching { deps.playbackController.playPause() }
                 lastCastPositionMs = 0L
             }
             return@LaunchedEffect
         }
 
         if (!wasActive) {
-            // 刚进入投播：castTo 已经投过当前这一首，只有后续换曲才需要重投。
+            // 刚进入投播：castTo 已经投过当前这一首，接着换曲才需要重投。
             wasActive = true
             lastGuid = playback.mediaId
             return@LaunchedEffect
@@ -65,31 +62,31 @@ internal fun PhoneCastFollow(playback: PlaybackUiState) {
 
         val currentGuid = playback.mediaId
         val previousGuid = lastGuid
-        lastGuid = currentGuid
-        if (previousGuid == null || currentGuid.isBlank() || currentGuid == previousGuid) {
+        if (previousGuid == null) {
+            lastGuid = currentGuid
             return@LaunchedEffect
         }
+        if (currentGuid == previousGuid) return@LaunchedEffect
+        lastGuid = currentGuid
 
-        // 切歌：抑制位保证本机不会跟着出声，这里再调一次是幂等保险。
+        // 先静音：选歌会让本机立刻起播，不能等换源完成才停。
         deps.playbackController.pauseForCast()
-        // 新曲目的地址可能还没就位（漫游要联网取链），有界等待，避免
-        // 「当前曲目还没有可播放的地址」把重投直接打断。
+
+        // 等新曲目的地址真正就位（漫游模式还要联网取链），最多 3 秒。
         var target = deps.playbackController.currentCastSource()
         var waited = 0L
-        while (waited < 3_000L &&
-            (target == null || target.first.guid.value == previousGuid || target.second.isBlank())
-        ) {
+        while (waited < 3_000L && (target == null || target.first.guid.value == previousGuid)) {
             delay(200)
             waited += 200
             target = deps.playbackController.currentCastSource()
         }
         val ready = target
-        if (ready == null || ready.second.isBlank() || ready.first.guid.value == previousGuid) {
-            Log.w(TAG, "follow timeout: no playable uri for $currentGuid")
+        if (ready == null || ready.first.guid.value == previousGuid) {
+            Toast.makeText(context, "换曲超时，没有拿到新的播放地址", Toast.LENGTH_SHORT).show()
             return@LaunchedEffect
         }
         val (track, uri, _) = ready
-        Log.i(TAG, "follow -> ${track.title} / ${uri.take(64)}")
+        android.util.Log.i("YueyinCast", "follow -> ${track.title} / ${uri.take(64)}")
         val result = deps.castController.replaceSource(
             CastSource(
                 title = track.title,
@@ -101,7 +98,12 @@ internal fun PhoneCastFollow(playback: PlaybackUiState) {
             ),
         )
         if (result.isFailure) {
-            Log.e(TAG, "follow failed: ${result.exceptionOrNull()?.message}")
+            // 静默失败会让用户以为按钮没反应，至少要说清是被设备拒绝还是超时。
+            Toast.makeText(
+                context,
+                "换曲投播失败：${result.exceptionOrNull()?.message.orEmpty()}",
+                Toast.LENGTH_LONG,
+            ).show()
         }
     }
 }

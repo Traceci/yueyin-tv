@@ -3,8 +3,10 @@ package com.mocharealm.accompanist.lyrics.ui.composable.lyrics
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,6 +28,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -56,6 +59,7 @@ import com.mocharealm.accompanist.lyrics.core.model.synced.SyncedLine
 import com.mocharealm.accompanist.lyrics.ui.utils.isRtl
 import com.mocharealm.accompanist.lyrics.ui.utils.modifier.springPlacement
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlin.math.absoluteValue
@@ -148,6 +152,21 @@ fun KaraokeLyricsView(
      * 默认 false 保持电视端原有行为；手机全歌词页传 true。
      */
     fallbackFocusLine: Boolean = false,
+    /**
+     * 逐句滚动是否走缓动。
+     *
+     * 默认 false 保持原来的瞬时平移（换句那一帧整块歌词直接跳一行，看着像"咔"地一下）；
+     * 电视播放页与手机全歌词页开启后改为 380ms 缓动滑动。
+     */
+    smoothScroll: Boolean = false,
+    /**
+     * 连续滚动：由播放进度驱动整块歌词持续缓慢上移。
+     *
+     * 关掉时是「换句那一帧平移一行」——无论加不加缓动，句间都是静止的，
+     * 观感就是一行一行往上顶。开启后当前句从中间慢慢升到中线上方一行，
+     * 下一句同时从下方补到中间，换句处无缝。
+     */
+    continuousScroll: Boolean = false,
 ) {
     val density = LocalDensity.current
     val stableNormalTextStyle = remember(normalLineTextStyle) { normalLineTextStyle }
@@ -313,6 +332,8 @@ fun KaraokeLyricsView(
     }
 
     val scrollInCode = remember { mutableStateOf(false) }
+    // 连续滚动时不足 1px 的余量：由 GPU 平移补上，避免列表整数滚动造成的抖动。
+    val subPixelOffset = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
 
     val isManualScrolling by remember {
         derivedStateOf {
@@ -340,8 +361,25 @@ fun KaraokeLyricsView(
         stableOffsetPx,
     ) {
         androidx.compose.runtime.snapshotFlow { lyricsFocusState.firstIndex }
-            .collect { firstIndex ->
-                if (System.currentTimeMillis() < manualPauseUntil.value) return@collect
+            .collectLatest { firstIndex ->
+                if (System.currentTimeMillis() < manualPauseUntil.value) return@collectLatest
+                // 连续滚动模式下，换句不再触发滚动（位移交给下面的帧循环），
+                // 只有「当前句根本不在可见区」时才需要立刻定位——否则会一直滑不到目标附近。
+                if (continuousScroll) {
+                    if (listState.layoutInfo.visibleItemsInfo.none { it.index == firstIndex }) {
+                        val alignOffset = if (centerAlignCurrentLine) {
+                            stableOffsetPx + keepAliveZonePx.toInt()
+                        } else {
+                            -stableOffsetPx - keepAliveZonePx.toInt()
+                        }
+                        runCatching {
+                            scrollInCode.value = true
+                            listState.animateScrollToItem(firstIndex, alignOffset.toInt())
+                        }
+                        scrollInCode.value = false
+                    }
+                    return@collectLatest
+                }
                 if (!scrollInCode.value) {
                     val items = listState.layoutInfo.visibleItemsInfo
                     val targetItem = items.firstOrNull { it.index == firstIndex }
@@ -350,21 +388,30 @@ fun KaraokeLyricsView(
                     try {
                         scrollInCode.value = true
                         if (scrollOffset != null) {
-                            listState.scrollBy(scrollOffset)
+                            // 换句时这块原本是瞬时平移，看不出过渡，观感就是"一句一句跳"。
+                            // 开启 smoothScroll 后走 380ms 缓动；但一次要跨两行以上
+                            // （拖进度、切歌、跳段）仍然瞬移，否则会慢悠悠追一大段，反而更怪。
+                            val lineHeightPx = targetItem?.size?.toFloat() ?: 0f
+                            val nearEnough = lineHeightPx <= 0f ||
+                                kotlin.math.abs(scrollOffset) <= lineHeightPx * 2f
+                            if (smoothScroll && nearEnough) {
+                                listState.animateScrollBy(
+                                    scrollOffset.toFloat(),
+                                    tween(durationMillis = 380, easing = FastOutSlowInEasing),
+                                )
+                            } else {
+                                listState.scrollBy(scrollOffset.toFloat())
+                            }
                         } else {
                             // 当前句不在可见区时，两条分支必须用同一个目标（距顶 stableOffsetPx）。
-                            // LazyList 的 scrollOffset 是「条目已经被滚出去多少」，不是「条目距顶多少」：
-                            // 条目落点 = contentPadding(offset) − scrollOffset。offset 已经被当成
-                            // contentPadding 用了一次，这里再传 +offset 就会两者相消，当前句正好贴到
-                            // 视口顶行（手机全屏歌词进入时「当前句跳顶」就是这么来的）。
-                            // 要落在 contentPadding 之后，scrollOffset 取 −keepAliveZone（保持与
-                            // scrollBy 分支的目标一致）；手机端 keepAliveZone=0，等价于传 0。
+                            // 原实现传负值，会把当前句推到 viewport 上方；offset 只有几十 dp 时
+                            // （电视端）误差看不出来，手机端 offset 是半个歌词区，误差被放大到整屏。
                             val alignOffset = if (centerAlignCurrentLine) {
-                                -keepAliveZonePx.toInt()
+                                stableOffsetPx + keepAliveZonePx.toInt()
                             } else {
                                 -stableOffsetPx - keepAliveZonePx.toInt()
                             }
-                            listState.animateScrollToItem(firstIndex, alignOffset)
+                            listState.animateScrollToItem(firstIndex, alignOffset.toInt())
                         }
                     } catch (_: Exception) {
                     } finally {
@@ -372,6 +419,41 @@ fun KaraokeLyricsView(
                     }
                 }
             }
+    }
+    // 连续滚动：每帧把当前句推到「居中位置 − 本句进度 × 行高」。
+    // 一句唱完，它的行顶正好走完一行高，下一句同时补到居中位置——衔接处没有跳变，
+    // 整首歌词是一条连续的上行动线，而不是一行一行地顶。
+    if (continuousScroll) {
+        LaunchedEffect(lyrics, stableOffsetPx, effectiveEndTimes) {
+            while (isActive) {
+                withFrameNanos { }
+                // 用户手动翻看期间不要抢回去（手机端用；电视端 manualScrollPauseMs = 0 不生效）。
+                if (System.currentTimeMillis() < manualPauseUntil.value) continue
+                if (scrollInCode.value) continue
+                val index = lyricsFocusState.firstIndex
+                val line = lyrics.lines.getOrNull(index) ?: continue
+                val end = effectiveEndTimes.getOrElse(index) { line.end }
+                val span = (end - line.start).coerceAtLeast(1)
+                val progress = ((currentTimeMs() - line.start).toFloat() / span).coerceIn(0f, 1f)
+                val item = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
+                    ?: continue
+                val linePx = item.size.toFloat().coerceAtLeast(1f)
+                val desiredTop = stableOffsetPx - progress * linePx
+                val delta = (item.offset - listState.layoutInfo.viewportStartOffset) - desiredTop
+                if (kotlin.math.abs(delta) > linePx * 3f) {
+                    // 拖进度、切歌：跨度太大，直接跟上，别一帧一帧爬。
+                    listState.scrollBy(delta)
+                    subPixelOffset.floatValue = 0f
+                } else {
+                    // LazyList 的滚动量是整数像素，每帧不足 1px 的位移会被截断，
+                    // 攒几帧才动一格——这就是「抖」的来源。整数部分交给列表，
+                    // 零头交给 GPU 平移补偿，两者相加才是连续的。
+                    val whole = delta.toInt()
+                    if (whole != 0) listState.scrollBy(whole.toFloat())
+                    subPixelOffset.floatValue = delta - whole
+                }
+            }
+        }
     }
     LookaheadScope {
         Crossfade(lyrics) { lyrics ->
@@ -381,6 +463,8 @@ fun KaraokeLyricsView(
                     modifier = modifier
                         .fillMaxSize()
                         .graphicsLayer {
+                            // 亚像素余量在这里落地：读 State 只触发重绘，不会引起重组。
+                            translationY = subPixelOffset.floatValue
                             compositingStrategy = CompositingStrategy.Offscreen
                         }
                         .drawWithCache {

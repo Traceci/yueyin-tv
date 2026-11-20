@@ -140,6 +140,9 @@ class PlaybackController(
     private var pendingStreamAutoPlay = false
     private var streamResolveJob: Job? = null
 
+    /** 提前给「下一首」取链的任务；与当前首的重取互不干扰。 */
+    private var nextPrefetchJob: Job? = null
+
     private val listener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             forceNextPresentationProjection = forceNextPresentationProjection ||
@@ -369,7 +372,7 @@ class PlaybackController(
         pendingStreamAutoPlay = !selectedReady && autoPlay
         if (selectedReady) {
             player.prepare()
-            if (autoPlay) player.startIfAllowed() else player.pause()
+            if (autoPlay) player.playIfCastAllows() else player.pause()
         } else {
             // 当前首取链失败：立刻就地重取（早于后台补链那几十首，避免被串行取链排队堵住），
             // 拿到链后由 patchStreamUrl 统一 prepare/play。
@@ -573,29 +576,26 @@ class PlaybackController(
     }
 
     /**
-     * 投播期间压住本机起播。
+     * 投播中抑制本机起播。
      *
-     * 进程内标志而不是持久化设置：退出投播由 [releaseCastSuppression] 释放，
-     * 万一 App 被杀或投播异常中断，进程重启后标志自动复位，不会出现「本机永久静音」。
-     * 只有手机端投播会话会置位，电视端不调用 [pauseForCast]，因此不受影响。
+     * 投播时手机只是遥控器：从列表选歌会让播放器走「准备并播放」，它的 play() 往往
+     * 晚于 UI 那次 pause 才执行，于是手机和音响同时出声。这里在播放器层直接拦住，
+     * 不依赖调用方的时序。
      */
     @Volatile
     private var castSuppressPlay = false
 
-    fun isCastSuppressed(): Boolean = castSuppressPlay
-
-    /** 所有本机起播统一走这里，投播期间直接忽略。 */
-    private fun Player.startIfAllowed() {
+    private fun Player.playIfCastAllows() {
         if (!castSuppressPlay) play()
     }
 
-    /** 投播接管前置位并停止本机播放；之后切歌、点播放键都不会让手机出声。 */
+    /** 投播接管前：停下本机，并禁止后续任何本机起播。 */
     fun pauseForCast() {
         castSuppressPlay = true
         pause()
     }
 
-    /** 退出投播时释放抑制。 */
+    /** 退出投播：恢复本机起播能力。 */
     fun releaseCastSuppression() {
         castSuppressPlay = false
     }
@@ -606,13 +606,13 @@ class PlaybackController(
                 player.isPlaying -> player.pause()
                 player.playbackState == Player.STATE_ENDED -> {
                     player.seekToDefaultPosition()
-                    player.startIfAllowed()
+                    player.playIfCastAllows()
                 }
                 player.playbackState == Player.STATE_IDLE && player.mediaItemCount > 0 -> {
                     player.prepare()
-                    player.startIfAllowed()
+                    player.playIfCastAllows()
                 }
-                else -> player.startIfAllowed()
+                else -> player.playIfCastAllows()
             }
         }
     }
@@ -677,7 +677,7 @@ class PlaybackController(
         val player = controller ?: return null
         if (queueKind != QueueKind.Normal || queueIndex !in 0 until player.mediaItemCount) return null
         player.seekTo(queueIndex, 0L)
-        player.startIfAllowed()
+        player.playIfCastAllows()
         return structuralSnapshot(player)
     }
 
@@ -1254,7 +1254,7 @@ class PlaybackController(
         player.repeatMode = Player.REPEAT_MODE_OFF
         player.shuffleModeEnabled = false
         player.prepare()
-        if (autoPlay) player.startIfAllowed() else player.pause()
+        if (autoPlay) player.playIfCastAllows() else player.pause()
         project(player)
     }
 
@@ -1276,7 +1276,7 @@ class PlaybackController(
         }
 
         val shuffleOrderToRestore = applySnapshot(player, snapshot, activatePersistedShuffle = false)
-        if (snapshot.playIntent == PlaybackPlayIntent.Play) player.startIfAllowed() else player.pause()
+        if (snapshot.playIntent == PlaybackPlayIntent.Play) player.playIfCastAllows() else player.pause()
         PlaybackTransportBridge.setOwnership(ownershipFor(snapshot.kind))
         project(player)
         shuffleOrderToRestore?.let { order ->
@@ -1349,8 +1349,50 @@ class PlaybackController(
                 controller?.let { player ->
                     updateProgress(player)
                     checkpointSnapshot(player)
+                    prefetchNextIfNeeded(player)
                 }
                 delay(PROGRESS_TICK_MS)
+            }
+        }
+    }
+
+    /**
+     * 当前曲目进入最后 20 秒时，把「下一首」的直链提前取好。
+     *
+     * 队列里除开头几首外都是空 uri 入队，后台补链串行（每首含探活 + 脚本，1~2 秒），
+     * 播得快时追不上；切歌那一刻才发现没链，就变成「播放失败，手动点一下又能播」。
+     * 这里把补齐动作前移，失败也就落在用户看不见的地方。
+     *
+     * 注意不复用 [requestStreamUrl]：那个会掐掉进行中的任务，失败还会触发自动跳歌，
+     * 用在「预取下一首」上会把当前播放搞乱。
+     */
+    private fun prefetchNextIfNeeded(player: Player) {
+        val duration = player.duration
+        if (duration <= 0L) return
+        val remaining = duration - player.currentPosition
+        if (remaining < 0L || remaining > NEXT_PREFETCH_WINDOW_MS) return
+
+        val nextIndex = player.currentMediaItemIndex + 1
+        if (nextIndex < 0 || nextIndex >= player.mediaItemCount) return
+        val item = player.getMediaItemAt(nextIndex)
+        val id = item.mediaId
+        if (id.isBlank()) return
+        val uri = item.localConfiguration?.uri?.toString().orEmpty()
+        // 已经有链、且缓存里还在有效期内，就不用重复取。
+        if (uri.isNotBlank() && StreamUrlCache.get(id) != null) return
+        if (nextPrefetchJob?.isActive == true) return
+
+        val track = submittedTracks.getOrNull(nextIndex)?.track ?: return
+        if (track.origin == TrackOrigin.Local) return
+        nextPrefetchJob = scope.launch {
+            val url = runCatching {
+                withContext(Dispatchers.IO) { contentSource.prepare(track).streamUrl }
+            }.getOrNull().orEmpty()
+            if (url.isNotBlank()) {
+                Log.i("YueyinPlayback", "prefetch next id=$id 提前取链成功")
+                patchStreamUrl(id, url)
+            } else {
+                Log.w("YueyinPlayback", "prefetch next id=$id 提前取链失败")
             }
         }
     }
@@ -1391,7 +1433,7 @@ class PlaybackController(
             pendingStreamId = null
             pendingStreamAutoPlay = false
             player.prepare()
-            if (autoPlay) player.startIfAllowed() else player.pause()
+            if (autoPlay) player.playIfCastAllows() else player.pause()
             Log.i("YueyinPlayback", "patchStreamUrl: id=$mediaId 已补到直链，启动播放")
         }
     }
@@ -1426,7 +1468,10 @@ class PlaybackController(
                     patchStreamUrl(id, url, force = true)
                     return@launch
                 }
-                if (attempt < MAX_STREAM_RESOLVE_ATTEMPTS - 1) delay(STREAM_RESOLVE_DELAY_MS)
+                if (attempt < MAX_STREAM_RESOLVE_ATTEMPTS - 1) {
+                    // 退避重试：脚本取链失败多半是瞬时网络问题，500ms 一次太急。
+                    delay(STREAM_RESOLVE_DELAY_MS * (attempt + 1))
+                }
             }
             Log.w("YueyinPlayback", "requestStreamUrl: id=$id 重取直链仍失败，尝试换下一首")
             // 重取彻底失败：接着走「自动跳过」。少了这一步，遇到坏平台会一直停在这一首
@@ -1458,7 +1503,7 @@ class PlaybackController(
                 current.currentMediaItem?.mediaId?.takeIf { it.isNotBlank() }
                     ?.let { StreamUrlCache.invalidate(it) }
                 current.prepare()
-                current.startIfAllowed()
+                current.playIfCastAllows()
             }
         }
     }
@@ -1487,7 +1532,7 @@ class PlaybackController(
                 runCatching {
                     player.seekToNextMediaItem()
                     player.prepare()
-                    player.startIfAllowed()
+                    player.playIfCastAllows()
                 }
             }
             return
@@ -1507,7 +1552,7 @@ class PlaybackController(
             } ?: return@launch
             current.replaceMediaItem(index, current.getMediaItemAt(index).buildUpon().setUri(url).build())
             current.prepare()
-            current.startIfAllowed()
+            current.playIfCastAllows()
             val host = runCatching { java.net.URI(url).host }.getOrNull()
             Log.i("YueyinPlayback", "retryCurrentPlayback: id=$id 已换新链 host=$host")
         }
@@ -1716,8 +1761,11 @@ class PlaybackController(
          * 从 3 次收到 2 次：单次取链现在最多 9 秒，3 次重试意味着用户要干等近半分钟，
          * 而失败两次基本就能确定是这首/这个源不行，交给「重试」按钮更诚实。
          */
-        const val MAX_STREAM_RESOLVE_ATTEMPTS = 2
-        const val STREAM_RESOLVE_DELAY_MS = 500L
+        const val MAX_STREAM_RESOLVE_ATTEMPTS = 3
+        const val STREAM_RESOLVE_DELAY_MS = 600L
+
+        /** 进入曲目最后这么多毫秒时，提前给下一首取链。 */
+        const val NEXT_PREFETCH_WINDOW_MS = 20_000L
     }
 }
 

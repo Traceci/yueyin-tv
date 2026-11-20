@@ -121,7 +121,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 
 
-import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 
 
@@ -186,7 +185,6 @@ import com.yueyin.tv.ui.connect.ConnectRuntime
 
 
 import com.yueyin.tv.ui.isHomeBackConfirmed
-import com.yueyin.tv.ui.storageKey
 
 
 import kotlinx.coroutines.launch
@@ -338,13 +336,6 @@ internal fun PhoneApp(
 
     val connectState by ConnectRuntime.store.state.collectAsStateWithLifecycle()
 
-
-    // 页面级状态保存槽：手机端只渲染栈顶路由，页面一离开组合，`rememberSaveable`
-    // 里的东西（列表滚动位置、搜索词、设置页选中项）就会被丢弃，返回时从零开始——
-    // 表现为「从曲库点进歌单，返回后列表永远回到第一行」。
-    // 电视端 AuthenticatedApp 早就在用同一个做法（stateHolder + route.storageKey()），
-    // 手机端当时只给搜索做了外置（PhoneSearchRetention），曲库列表漏了。
-    val pageStateHolder = rememberSaveableStateHolder()
 
     var boundPlatformId by remember(session.user.guid) { mutableStateOf(connectState.activeId) }
 
@@ -581,8 +572,7 @@ internal fun PhoneApp(
         ) {
 
 
-            // 必须放在 LocalPhoneDeps 的 provider 内部：
-            // 放到外面会在启动瞬间读未提供的 CompositionLocal 而抛异常（闪退）。
+            // 投播跟随放在壳层：用户常在列表里换歌，那时播放页已不在组合树，页内监听会漏。
             PhoneCastFollow(playback)
 
             // 导航形态二选一：竖屏用底部导航，宽屏（≥600dp）换左侧图标栏。
@@ -609,17 +599,7 @@ internal fun PhoneApp(
             val renderRoute: @Composable (LibraryRoute, Boolean) -> Unit = { target, embedded ->
 
 
-                // 每个路由一个保存槽（playlists / albums / artists / playlist:<guid> …）：
-                // 页面被换出时 Compose 把它的 rememberSaveable 存进槽里，返回时原样取回，
-                // 曲库列表的滚动位置就是这么保住的。
-                //
-                // 键里带平台维度：换平台后列表内容完全不同，沿用上一个平台的位置会让用户
-                // 落到一个不该在的地方；加前缀后新平台天然从顶部开始，旧槽不再被引用。
-                pageStateHolder.SaveableStateProvider(
-                    "${connectState.activeId ?: "fn"}|${target.phoneStorageKey()}",
-                ) {
-
-                    PhoneReadingFrame(enabled = target.needsReadingWidth()) {
+                PhoneReadingFrame(enabled = target.needsReadingWidth()) {
 
 
                     PhoneRouteHost(
@@ -666,8 +646,6 @@ internal fun PhoneApp(
 
                     )
 
-
-                }
 
                 }
 
@@ -3308,24 +3286,3 @@ private fun StageProgress(currentIndex: Int) {
 }
 
 
-
-/**
- * 页面保存槽的键：曲库的五个分段共用一个槽。
- *
- * 五个分段在电视端是五个顶级路由（左栏切换、各自一页），手机端却是**同一个 Pager 的五页**。
- * 如果沿用 [storageKey] 按路由分槽，那么每次滑到下一段、路由回写时，`SaveableStateProvider`
- * 的键就变了——整棵子树连同 `rememberPagerState` 一起被销毁重建，Pager 从手指位置掉回
- * `initialPage`，用户看到的就是「滑到一半内容跳一下、闪一下」。
- *
- * 只合并这五个路由，其它页面（详情、搜索、设置）仍然一页一槽，各自回到原位。
- */
-private fun LibraryRoute.phoneStorageKey(): String = when (this) {
-    LibraryRoute.Albums,
-    LibraryRoute.Artists,
-    LibraryRoute.AllPlaylists,
-    LibraryRoute.AllTracks,
-    LibraryRoute.Favorites,
-    -> "library"
-
-    else -> storageKey()
-}
