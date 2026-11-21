@@ -44,6 +44,18 @@ enum class AmbientEffect {
     }
 }
 
+/**
+ * 外观模式。电视端恒为深色（暗环境 + 3 米观看距离），只有手机端开放三档。
+ * 设备级设置，切换账号不重置。
+ */
+enum class ThemeMode {
+    FollowSystem, Light, Dark;
+
+    companion object {
+        fun of(name: String?): ThemeMode = entries.firstOrNull { it.name == name } ?: Dark
+    }
+}
+
 data class AppPreferencesState(
     val playerStyle: PlayerStyle = PlayerStyle.Cover,
     val cacheBudget: CacheBudget = CacheBudget.Default,
@@ -62,6 +74,8 @@ data class AppPreferencesState(
     val karaokeFill: Boolean = true,
     /** 大海报模式是否把封面虚化为全屏背景。 */
     val blurredBackdrop: Boolean = true,
+    /** 外观模式（跟随系统/浅色/深色），仅手机端生效；电视端恒深色。 */
+    val themeMode: ThemeMode = ThemeMode.Dark,
 )
 
 data class CacheUsage(

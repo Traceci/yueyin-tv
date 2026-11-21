@@ -20,6 +20,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.draw.clip
@@ -37,6 +38,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.activity.ComponentActivity
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -50,63 +54,189 @@ import com.yueyin.tv.ui.device.FormFactor
  * 「午夜流光」配色体系：深蓝黑底 + 珊瑚金主色 + 青绿辅助色。
  * 全局统一使用本调色板，保证各页面颜色一致、焦点明确、明暗层次清晰。
  */
-object FnColors {
-    /** 最深底色：近黑蓝，作为所有页面的基底。 */
-    val Background = Color(0xFF070A10)
+/**
+ * 语义色板。深色板与「午夜流光」逐值一致（深色模式视觉零变化）；
+ * 浅色板按 WCAG 2.x 对比度挑选。
+ */
+data class FnPalette(
+    val background: Color,
+    val surface: Color,
+    val surfaceAlt: Color,
+    val text: Color,
+    val muted: Color,
+    val coral: Color,
+    val amber: Color,
+    val teal: Color,
+    val cyan: Color,
+    val violet: Color,
+    val warning: Color,
+    val focusFill: Color,
+    val focusSolid: Color,
+    val focusOnSolid: Color,
+    val selectedSoft: Color,
+) {
+    companion object {
+        val Dark = FnPalette(
+            background = Color(0xFF070A10),
+            surface = Color(0xFF10161F),
+            surfaceAlt = Color(0xFF161D29),
+            text = Color(0xFFF2F4F8),
+            muted = Color(0xFF98A2B3),
+            coral = Color(0xFFFF7A5C),
+            amber = Color(0xFFFFB46B),
+            teal = Color(0xFF4FD1A5),
+            cyan = Color(0xFF5FC8FF),
+            violet = Color(0xFF9B8CFF),
+            warning = Color(0xFFE8C36A),
+            focusFill = Color.White.copy(alpha = 0.06f),
+            focusSolid = Color(0xFFFF7A5C),
+            focusOnSolid = Color(0xFF070A10),
+            selectedSoft = Color(0xFFFF7A5C).copy(alpha = 0.16f),
+        )
 
-    /** 卡片/容器表面。 */
-    val Surface = Color(0xFF10161F)
+        val Light = FnPalette(
+            background = Color(0xFFF5F7FA),
+            surface = Color(0xFFFFFFFF),
+            surfaceAlt = Color(0xFFEDF1F6),
+            text = Color(0xFF12161D),
+            muted = Color(0xFF5A6472),
+            coral = Color(0xFFB33D24),
+            amber = Color(0xFF9A5B14),
+            teal = Color(0xFF0F7355),
+            cyan = Color(0xFF1C6392),
+            violet = Color(0xFF5A45B5),
+            warning = Color(0xFF8A5A00),
+            focusFill = Color.Black.copy(alpha = 0.05f),
+            focusSolid = Color(0xFFB33D24),
+            focusOnSolid = Color(0xFFF5F7FA),
+            selectedSoft = Color(0xFFB33D24).copy(alpha = 0.12f),
+        )
+    }
+}
 
-    /** 更高一级的表面（弹层、输入框、选中容器）。 */
-    val SurfaceAlt = Color(0xFF161D29)
+/** 当前生效色板。由 [YueYinTheme] 在组合期同步；电视端恒为 Dark。 */
+object FnPaletteHolder {
+    @Volatile
+    var current: FnPalette = FnPalette.Dark
+}
 
-    /** 主文字。 */
-    val Text = Color(0xFFF2F4F8)
+/**
+ * 媒体沉浸层专用色，跟随全局外观。
+ *
+ * 2.1.5 曾把它钉死成深色板：播放页背景是「封面模糊 + 压黑」，浅色模式下文字若取浅色板
+ * 就成了深底深字，看不清。代价是**播放页不再跟随主题**——用户切到浅色，首页/设置都变浅，
+ * 播放页仍是黑底，底部控制栏也是黑的。
+ *
+ * 现在改成跟随 [FnPaletteHolder]：浅色模式下播放页是「浅底 + 深字」，
+ * 配套的遮罩由 [FnMediaScrim] 一起从「压黑」切成「压白」，对比度由遮罩保证而不是靠钉死深色。
+ * 电视端 [YueYinTheme] 恒传 darkTheme = true，取到的仍是深色板，观感零变化。
+ */
+object FnMediaColors {
+    private val base: FnPalette get() = FnPaletteHolder.current
+    val Text: Color get() = base.text
+    val Muted: Color get() = base.muted
+    val Coral: Color get() = base.coral
+    val Warning: Color get() = base.warning
+    val Violet: Color get() = base.violet
+    val Surface: Color get() = base.surface
+    val Background: Color get() = base.background
 
-    /** 次要文字。 */
-    val Muted = Color(0xFF98A2B3)
+    /** 当前是否为浅色外观。播放页里少数写死的白/黑按它取反。 */
+    val isLight: Boolean get() = base == FnPalette.Light
 
-    /** 主色：珊瑚橙，用于焦点、选中与品牌强调。 */
-    val Coral = Color(0xFFFF7A5C)
+    /** 半透明覆盖层：深色模式压黑、浅色模式压白，用于按钮底、胶囊底这类局部垫层。 */
+    fun veil(alpha: Float): Color =
+        if (isLight) Color.White.copy(alpha = alpha) else Color.Black.copy(alpha = alpha)
 
-    /** 主色渐变伴侣：暖金。 */
-    val Amber = Color(0xFFFFB46B)
+    /** 前景的「未激活」色（进度条轨道、非当前句歌词）：深色下是白，浅色下是黑。 */
+    fun idle(alpha: Float): Color = base.text.copy(alpha = alpha)
+}
 
-    /** 辅助色：青绿，用于随机漫游/播放相关。 */
-    val Teal = Color(0xFF4FD1A5)
-
-    /** 辅助色：湖蓝。 */
-    val Cyan = Color(0xFF5FC8FF)
-
-    /** 辅助色：紫罗兰，用于收藏/浪漫氛围。 */
-    val Violet = Color(0xFF9B8CFF)
-
-    /** 警示/歌单图标等。 */
-    val Warning = Color(0xFFE8C36A)
-
-    /** 焦点填充：主色向表面融合的柔和底。 */
-    // 聚焦蒙版改为中性微提亮：珊瑚色只留给描边与光晕（见 fnFocusRing / focusGlow），
-    // 封面/卡片聚焦时不再被染成橙色，层次更干净。
-    val FocusFill = Color.White.copy(alpha = 0.06f)
+/**
+ * 播放页两套遮罩。
+ *
+ * 播放页/全屏歌词的背景是「封面高斯模糊」，不压一层就无法承载文字：深色模式压黑，
+ * 浅色模式必须换成压白，否则封面再亮也压不出浅底，深字依然看不清。
+ */
+object FnMediaScrim {
+    private val light: Boolean get() = FnMediaColors.isLight
 
     /**
-     * 表单类控件的统一焦点实心：按钮、选项、开关、图标按钮聚焦时都铺这个色。
-     *
-     * 为什么要单列一个 token：设置页此前有五套焦点样式（珊瑚半透明 / 深灰蓝+琥珀金边 /
-     * 珊瑚实心 / 只加橙边 / 只有白环），同一页里换个控件焦点色就变一次，用户反而看不出
-     * 「我现在在哪」。现在统一成一种语言：
-     *   - 焦点实心 = 我在这个控件上（[FocusSolid] + [FocusOnSolid] 文字）
-     *   - 选中浅底 = 这个值被选定了，但焦点不在（[SelectedSoft] + [Coral] 文字/描边）
-     *   - 未选中   = 深色底 + 白发丝边
-     * 图片类卡片（封面、海报）不适用实心，仍用白环 + 缩放，避免盖住画面。
+     * 整屏可读性遮罩。深色档沿用 2.1.5 的取值（顶部压一点保住图标、中部留封面取色、
+     * 底部压到接近纯色给曲名与进度条当底）；浅色档同样五档，只是颜色换成白。
      */
-    val FocusSolid = Coral
+    val Page: List<Pair<Float, Color>>
+        get() = if (light) {
+            listOf(
+                0.00f to Color.White.copy(alpha = 0.62f),
+                0.26f to Color.White.copy(alpha = 0.30f),
+                0.50f to Color.White.copy(alpha = 0.46f),
+                0.72f to Color.White.copy(alpha = 0.80f),
+                1.00f to Color.White.copy(alpha = 0.94f),
+            )
+        } else {
+            listOf(
+                0.00f to Color.Black.copy(alpha = 0.22f),
+                0.26f to Color.Transparent,
+                0.50f to Color.Black.copy(alpha = 0.20f),
+                0.72f to Color.Black.copy(alpha = 0.62f),
+                1.00f to Color.Black.copy(alpha = 0.90f),
+            )
+        }
 
-    /** 焦点实心上的文字与图标：珊瑚是亮色，白字对比度不够，用近黑底反色。 */
-    val FocusOnSolid = Background
+    /**
+     * 模糊封面自身的压暗/压亮层。深色档只压到 0.62 而不是近黑——封面上下留白那一段
+     * 全靠这层模糊背景接住；浅色档同样不能压到纯白，留一点封面色彩才有氛围。
+     */
+    val Backdrop: List<Pair<Float, Color>>
+        get() = if (light) {
+            listOf(
+                0.00f to Color.White.copy(alpha = 0.66f),
+                0.12f to Color.White.copy(alpha = 0.52f),
+                0.35f to Color.White.copy(alpha = 0.54f),
+                0.65f to Color.White.copy(alpha = 0.62f),
+                1.00f to FnMediaColors.Background.copy(alpha = 0.86f),
+            )
+        } else {
+            listOf(
+                0.00f to Color.Black.copy(alpha = 0.30f),
+                0.12f to Color.Black.copy(alpha = 0.14f),
+                0.35f to Color.Black.copy(alpha = 0.16f),
+                0.65f to Color.Black.copy(alpha = 0.28f),
+                1.00f to FnMediaColors.Background.copy(alpha = 0.64f),
+            )
+        }
+}
 
-    /** 选中态（焦点已离开该控件）的填充：主色低透明度底，与焦点实心一眼可分。 */
-    val SelectedSoft = Coral.copy(alpha = 0.16f)
+object FnColors {
+    // 用 getter 动态读取当前色板：所有页面仍写 FnColors.X，无需改任何引用点，
+    // 切换主题时重组后自动取到新色。
+    val Background: Color get() = FnPaletteHolder.current.background
+    val Surface: Color get() = FnPaletteHolder.current.surface
+    val SurfaceAlt: Color get() = FnPaletteHolder.current.surfaceAlt
+    val Text: Color get() = FnPaletteHolder.current.text
+    val Muted: Color get() = FnPaletteHolder.current.muted
+    val Coral: Color get() = FnPaletteHolder.current.coral
+    val Amber: Color get() = FnPaletteHolder.current.amber
+    val Teal: Color get() = FnPaletteHolder.current.teal
+    val Cyan: Color get() = FnPaletteHolder.current.cyan
+    val Violet: Color get() = FnPaletteHolder.current.violet
+    val Warning: Color get() = FnPaletteHolder.current.warning
+    val FocusFill: Color get() = FnPaletteHolder.current.focusFill
+    val FocusSolid: Color get() = FnPaletteHolder.current.focusSolid
+    val FocusOnSolid: Color get() = FnPaletteHolder.current.focusOnSolid
+    val SelectedSoft: Color get() = FnPaletteHolder.current.selectedSoft
+
+    /**
+     * 细边框/分隔线/未选中描边。
+     * 深色底上用白色低透明度，浅色底上必须换成黑色低透明度——
+     * 写死白色在浅色主题下会整条消失（选项看起来没有边界、开关看不出状态）。
+     */
+    val Hairline: Color get() = if (FnPaletteHolder.current == FnPalette.Light) {
+        Color.Black.copy(alpha = 0.10f)
+    } else {
+        Color.White.copy(alpha = 0.06f)
+    }
 }
 
 /** 常用渐变笔刷：横向统一的“流光”渐变，用于强调与氛围。 */
@@ -514,8 +644,23 @@ private const val CAR_FONT_SCALE = 1.12f
 fun YueYinTheme(
     uiScale: Float = 1f,
     formFactor: FormFactor = FormFactor.Tv,
+    /** 外观。电视端调用方恒传 true（暗环境 + 3 米观看距离）。 */
+    darkTheme: Boolean = true,
     content: @Composable () -> Unit,
 ) {
+    // 组合期同步当前色板：FnColors 用 getter 读这里，所有页面引用点无需改动。
+    FnPaletteHolder.current = if (darkTheme) FnPalette.Dark else FnPalette.Light
+    // 状态栏/导航条图标跟随主题：MainActivity 里固定的是深色底浅图标，
+    // 切到浅色外观后必须改成深色图标，否则浅色背景上的浅图标看不清。
+    val view = LocalView.current
+    val window = (view.context as? ComponentActivity)?.window
+    SideEffect {
+        if (window != null) {
+            val controller = WindowInsetsControllerCompat(window, view)
+            controller.isAppearanceLightStatusBars = !darkTheme
+            controller.isAppearanceLightNavigationBars = !darkTheme
+        }
+    }
     // 4K 电视（如 TCK65K）画布为 1920×1080dp，若按原密度渲染所有元素会显得只有
     // 1080p 电视的一半。这里做全局密度补偿：宽画布按 2× 折算，有效画布回到
     // 960×540dp，与 1080p 电视视觉完全一致；1080p 及以下设备不受影响。
@@ -558,7 +703,9 @@ fun YueYinTheme(
         CompositionLocalProvider(
             LocalDensity provides density,
             LocalContentColor provides FnColors.Text,
-            content = content,
-        )
+        ) {
+            // 切换深浅色时让整棵内容树重组一次，刷新所有 FnColors 读取处。
+            androidx.compose.runtime.key(darkTheme) { content() }
+        }
     }
 }

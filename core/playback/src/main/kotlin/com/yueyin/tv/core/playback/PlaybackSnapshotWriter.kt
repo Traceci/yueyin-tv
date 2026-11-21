@@ -187,6 +187,13 @@ internal class PlaybackSnapshotWriter(
             pending.acknowledge(PlaybackSnapshotWriteResult.Committed)
         } catch (failure: Throwable) {
             pending.fail(failure)
+            // 写快照失败以前是完全静默的：后果是「退出再进队列没了」，但界面上没有任何线索。
+            // 用 runCatching 包住：诊断日志本身绝不能变成新的失败源（JVM 单测里 android.util.Log 是桩）。
+            if (failure !is CancellationException) {
+                runCatching {
+                    android.util.Log.w("YueyinPlayback", "快照写入失败 ns=${request.namespace}", failure)
+                }
+            }
             when {
                 failure is CancellationException && currentCoroutineContext().isActive -> Unit
                 failure is CancellationException -> throw failure

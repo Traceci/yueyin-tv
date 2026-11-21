@@ -12,6 +12,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -214,18 +215,40 @@ class OnlineScriptSearch(context: Context) {
     private fun songFromJson(o: JsonObject, platform: OnlinePlatform, sourceName: String): OnlineSong {
         fun str(vararg keys: String): String {
             for (k in keys) {
+                textOf(o[k])?.let { return it }
+            }
+            return ""
+        }
+        /** 歌手：可能是字符串，也可能是数组（LX 的 `artists`、网易的 `ar: [{name}]`）。 */
+        fun artists(vararg keys: String): String {
+            for (k in keys) {
+                val names = namesOf(o[k]) ?: continue
+                if (names.isNotEmpty()) return names.joinToString(" / ")
+            }
+            return ""
+        }
+        /** 专辑名：有些脚本给 `album: { name }`，也有给字符串的。 */
+        fun albumName(): String {
+            for (k in listOf("albumName", "album", "albumname", "al")) {
                 val el = o[k] ?: continue
-                val prim = el as? JsonPrimitive ?: continue
-                val v = prim.contentOrNull
-                if (!v.isNullOrBlank()) return v
+                when (el) {
+                    is JsonObject -> textOf(el["name"])?.let { return it }
+                        ?: textOf(el["albumName"])?.let { return it }
+                    else -> textOf(el)?.let { return it }
+                }
             }
             return ""
         }
         val name = str("songname", "name", "title", "songName")
-        val artist = str("singer", "artist", "artistName", "artists", "author").replace("、", " / ")
-        val album = str("albumName", "album", "albumname")
+        val artist = artists("singer", "artist", "artists", "ar", "artistName", "author")
+            .replace("、", " / ")
+        val album = albumName()
         val albumId = str("albumId", "albumid", "albumMid", "album_id")
-        val cover = str("img", "pic", "image", "cover", "albumPic", "coverUrl", "coverImg")
+            .ifBlank { nestedString(o["album"], "id", "albumId", "mid") }
+            .ifBlank { nestedString(o["al"], "id", "albumId") }
+        val cover = str("img", "pic", "image", "cover", "albumPic", "coverUrl", "coverImg", "picUrl")
+            .ifBlank { nestedString(o["album"], "pic", "picUrl", "cover", "img") }
+            .ifBlank { nestedString(o["al"], "pic", "picUrl") }
         val rawId = str("songmid", "songId", "id", "songid", "mid", "musicId")
         val id = rawId.ifBlank { "${name}_${artist}_${platform.key}".hashCode().toString() }
         val duration = parseDuration(str("interval", "duration", "time", "dt", "songTimeMinutes"))
@@ -244,6 +267,50 @@ class OnlineScriptSearch(context: Context) {
             mediaId = mediaId,
             sourceName = sourceName,
         )
+    }
+
+    /**
+     * 从一个 JSON 值里取文本。
+     *
+     * 这里必须容忍三种形态，否则「有的歌只显示歌名、没有歌手和封面」那类问题会反复出现：
+     * 纯字符串、数字（时长/大小常是数字）、以及对象（`img: { url }` 这类包装）。
+     */
+    private fun textOf(el: JsonElement?): String? {
+        val primitive = el as? JsonPrimitive ?: return null
+        return primitive.contentOrNull?.takeIf { it.isNotBlank() }
+    }
+
+    /** 歌手字段可能是字符串、字符串数组、或 `[{ name }]` 数组。 */
+    private fun namesOf(el: JsonElement?): List<String>? {
+        when (el) {
+            is JsonArray -> {
+                val names = el.mapNotNull { item ->
+                    when (item) {
+                        is JsonObject -> firstText(item, "name", "artistName", "singer")
+                        else -> textOf(item)
+                    }
+                }
+                return names
+            }
+            is JsonObject -> return firstText(el, "name", "artistName", "singer")?.let(::listOf)
+            else -> {
+                val single = textOf(el) ?: return null
+                // 「A、B」「A/B」「A,B」都拆成多人，和界面上的多歌手写法保持一致。
+                return single.split("、", "/", ",", "，", "&")
+                    .map(String::trim)
+                    .filter(String::isNotEmpty)
+            }
+        }
+    }
+
+    private fun firstText(o: JsonObject, vararg keys: String): String? {
+        for (k in keys) textOf(o[k])?.let { return it }
+        return null
+    }
+
+    private fun nestedString(el: JsonElement?, vararg keys: String): String {
+        val obj = el as? JsonObject ?: return ""
+        return firstText(obj, *keys).orEmpty()
     }
 
     private fun parseDuration(raw: String): Int {

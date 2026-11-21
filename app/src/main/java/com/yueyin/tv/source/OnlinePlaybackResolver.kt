@@ -12,6 +12,8 @@ import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 /** 在线歌曲取链结果。 */
@@ -99,6 +101,9 @@ class OnlinePlaybackResolver(context: Context) {
         val deadline = now + RESOLVE_BUDGET_MS
 
         for (source in candidates) {
+            // 上层给这次取链设了更短的等待（用户切歌 6 秒），取消必须立刻生效：
+            // 单 WebView 串行，不在这里收手就会白占着音源运行时跑完整个 12 秒。
+            currentCoroutineContext().ensureActive()
             if (System.currentTimeMillis() > deadline) {
                 reasons += "取链超时"
                 break
@@ -126,9 +131,14 @@ class OnlinePlaybackResolver(context: Context) {
                     break
                 }
                 val info = buildInfo(song, quality)
-                val value = runCatching {
+                val value = try {
                     runtime.call(platformKey, "musicUrl", info, timeoutMs = minOf(12_000L, remaining))
-                }.getOrNull()
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    // 同样不能吞：否则外层 withTimeoutOrNull 已经放手，这里还在白跑。
+                    throw cancelled
+                } catch (_: Throwable) {
+                    null
+                }
                 val url = extractUrl(value)
                 if (url != null) {
                     // 很多平台在没版权/非会员时也会给一条"看起来正常"的地址，实际 404。

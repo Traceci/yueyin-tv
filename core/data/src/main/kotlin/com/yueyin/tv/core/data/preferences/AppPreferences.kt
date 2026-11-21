@@ -7,6 +7,7 @@ import com.yueyin.tv.core.model.preferences.AppPreferencesState
 import com.yueyin.tv.core.model.preferences.CacheBudget
 import com.yueyin.tv.core.model.preferences.AmbientEffect
 import com.yueyin.tv.core.model.preferences.UiScale
+import com.yueyin.tv.core.model.preferences.ThemeMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,6 +39,7 @@ class AppPreferences(context: Context, private val localStore: LocalStore) {
                 dynamicColor = readDynamicColor(),
                 karaokeFill = readKaraokeFill(),
                 blurredBackdrop = readBlurredBackdrop(),
+                themeMode = readThemeMode(),
             )
             migratedNamespace == null -> read().also { store.edit().putString(MIGRATED_NAMESPACE, value).apply() }
             else -> AppPreferencesState(
@@ -48,6 +50,7 @@ class AppPreferences(context: Context, private val localStore: LocalStore) {
                 dynamicColor = readDynamicColor(),
                 karaokeFill = readKaraokeFill(),
                 blurredBackdrop = readBlurredBackdrop(),
+                themeMode = readThemeMode(),
             )
         }
         // 一次性迁移：早期版本默认值写错，会把用户从未选择过的“大海报模式”写进存储。
@@ -161,6 +164,13 @@ class AppPreferences(context: Context, private val localStore: LocalStore) {
     private fun readDynamicColor(): Boolean = store.getBoolean(DYNAMIC_COLOR, true)
     private fun readKaraokeFill(): Boolean = store.getBoolean(KARAOKE_FILL, true)
     private fun readBlurredBackdrop(): Boolean = store.getBoolean(BLURRED_BACKDROP, true)
+    private fun readThemeMode(): ThemeMode = ThemeMode.of(store.getString(THEME_MODE, null))
+
+    /** 外观模式是设备级设置，不随账号命名空间切换。 */
+    fun setThemeMode(value: ThemeMode) {
+        store.edit().putString(THEME_MODE, value.name).apply()
+        _state.value = _state.value.copy(themeMode = value)
+    }
 
     private fun read() = AppPreferencesState(
         playerStyle = store.getString(PLAYER_STYLE, null)?.let { runCatching { PlayerStyle.valueOf(it) }.getOrNull() }
@@ -175,6 +185,7 @@ class AppPreferences(context: Context, private val localStore: LocalStore) {
         dynamicColor = readDynamicColor(),
         karaokeFill = readKaraokeFill(),
         blurredBackdrop = readBlurredBackdrop(),
+        themeMode = readThemeMode(),
     )
 
     private companion object {
@@ -189,6 +200,7 @@ class AppPreferences(context: Context, private val localStore: LocalStore) {
         const val DYNAMIC_COLOR = "dynamic_color"
         const val KARAOKE_FILL = "karaoke_fill"
         const val BLURRED_BACKDROP = "blurred_backdrop"
+        const val THEME_MODE = "theme_mode"
         const val POSTER_DEFAULT_MIGRATED = "poster_default_migrated_v2"
         const val PLAY_LIST_ORDER_PREFIX = "playlist_order_"
         const val PROFILE_SEPARATOR = "\u0001"

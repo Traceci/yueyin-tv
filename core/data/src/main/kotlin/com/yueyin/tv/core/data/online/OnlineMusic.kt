@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.yueyin.tv.core.data.online
 
+import kotlinx.serialization.Serializable
+
 /**
  * 在线音乐平台。
  *
@@ -10,6 +12,7 @@ package com.yueyin.tv.core.data.online
  * 同一套 `req()` 换成 OkHttp，每家只是"字段读哪儿"不同；真正的差异在发现页
  * （新歌 / 新碟 / 榜单 / 歌单），那部分在 [OnlineDiscoverApi] 里。
  */
+@Serializable
 enum class OnlinePlatform(val key: String, val label: String) {
     Kuwo("kw", "酷我"),
     NetEase("wy", "网易云"),
@@ -29,6 +32,7 @@ enum class OnlinePlatform(val key: String, val label: String) {
  * 这是"搜索结果"，不是本地曲库里的 [com.yueyin.tv.core.model.Track]：
  * 它没有 guid、没有所属服务端，播放链接要靠音源脚本现取。
  */
+@Serializable
 data class OnlineSong(
     val platform: OnlinePlatform,
     /** 平台内的歌曲 id，取播放链接时要原样回传 */
@@ -62,6 +66,7 @@ data class OnlineSong(
 }
 
 /** 单平台单页结果 */
+@Serializable
 data class OnlineSearchPage(
     val platform: OnlinePlatform,
     val songs: List<OnlineSong>,
@@ -69,6 +74,7 @@ data class OnlineSearchPage(
 )
 
 /** 搜索结果里的一条错误（某个平台挂了不拖垮整页，和柠檬的做法一致） */
+@Serializable
 data class OnlineSourceError(
     val platform: OnlinePlatform,
     val message: String,
@@ -83,6 +89,7 @@ data class OnlineSearchResult(
 // ------------------------------------------------------------ 发现页模型
 
 /** 一张专辑（新碟列表 / 搜索结果共用） */
+@Serializable
 data class OnlineAlbum(
     val platform: OnlinePlatform,
     val id: String,
@@ -102,6 +109,7 @@ data class OnlineAlbum(
  * 有些平台（网易、酷我）列表里不带预览曲，需要额外请求，
  * 为了不让发现页打开时打几十个请求，那种情况就让它空着——点进去照样是完整列表。
  */
+@Serializable
 data class OnlineRank(
     val platform: OnlinePlatform,
     val id: String,
@@ -114,6 +122,7 @@ data class OnlineRank(
 }
 
 /** 榜单分组（官方榜 / 特色榜 / 地区榜…）。分组名各平台自报，不强行统一 */
+@Serializable
 data class OnlineRankGroup(
     val name: String,
     val platform: OnlinePlatform,
@@ -121,6 +130,7 @@ data class OnlineRankGroup(
 )
 
 /** 推荐歌单里的一项 */
+@Serializable
 data class OnlinePlaylist(
     val platform: OnlinePlatform,
     val id: String,
@@ -136,6 +146,7 @@ data class OnlinePlaylist(
 }
 
 /** 发现页一次加载的全部内容 */
+@Serializable
 data class OnlineDiscoverFeed(
     val newSongs: List<OnlineSong> = emptyList(),
     val newAlbums: List<OnlineAlbum> = emptyList(),
@@ -145,6 +156,7 @@ data class OnlineDiscoverFeed(
 )
 
 /** 详情页（榜单 / 专辑 / 歌单）的统一结构 */
+@Serializable
 data class OnlineCollection(
     val title: String,
     val subtitle: String,
@@ -156,4 +168,5 @@ data class OnlineCollection(
 )
 
 /** 详情页要打开的是哪一类东西 */
+@Serializable
 enum class OnlineCollectionKind { Rank, Album, Playlist }

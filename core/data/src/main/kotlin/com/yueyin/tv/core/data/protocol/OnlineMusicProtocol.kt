@@ -2,6 +2,7 @@
 package com.yueyin.tv.core.data.protocol
 
 import com.yueyin.tv.core.data.connect.ConnectProfile
+import com.yueyin.tv.core.data.online.OnlineCacheStore
 import com.yueyin.tv.core.data.online.OnlineCollection
 import com.yueyin.tv.core.data.online.OnlineCollectionKind
 import com.yueyin.tv.core.data.online.OnlineDiscoverApi
@@ -10,6 +11,7 @@ import com.yueyin.tv.core.data.online.OnlineMusicRepository
 import com.yueyin.tv.core.data.online.OnlinePlatform
 import com.yueyin.tv.core.data.online.OnlineSong
 import com.yueyin.tv.core.data.online.OnlineText
+import com.yueyin.tv.core.model.Track
 import com.yueyin.tv.core.model.connect.ConnectType
 import com.yueyin.tv.core.model.connect.ServerCapabilities
 import com.yueyin.tv.core.model.stream.StreamUrlCache
@@ -22,6 +24,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -97,6 +100,10 @@ class OnlineMusicProtocol(
 
     // 平台 + 歌曲 id → OnlineSong 的还原表，取链/歌词时用
     private val songIndex = ConcurrentHashMap<String, OnlineSong>()
+
+    // 取链元数据落盘（冷启动恢复队列要用），见 rememberSong / rememberedSong
+    private val songJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val rememberedSongKeys = ConcurrentHashMap.newKeySet<String>()
 
     // 榜单/歌单/专辑 → 完整曲目，detail 时预取链并喂给 songIndex
     private val collectionCache = ConcurrentHashMap<String, List<OnlineSong>>()
@@ -332,14 +339,46 @@ class OnlineMusicProtocol(
             android.util.Log.i("YueyinOnline", "resolve $songId: 预取已取消，优先取这一首")
         }
         val song = songIndex[songId] ?: return ""
+        // 记住这首的取链元数据：下次冷启动恢复队列时还能取到链（见 resolveStreamUrlFor）。
+        rememberSong(song)
         val startedAt = System.currentTimeMillis()
-        val url = runCatching { resolveUrl(song) }.getOrNull()
+        // runCatching 会把 CancellationException 一起吞掉：用户切歌 6 秒超时取消这轮取链时，
+        // 底层还得把脚本那 12 秒硬超时跑完才返回，界面就一直「按了没反应」。
+        // 取消必须原样抛出去，其余异常照旧当成取链失败。
+        val url = try {
+            resolveUrl(song)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            null
+        }
         android.util.Log.i(
             "YueyinOnline",
             "resolve $songId ${System.currentTimeMillis() - startedAt}ms ${if (url.isNullOrBlank()) "fail" else "ok"}",
         )
         if (!url.isNullOrBlank()) StreamUrlCache.put(songId, url)
         return url.orEmpty()
+    }
+
+    /**
+     * 冷启动恢复队列用的取链入口。
+     *
+     * 重启后 [songIndex] 是空的，直接走 [resolveStreamUrl] 会拿到空串。
+     * 这里按顺序补三级：内存索引 → 磁盘里记住的取链元数据 → 用 Track 的字段临时重建。
+     * 第三级拿不到 hash/songmid，酷狗这类脚本会失败，但绝大多数脚本按 id + 歌名就能取到。
+     */
+    override suspend fun resolveStreamUrlFor(profile: ConnectProfile, track: Track): String {
+        val key = track.guid.value
+        if (songIndex[key] == null) {
+            rememberedSong(key)?.let { song ->
+                indexSongs(listOf(song))
+                android.util.Log.i("YueyinOnline", "resolveFor $key: 用磁盘缓存的取链元数据恢复")
+            } ?: track.toOnlineSongOrNull()?.let { song ->
+                indexSongs(listOf(song))
+                android.util.Log.i("YueyinOnline", "resolveFor $key: 用曲目元数据临时重建取链对象")
+            }
+        }
+        return resolveStreamUrl(profile, key)
     }
 
     /** 收藏落库时把取链元数据交给上层持久化。 */
@@ -379,6 +418,46 @@ class OnlineMusicProtocol(
         }.getOrNull() ?: return null
         collectionCache[key] = collection.songs
         return collection.songs
+    }
+
+    /**
+     * 把一首歌的取链元数据落盘。
+     *
+     * 只存元数据，不存直链：直链带签名会过期，落盘必然是死链。
+     * 同一首在一次会话里只写一次，避免每次取链都碰磁盘。
+     */
+    private fun rememberSong(song: OnlineSong) {
+        val key = songIdOf(song.platform, song.id)
+        if (!rememberedSongKeys.add(key)) return
+        runCatching {
+            OnlineCacheStore.write("song:$key", songJson.encodeToString(OnlineSong.serializer(), song))
+        }.onFailure { rememberedSongKeys.remove(key) }
+    }
+
+    private fun rememberedSong(key: String): OnlineSong? {
+        val entry = OnlineCacheStore.read("song:$key") ?: return null
+        return runCatching { songJson.decodeFromString(OnlineSong.serializer(), entry.payload) }.getOrNull()
+    }
+
+    /**
+     * 连磁盘缓存都没有（清过缓存 / 换设备）时的最后一级兜底：
+     * 从 Track 里能拿到多少算多少。guid 形如 `kw:123`，冒号前是平台、后面是平台内 id。
+     */
+    private fun Track.toOnlineSongOrNull(): OnlineSong? {
+        val separator = guid.value.indexOf(':')
+        if (separator <= 0 || separator == guid.value.length - 1) return null
+        val platform = OnlinePlatform.fromKey(guid.value.substring(0, separator)) ?: return null
+        return OnlineSong(
+            platform = platform,
+            id = guid.value.substring(separator + 1),
+            name = title,
+            artist = artistName.orEmpty(),
+            album = albumName.orEmpty(),
+            albumId = "",
+            durationSeconds = ((durationMs ?: 0L) / 1000L).toInt(),
+            coverUrl = coverId.orEmpty(),
+            qualities = emptyList(),
+        )
     }
 
     private fun indexSongs(songs: List<OnlineSong>) {

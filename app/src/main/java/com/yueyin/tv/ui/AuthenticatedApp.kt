@@ -387,16 +387,17 @@ internal fun AuthenticatedApp(
         val pushed = stack.size > previous.size && stack.subList(0, previous.size) == previous
         if (!pushed) searchSession.reset()
     }
-    // 打开 App / 回到前台时自动同步服务器歌单（只读，不反向写入服务器）。
-    // 首次进入由首页首次加载即可拿到最新数据；此后每次回到前台都强制刷新歌单列表，
-    // 使服务器端新增/改名/删除的歌单同步显示。首页与“全部歌单”共用同一份歌单状态。
+    // 打开 App / 回到前台时同步服务器歌单（只读，不反向写入服务器）。
+    // 早期无条件 forceRefresh：每回到前台都把歌单列表整份重拉一遍，
+    // 在线平台那边表现为「退出再进又全部重新连接读取」，也把刚缓存好的内容顶掉。
+    // 现在交给缓存层自己判断新鲜度（内存 → 磁盘 → 网络），这里不再强制绕过。
     var playlistResumeSynced by remember(session.user.guid) { mutableStateOf(false) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         if (playlistResumeSynced) {
             val playlistState = retainedState.list<Playlist>("playlists")
             retainedState.syncList(
                 state = playlistState,
-                loader = { container.musicRepository.playlists(forceRefresh = true) },
+                loader = { container.musicRepository.playlists() },
             )
         } else {
             playlistResumeSynced = true

@@ -171,6 +171,23 @@ internal object OnlineText {
         cleanArtist(array.stringsOf(nameKey).joinToString("/"))
 
     /**
+     * 钟表格式的时长 → 秒。咪咕的 `length` 是 `"00:03:09"` / `"03:09"` 这种字符串，
+     * 不是秒数；直接 `toInt()` 拿不到值，会让整列时长变成 0（歌词匹配要求时长接近，
+     * 0 秒等于永远匹配不上，用户看到的就是「这首没有歌词」）。
+     */
+    fun parseClock(raw: String): Int {
+        val text = raw.trim()
+        if (text.isEmpty()) return 0
+        val parts = text.split(':')
+        if (parts.size !in 2..3) return 0
+        val nums = parts.map { it.trim().toIntOrNull() ?: return 0 }
+        return when (nums.size) {
+            2 -> nums[0] * 60 + nums[1]
+            else -> nums[0] * 3600 + nums[1] * 60 + nums[2]
+        }.takeIf { it > 0 } ?: 0
+    }
+
+    /**
      * 酷狗这一类把歌名和歌手塞在一个字符串里的平台：`薛之谦 - 我好像在哪见过你`。
      * 返回 (歌手, 歌名)；格式不符时歌手留空、整串当歌名。
      */

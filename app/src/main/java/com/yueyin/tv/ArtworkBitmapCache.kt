@@ -2,6 +2,10 @@ package com.yueyin.tv
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 import android.util.LruCache
 import com.yueyin.tv.core.model.CoverVariant
 import kotlinx.coroutines.CoroutineScope
@@ -118,4 +122,43 @@ internal fun decodeArtwork(bytes: ByteArray, targetLongEdge: Int): Bitmap? {
         bytes.size,
         BitmapFactory.Options().apply { inSampleSize = sample },
     )
+}
+
+/**
+ * 榜单宣传图提亮：亮度 +18%、对比 +7%、饱和 +16%。
+ *
+ * 热歌榜 / 飙升榜这类封面是音源自己做的深色海报（原图平均亮度约 50/255，下缘压到近黑），
+ * 原样铺进列表像蒙了一层灰。这里做一次显示用校正，参数是拿音源原图逐档比出来的：
+ * 再低（+10%）看不出变化，走 gamma 提暗部会把整张图提成灰底。
+ *
+ * 只认榜单物料（酷我把榜单图放在 `zimg.kuwo.cn/bang/` 下），专辑封面原样返回。
+ * 处理结果直接进内存缓存，滚动时不再重复计算；手机与电视共用这一层，两端观感一致。
+ */
+internal fun boostRankBannerArtwork(coverId: String, bitmap: Bitmap): Bitmap {
+    if (!coverId.contains("/bang/", ignoreCase = true)) return bitmap
+    val contrast = 1.07f
+    // 平移量按 0..255 计：先按对比度绕 128 展开，再整体加 18% 亮度。
+    val offset = (0.5f + 0.18f - contrast * 0.5f) * 255f
+    val matrix = ColorMatrix().apply { setSaturation(1.16f) }
+    matrix.postConcat(
+        ColorMatrix(
+            floatArrayOf(
+                contrast, 0f, 0f, 0f, offset,
+                0f, contrast, 0f, 0f, offset,
+                0f, 0f, contrast, 0f, offset,
+                0f, 0f, 0f, 1f, 0f,
+            ),
+        ),
+    )
+    // 处理失败就退回原图：宁可暗一点，也不能因为一张封面让列表空着。
+    return runCatching {
+        val output = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+        Canvas(output).drawBitmap(
+            bitmap,
+            0f,
+            0f,
+            Paint().apply { colorFilter = ColorMatrixColorFilter(matrix) },
+        )
+        output
+    }.getOrDefault(bitmap)
 }

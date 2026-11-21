@@ -423,21 +423,32 @@ class OnlineMusicApi(
     internal fun miguSong(item: JsonObject, fallbackAlbum: String): OnlineSong? {
         val id = item.firstNonEmpty("copyrightId", "songId", "id")
         if (id.isEmpty()) return null
-        val artists = item.arr("singers") ?: item.arr("singerList")
+        // 咪咕的歌手有三种形态，必须逐个兜底：
+        //   搜索/详情 → singers[{name}]
+        //   新歌榜 objectInfo → artists[{name}]（以前只读 singers/singerList，整列歌手为空，
+        //                       播放页与队列全部显示「未知歌手」）
+        //   少数老接口 → singer 直接是字符串（"赵本山"，多人用 / 、 分隔）
+        val artist = OnlineText.artistsFrom(item.arr("singers"))
+            .ifEmpty { OnlineText.artistsFrom(item.arr("singerList")) }
+            .ifEmpty { OnlineText.artistsFrom(item.arr("artists")) }
+            .ifEmpty { OnlineText.cleanArtist(item.firstNonEmpty("singer", "singerName")) }
         // 咪咕把专辑放在 albums[0] 里，不在顶层——漏读会让整列专辑名空白
         val albumNode = item.arr("albums").orEmptyArray().firstOrNull()
         return OnlineSong(
             platform = OnlinePlatform.Migu,
             id = id,
             name = OnlineText.cleanHtml(item.firstNonEmpty("name", "songName")),
-            artist = OnlineText.artistsFrom(artists),
+            artist = artist,
             album = OnlineText.cleanHtml(
                 item.firstNonEmpty("album", "albumName").ifEmpty {
                     albumNode?.firstNonEmpty("name", "albumName").orEmpty()
                 },
             ).ifEmpty { fallbackAlbum },
-            albumId = albumNode?.firstNonEmpty("id", "albumId").orEmpty(),
-            durationSeconds = item.int("duration"),
+            albumId = albumNode?.firstNonEmpty("id", "albumId").orEmpty()
+                .ifEmpty { item.firstNonEmpty("albumId", "dalbumId") },
+            // 新歌榜的 objectInfo 没有 duration，时长在 length（"00:03:09"）
+            durationSeconds = item.int("duration").takeIf { it > 0 }
+                ?: OnlineText.parseClock(item.firstNonEmpty("length", "songLength")),
             coverUrl = miguCover(item),
             qualities = OnlineQuality.migu(item),
             mediaId = item.str("copyrightId"),
@@ -453,11 +464,16 @@ class OnlineMusicApi(
             item.str("cover"),
         )
         if (direct.isNotEmpty()) return direct
-        val images = item.arr("imgItems") ?: item.arr("imgList") ?: return ""
-        val best = images.mapNotNull { it as? JsonObject }
-            .firstOrNull { it.str("imgSizeType") == "03" || it.str("imgSizeType") == "02" }
-            ?: images.firstOrNull() as? JsonObject
-        return best?.let { OnlineQuality.firstImage(it.str("img"), it.str("url")) }.orEmpty()
+        // 新歌榜 objectInfo 的封面在 albumImgs[]（{imgSizeType, img}）里，尺寸 03 > 02 > 01。
+        // 以前只找 imgItems/imgList，两个字段在新歌榜里都不存在 → 咪咕歌曲全都没有封面。
+        val images = item.arr("albumImgs") ?: item.arr("imgItems") ?: item.arr("imgList") ?: return ""
+        val nodes = images.mapNotNull { it as? JsonObject }
+        val best = nodes.firstOrNull { it.str("imgSizeType") == "03" }
+            ?: nodes.firstOrNull { it.str("imgSizeType") == "02" }
+            ?: nodes.firstOrNull()
+        return best?.let {
+            OnlineQuality.firstImage(it.str("img"), it.str("url"), it.str("webpImg"))
+        }.orEmpty()
     }
 
     // ---------------------------------------------------------------- HTTP

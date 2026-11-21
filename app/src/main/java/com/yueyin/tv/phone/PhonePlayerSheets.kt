@@ -393,7 +393,9 @@ internal fun PhoneSwitch(
             .width(46.dp)
             .height(28.dp)
             .background(
-                color = if (checked) FnColors.Coral else Color.White.copy(alpha = 0.14f),
+                // 关闭态原来写死白色低透明度：深色底上勉强可见，浅色底（白/浅灰）上
+                // 整颗开关消失。改用随主题走的 SurfaceAlt，两种外观都能看清轨道。
+                color = if (checked) FnColors.Coral else FnColors.SurfaceAlt,
                 shape = RoundedCornerShape(14.dp),
             )
             .phoneTap { onToggle(!checked) }
@@ -403,7 +405,8 @@ internal fun PhoneSwitch(
         Box(
             Modifier
                 .size(22.dp)
-                .background(if (checked) FnColors.Background else Color.White.copy(alpha = 0.6f), RoundedCornerShape(11.dp)),
+                // 圆点跟随主题取色：深色底上是浅色点，浅色底上是深色描边点，避免白底白点。
+                .background(if (checked) FnColors.Background else FnColors.Muted, RoundedCornerShape(11.dp)),
         )
     }
 }

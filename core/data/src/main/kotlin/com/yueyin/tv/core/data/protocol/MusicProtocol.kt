@@ -2,6 +2,7 @@ package com.yueyin.tv.core.data.protocol
 
 import com.yueyin.tv.core.data.connect.ConnectProfile
 import com.yueyin.tv.core.data.online.OnlineSong
+import com.yueyin.tv.core.model.Track
 import com.yueyin.tv.core.model.connect.ConnectType
 import com.yueyin.tv.core.model.connect.ServerCapabilities
 
@@ -85,6 +86,16 @@ interface MusicProtocol {
      * 默认实现直接退回同步 [streamUrl]。
      */
     suspend fun resolveStreamUrl(profile: ConnectProfile, songId: String): String = streamUrl(profile, songId)
+
+    /**
+     * 带曲目元数据的取链。
+     *
+     * 在线音源取链依赖的不只是 id：酷狗要 hash、QQ 要 songmid，这些字段只在协议的内存索引里。
+     * 冷启动恢复播放队列时索引是空的，只拿 id 去取链必然失败（用户看到「退出再进就播不了」）。
+     * 传整个 [Track] 进来，让在线协议能用标题/歌手/封面兜底重建取链对象。
+     */
+    suspend fun resolveStreamUrlFor(profile: ConnectProfile, track: Track): String =
+        resolveStreamUrl(profile, track.guid.value)
 
     /**
      * 本地收藏落库时取这首在线歌曲的取链元数据。只有在线音源实现，其它协议返回 null。

@@ -37,6 +37,10 @@ import java.util.ArrayList
 
 internal const val FORWARD_BUFFER_DURATION_MS = 50_000
 internal const val BACK_BUFFER_DURATION_MS = 15_000
+/** 起播出声门槛：攒够 600ms 音频就开始播（默认 2500ms 是切歌感知等待的大头）。 */
+internal const val BUFFER_FOR_PLAYBACK_MS = 600
+/** 重缓冲后再出声的门槛：留 1500ms，弱网卡一下不至于频繁断续。 */
+internal const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 1_500
 internal const val SONG_CACHE_DIRECTORY = "song-cache"
 internal const val SONG_CACHE_MAX_BYTES = 512L * 1024L * 1024L
 private const val LEGACY_AUDIO_CACHE_DIRECTORY = "media"
@@ -69,8 +73,10 @@ internal fun createPlaybackLoadControl(): DefaultLoadControl = DefaultLoadContro
     .setBufferDurationsMs(
         FORWARD_BUFFER_DURATION_MS,
         FORWARD_BUFFER_DURATION_MS,
-        DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
-        DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
+        // 出声门槛从默认 2500ms 压到 600ms：直链早由预取备好，用户等的主要是这 2.5 秒攒数据
+        // （实测切歌感知等待 1~1.9 秒的大头）。弱网抗抖交给 rebuffer 档的 1500ms 兜底。
+        BUFFER_FOR_PLAYBACK_MS,
+        BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
     )
     .setBackBuffer(BACK_BUFFER_DURATION_MS, false)
     .build()
@@ -184,6 +190,12 @@ class PlaybackService : MediaLibraryService() {
             .build().apply {
             setAudioAttributes(audioAttributes, true)
             setHandleAudioBecomingNoisy(true)
+            // C0（media3 官方播放列表预加载）：当前首播放稳定时，播放器自动为队列中的
+            // 下一首预载开头 5 秒音频样本。此前预取只解决「直链到位」，点击切换时仍要
+            // 对 CDN 重开流、攒满 2.5 秒出声门槛（实测感知 1~1.9 秒）；预载后样本直接
+            // 进解码队列，点击切换只剩几十毫秒。官方保证仅在主播放不在加载时才启动，
+            // 不会与正在播的内容抢带宽。预载时长必须 ≥ bufferForPlaybackMs(2.5s)。
+            preloadConfiguration = ExoPlayer.PreloadConfiguration(5_000_000L)
         }
         player = exoPlayer
         val libraryCallback = object : MediaLibraryService.MediaLibrarySession.Callback {

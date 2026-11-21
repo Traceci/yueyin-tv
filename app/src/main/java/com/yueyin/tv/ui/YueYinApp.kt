@@ -7,6 +7,7 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -135,7 +136,14 @@ internal fun YueYinApp(container: AppUiDependencies, onExitApplication: () -> Un
             guideVisible = true
         }
     }
-    YueYinTheme(uiScale = preferences.uiScale.factor, formFactor = formFactor) {
+    // 外观：电视/车机恒深色；手机端按用户档位，跟随系统时用系统明暗。
+    val systemDark = isSystemInDarkTheme()
+    val darkTheme = !formFactor.isHandheld || when (preferences.themeMode) {
+        com.yueyin.tv.core.model.preferences.ThemeMode.Light -> false
+        com.yueyin.tv.core.model.preferences.ThemeMode.Dark -> true
+        com.yueyin.tv.core.model.preferences.ThemeMode.FollowSystem -> systemDark
+    }
+    YueYinTheme(uiScale = preferences.uiScale.factor, formFactor = formFactor, darkTheme = darkTheme) {
         Box(Modifier.fillMaxSize().background(FnColors.Background)) {
             val contentAlpha by animateFloatAsState(
                 targetValue = if (splashDismissed) 1f else 0f,

@@ -56,6 +56,7 @@ import com.yueyin.tv.core.model.preferences.AmbientEffect
 import com.yueyin.tv.core.model.preferences.CacheBudget
 import com.yueyin.tv.core.model.preferences.CacheUsage
 import com.yueyin.tv.core.model.preferences.UiScale
+import com.yueyin.tv.core.model.preferences.ThemeMode
 import com.yueyin.tv.core.playback.AudioFxController
 import com.yueyin.tv.ui.FnColors
 import com.yueyin.tv.ui.device.DeviceLayoutOverride
@@ -120,6 +121,15 @@ internal fun PhonePlayerSettingsPane(onBack: () -> Unit) {
         }
 
         PhoneSettingsGroup {
+            PhoneSettingsChoiceRow(
+                title = "外观",
+                subtitle = "浅色仅手机端生效，电视端保持深色",
+                options = ThemeMode.entries,
+                selected = prefs.themeMode,
+                label = { it.themeModeLabel() },
+                onSelect = { prefsController.setThemeMode(it) },
+            )
+            PhoneSettingsDivider()
             PhoneSettingsChoiceRow(
                 title = "界面缩放",
                 subtitle = "整体字号与间距，小屏选紧凑",
@@ -227,7 +237,7 @@ private fun StylePreviewCard(
                     )
                     .border(
                         if (selected) 1.5.dp else 1.dp,
-                        if (selected) FnColors.Coral else Color.White.copy(alpha = 0.06f),
+                        if (selected) FnColors.Coral else FnColors.Hairline,
                         shape,
                     )
                     .padding(10.dp),
@@ -406,7 +416,7 @@ private fun FxPresetTile(
             )
             .border(
                 1.dp,
-                if (selected) FnColors.Coral.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.06f),
+                if (selected) FnColors.Coral.copy(alpha = 0.7f) else FnColors.Hairline,
                 shape,
             )
             .phoneTap(onClick),
@@ -574,7 +584,7 @@ internal fun PhoneAboutPane(onBack: () -> Unit, onOpenCrashLog: () -> Unit) {
             Modifier
                 .fillMaxWidth()
                 .background(FnColors.Surface, RoundedCornerShape(PhoneRadius.md))
-                .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(PhoneRadius.md))
+                .border(1.dp, FnColors.Hairline, RoundedCornerShape(PhoneRadius.md))
                 .padding(PhoneSpace.lg),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -747,7 +757,7 @@ private fun PhoneUpdateButton(
             )
             .border(
                 1.dp,
-                if (emphasized && enabled) Color.Transparent else Color.White.copy(alpha = 0.10f),
+                if (emphasized && enabled) Color.Transparent else FnColors.Hairline,
                 shape,
             )
             .then(if (enabled) Modifier.phoneTap(onClick) else Modifier)
@@ -848,7 +858,7 @@ internal fun PhoneCrashLogPane(onBack: () -> Unit) {
                         .fillMaxWidth()
                         .weight(1f)
                         .background(FnColors.Surface, RoundedCornerShape(PhoneRadius.md))
-                        .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(PhoneRadius.md)),
+                        .border(1.dp, FnColors.Hairline, RoundedCornerShape(PhoneRadius.md)),
                 ) {
                     Column(
                         Modifier
@@ -942,4 +952,11 @@ private fun updateActionEnabled(state: UpdateUiState): Boolean = when (state) {
     -> false
 
     else -> true
+}
+
+/** 手机端外观三档的展示名；电视端不暴露此入口。 */
+private fun ThemeMode.themeModeLabel(): String = when (this) {
+    ThemeMode.FollowSystem -> "跟随系统"
+    ThemeMode.Light -> "浅色"
+    ThemeMode.Dark -> "深色"
 }

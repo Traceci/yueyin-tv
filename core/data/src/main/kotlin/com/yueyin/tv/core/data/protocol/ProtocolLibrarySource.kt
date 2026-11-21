@@ -183,7 +183,9 @@ class ProtocolLibrarySource(
 
     suspend fun prepare(track: Track): PlaybackTrack = PlaybackTrack(
         track = track,
-        streamUrl = protocol.resolveStreamUrl(profile, track.guid.value),
+        // 走带元数据的重载：冷启动恢复队列时内存索引是空的，
+        // 只按 id 取链会直接返回空（「播放过的歌退出再进播不了」的根因）。
+        streamUrl = protocol.resolveStreamUrlFor(profile, track),
         artworkUrl = track.coverId?.let { protocol.coverUrl(profile, it, CoverVariant.Player.width ?: 800) },
     )
 

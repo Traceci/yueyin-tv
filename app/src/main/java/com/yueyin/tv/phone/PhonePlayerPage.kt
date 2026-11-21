@@ -77,7 +77,8 @@ import com.yueyin.tv.core.model.playback.PlayMode
 import com.yueyin.tv.core.playback.AudioFxController
 import com.yueyin.tv.core.playback.PlaybackFailure
 import com.yueyin.tv.core.playback.PlaybackUiState
-import com.yueyin.tv.ui.FnColors
+import com.yueyin.tv.ui.FnMediaColors
+import com.yueyin.tv.ui.FnMediaScrim
 import com.yueyin.tv.ui.formatDuration
 import com.yueyin.tv.ui.playModeLabel
 import kotlinx.coroutines.CancellationException
@@ -395,23 +396,16 @@ internal fun PhonePlayerPage(
         if (blurredBackdrop) {
             PlayerBackdrop(playback.coverId, playback.title)
         } else {
-            Box(Modifier.fillMaxSize().background(FnColors.Background))
+            Box(Modifier.fillMaxSize().background(FnMediaColors.Background))
         }
 
         // ② 可读性遮罩：只此一张，整屏渐变。顶部压一点保住顶栏图标，中部留出封面取色，
-        // 底部压到近黑给曲名、歌词、进度条当底。它没有边界，所以不存在「从哪儿开始变深」的接缝。
+        // 底部压到近纯色给曲名、歌词、进度条当底。它没有边界，所以不存在「从哪儿开始变深」的接缝。
+        // 深浅色通用：浅色外观下同一组档位换成压白（见 FnMediaScrim.Page）。
         Box(
             Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        0.00f to Color.Black.copy(alpha = 0.22f),
-                        0.26f to Color.Transparent,
-                        0.50f to Color.Black.copy(alpha = 0.20f),
-                        0.72f to Color.Black.copy(alpha = 0.62f),
-                        1.00f to Color.Black.copy(alpha = 0.90f),
-                    ),
-                ),
+                .background(Brush.verticalGradient(*FnMediaScrim.Page.toTypedArray())),
         )
 
         if (landscape) {
@@ -671,7 +665,7 @@ private fun TopBar(
                 Modifier.size(LocalCarProfile.current.touchTarget).phoneTap(onBack),
                 contentAlignment = Alignment.Center,
             ) {
-                PhoneIcon(PhoneGlyph.ChevronDown, FnColors.Text, Modifier.size(22.dp))
+                PhoneIcon(PhoneGlyph.ChevronDown, FnMediaColors.Text, Modifier.size(22.dp))
             }
             Spacer(Modifier.weight(1f))
             // 投播入口放右上角（AirPlay 习惯位）：不占操作行的五个槽位，
@@ -682,7 +676,7 @@ private fun TopBar(
             ) {
                 PhoneIcon(
                     PhoneGlyph.Cast,
-                    if (castState.hasActive) FnColors.Coral else FnColors.Text,
+                    if (castState.hasActive) FnMediaColors.Coral else FnMediaColors.Text,
                     Modifier.size(22.dp),
                 )
             }
@@ -699,13 +693,13 @@ private fun TopBar(
                 Modifier
                     .padding(start = PhoneSpace.md)
                     .padding(bottom = PhoneSpace.xs)
-                    .background(FnColors.Surface.copy(alpha = 0.40f), RoundedCornerShape(999.dp))
+                    .background(FnMediaColors.Surface.copy(alpha = 0.40f), RoundedCornerShape(999.dp))
                     .padding(horizontal = 10.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     "正在 $castDeviceName 播放",
-                    color = FnColors.Text.copy(alpha = 0.72f),
+                    color = FnMediaColors.Text.copy(alpha = 0.72f),
                     fontSize = PhoneType.Micro,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -713,7 +707,7 @@ private fun TopBar(
                 Spacer(Modifier.width(10.dp))
                 Text(
                     "停止",
-                    color = FnColors.Text.copy(alpha = 0.58f),
+                    color = FnMediaColors.Text.copy(alpha = 0.58f),
                     fontSize = PhoneType.Micro,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.phoneTap(onStopCast),
@@ -839,8 +833,8 @@ private fun VinylDisc(coverId: String?, title: String) {
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        FnColors.Coral.copy(alpha = 0.16f),
-                        FnColors.Coral.copy(alpha = 0.05f),
+                        FnMediaColors.Coral.copy(alpha = 0.16f),
+                        FnMediaColors.Coral.copy(alpha = 0.05f),
                         Color.Transparent,
                     ),
                     center = center,
@@ -888,7 +882,7 @@ private fun VinylDisc(coverId: String?, title: String) {
                     radius = radius,
                 )
                 drawArc(
-                    color = FnColors.Coral.copy(alpha = 0.42f),
+                    color = FnMediaColors.Coral.copy(alpha = 0.42f),
                     startAngle = -18f,
                     sweepAngle = 36f,
                     useCenter = false,
@@ -945,16 +939,10 @@ private fun PlayerBackdrop(coverId: String?, title: String) {
         }
         Box(
             Modifier.fillMaxSize().background(
-                Brush.verticalGradient(
-                    // 只压到 0.62 而不是近黑：封面上下留白那一段全靠这层模糊背景接住，
-                    // 压太狠又会回到「下面一大片死黑」的老问题。
-                    // 真正需要压暗的是控制栏，那层由页面级的整屏遮罩负责。
-                    0.0f to Color.Black.copy(alpha = 0.30f),
-                    0.12f to Color.Black.copy(alpha = 0.14f),
-                    0.35f to Color.Black.copy(alpha = 0.16f),
-                    0.65f to Color.Black.copy(alpha = 0.28f),
-                    1.0f to FnColors.Background.copy(alpha = 0.64f),
-                ),
+                // 只压到 0.62 而不是近纯色：封面上下留白那一段全靠这层模糊背景接住，
+                // 压太狠又会回到「下面一大片死黑」的老问题。浅色外观下换成压白，
+                // 同样留一点封面色彩当氛围（见 FnMediaScrim.Backdrop）。
+                Brush.verticalGradient(*FnMediaScrim.Backdrop.toTypedArray()),
             ),
         )
     }
@@ -1008,7 +996,7 @@ private fun MiniLyricsStrip(
                 val isCurrent = offset == 0
                 Text(
                     text.ifBlank { " " },
-                    color = if (isCurrent) FnColors.Coral else Color.White.copy(alpha = 0.42f),
+                    color = if (isCurrent) FnMediaColors.Coral else FnMediaColors.idle(0.42f),
                     fontSize = if (isCurrent) PhoneType.Section else PhoneType.Body,
                     fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
@@ -1027,7 +1015,7 @@ private fun MiniLyricsStrip(
 private fun MiniLyricHint(text: String) {
     Text(
         text,
-        color = Color.White.copy(alpha = 0.40f),
+        color = FnMediaColors.idle(0.40f),
         fontSize = PhoneType.Caption,
         maxLines = 1,
         textAlign = TextAlign.Center,
@@ -1088,10 +1076,10 @@ private fun LandscapeLyrics(
             Text(
                 text,
                 color = when {
-                    isCurrent -> FnColors.Coral
+                    isCurrent -> FnMediaColors.Coral
                     // 越远越淡：上下各一句半亮，再往外只留一点轮廓，形成「正在唱」的纵深感。
-                    kotlin.math.abs(offset) == 1 -> Color.White.copy(alpha = 0.44f)
-                    else -> Color.White.copy(alpha = 0.22f)
+                    kotlin.math.abs(offset) == 1 -> FnMediaColors.idle(0.44f)
+                    else -> FnMediaColors.idle(0.22f)
                 },
                 fontSize = if (isCurrent) PhoneType.Section else PhoneType.Row,
                 fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
@@ -1152,13 +1140,13 @@ private fun FullLyricsPage(
                     Modifier.size(LocalCarProfile.current.touchTarget).phoneTap(onBack),
                     contentAlignment = Alignment.Center,
                 ) {
-                    PhoneIcon(PhoneGlyph.ChevronDown, FnColors.Text, Modifier.size(22.dp))
+                    PhoneIcon(PhoneGlyph.ChevronDown, FnMediaColors.Text, Modifier.size(22.dp))
                 }
                 Spacer(Modifier.width(PhoneSpace.sm))
                 Column(Modifier.weight(1f)) {
                     Text(
                         title.ifBlank { "未在播放" },
-                        color = FnColors.Text,
+                        color = FnMediaColors.Text,
                         fontSize = PhoneType.Body,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
@@ -1167,7 +1155,7 @@ private fun FullLyricsPage(
                     if (artist.isNotBlank()) {
                         Text(
                             artist,
-                            color = FnColors.Muted,
+                            color = FnMediaColors.Muted,
                             fontSize = PhoneType.Micro,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -1199,7 +1187,7 @@ private fun FullLyricsPage(
                     .background(
                         Brush.verticalGradient(
                             0f to Color.Transparent,
-                            1f to FnColors.Background.copy(alpha = 0.88f),
+                            1f to FnMediaColors.Background.copy(alpha = 0.88f),
                         ),
                     ),
             ) {
@@ -1216,7 +1204,7 @@ private fun StageTitle(title: String, artist: String, maxLines: Int = 2) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
             title.ifBlank { "未在播放" },
-            color = FnColors.Text,
+            color = FnMediaColors.Text,
             fontSize = PhoneType.Headline,
             fontWeight = FontWeight.SemiBold,
             maxLines = maxLines,
@@ -1226,8 +1214,8 @@ private fun StageTitle(title: String, artist: String, maxLines: Int = 2) {
         )
         Spacer(Modifier.height(PhoneSpace.sm))
         Text(
-            artist.ifBlank { "—" },
-            color = FnColors.Muted,
+            artist.ifBlank { "未知歌手" },
+            color = FnMediaColors.Muted,
             fontSize = PhoneType.Row,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -1257,13 +1245,13 @@ private fun PlaybackErrorBar(
         modifier
             .fillMaxWidth()
             .padding(horizontal = PhoneSpace.screenHorizontal)
-            .background(FnColors.Coral.copy(alpha = 0.16f), RoundedCornerShape(PhoneRadius.md))
+            .background(FnMediaColors.Coral.copy(alpha = 0.16f), RoundedCornerShape(PhoneRadius.md))
             .padding(horizontal = PhoneSpace.md, vertical = PhoneSpace.sm),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             "播放失败：${failure.userHint()}",
-            color = FnColors.Coral,
+            color = FnMediaColors.Coral,
             fontSize = PhoneType.Caption,
             maxLines = 2,
             modifier = Modifier.weight(1f),
@@ -1271,7 +1259,7 @@ private fun PlaybackErrorBar(
         Spacer(Modifier.width(PhoneSpace.md))
         Text(
             "重试",
-            color = FnColors.Text,
+            color = FnMediaColors.Text,
             fontSize = PhoneType.Caption,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
@@ -1320,8 +1308,8 @@ private fun ControlPanel(
                         Brush.verticalGradient(
                             listOf(
                                 Color.Transparent,
-                                FnColors.Background.copy(alpha = 0.86f),
-                                FnColors.Background,
+                                FnMediaColors.Background.copy(alpha = 0.86f),
+                                FnMediaColors.Background,
                             ),
                         ),
                     )
@@ -1340,8 +1328,8 @@ private fun ControlPanel(
             onSeek = onSeek,
         )
         Row(Modifier.fillMaxWidth()) {
-            Text(formatDuration(positionMs), color = FnColors.Muted, fontSize = PhoneType.Micro, modifier = Modifier.weight(1f))
-            Text(formatDuration(durationMs), color = FnColors.Muted, fontSize = PhoneType.Micro)
+            Text(formatDuration(positionMs), color = FnMediaColors.Muted, fontSize = PhoneType.Micro, modifier = Modifier.weight(1f))
+            Text(formatDuration(durationMs), color = FnMediaColors.Muted, fontSize = PhoneType.Micro)
         }
 
         Row(
@@ -1354,13 +1342,13 @@ private fun ControlPanel(
             Box(
                 Modifier
                     .size(64.dp)
-                    .background(FnColors.Coral, CircleShape)
+                    .background(FnMediaColors.Coral, CircleShape)
                     .phoneTap(onTogglePlay),
                 contentAlignment = Alignment.Center,
             ) {
                 PhoneIcon(
                     glyph = if (isPlayingOverride ?: playback.isPlaying) PhoneGlyph.Pause else PhoneGlyph.Play,
-                    tint = FnColors.Background,
+                    tint = FnMediaColors.Background,
                     modifier = Modifier.size(26.dp),
                 )
             }
@@ -1419,7 +1407,7 @@ private fun TransportKey(glyph: PhoneGlyph, onClick: () -> Unit) {
         Modifier.size(52.dp).phoneTap(onClick),
         contentAlignment = Alignment.Center,
     ) {
-        PhoneIcon(glyph, FnColors.Text, Modifier.size(24.dp))
+        PhoneIcon(glyph, FnMediaColors.Text, Modifier.size(24.dp))
     }
 }
 
@@ -1442,9 +1430,9 @@ private fun RowScope.ActionKey(
     filled: Boolean = false,
 ) {
     val tint = when {
-        !enabled -> FnColors.Muted.copy(alpha = 0.36f)
-        active -> FnColors.Coral
-        else -> FnColors.Text.copy(alpha = 0.86f)
+        !enabled -> FnMediaColors.Muted.copy(alpha = 0.36f)
+        active -> FnMediaColors.Coral
+        else -> FnMediaColors.Text.copy(alpha = 0.86f)
     }
     Column(
         Modifier
@@ -1525,20 +1513,20 @@ private fun SeekBar(
             Modifier.fillMaxWidth().height(4.dp),
             contentAlignment = Alignment.CenterStart,
         ) {
-            Box(Modifier.fillMaxWidth().fillMaxHeight().clip(CircleShape).background(Color.White.copy(alpha = 0.12f)))
+            Box(Modifier.fillMaxWidth().fillMaxHeight().clip(CircleShape).background(FnMediaColors.idle(0.12f)))
             Box(
                 Modifier
                     .fillMaxWidth(bufferedFraction)
                     .fillMaxHeight()
                     .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.20f)),
+                    .background(FnMediaColors.idle(0.20f)),
             )
             Box(
                 Modifier
                     .fillMaxWidth(shownFraction)
                     .fillMaxHeight()
                     .clip(CircleShape)
-                    .background(FnColors.Coral),
+                    .background(FnMediaColors.Coral),
             )
         }
         // 拖动时出现的圆点：没有它用户不知道自己有没有按准
@@ -1549,7 +1537,7 @@ private fun SeekBar(
                     .height(4.dp),
                 contentAlignment = Alignment.CenterEnd,
             ) {
-                Box(Modifier.size(12.dp).background(Color.White, CircleShape))
+                Box(Modifier.size(12.dp).background(FnMediaColors.Text, CircleShape))
             }
         }
     }

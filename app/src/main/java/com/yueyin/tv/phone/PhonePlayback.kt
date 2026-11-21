@@ -123,10 +123,13 @@ internal object PhonePlayback {
         queue: List<PlaybackTrack>,
         playIndex: Int,
     ) {
-        val order = buildList {
-            for (i in (playIndex + 1) until queue.size) if (queue[i].streamUrl.isBlank()) add(i)
-            for (i in 0 until playIndex) if (queue[i].streamUrl.isBlank()) add(i)
-        }
+        // 只备「紧挨着的 3 首」。
+        // 以前是把整页几十首按顺序全取一遍：单 WebView 串行，一次要花十几秒，
+        // 期间任何一次点播/切歌都得排在这几十首后面 —— 这正是「按下一首没反应、接着报失败」的成因。
+        // 现在播放内核自己有滚动预取（切到哪首就补下一首），这里只负责把起播头几首垫稳。
+        val order = ((playIndex + 1) until queue.size)
+            .filter { queue[it].streamUrl.isBlank() }
+            .take(FILL_AHEAD)
         for (i in order) {
             currentCoroutineContext().ensureActive()
             val item = queue.getOrNull(i) ?: continue
@@ -139,6 +142,9 @@ internal object PhonePlayback {
             }
         }
     }
+
+    /** 后台补链只垫这么多首，其余交给播放内核的滚动预取。 */
+    private const val FILL_AHEAD = 3
 }
 
 /**
@@ -226,7 +232,10 @@ internal object PhoneRoam {
         queue: List<PlaybackTrack>,
         index: Int,
     ) {
-        val order = (index until queue.size).filter { queue[it].streamUrl.isBlank() }
+        // 同样只垫紧挨着的几首，剩下的播到再说（理由见 PhonePlayback.fillUrls）。
+        val order = (index until queue.size)
+            .filter { queue[it].streamUrl.isBlank() }
+            .take(3)
         for (i in order) {
             currentCoroutineContext().ensureActive()
             val item = queue.getOrNull(i) ?: continue

@@ -117,7 +117,7 @@ internal fun PhoneSettingsGroup(
         modifier
             .fillMaxWidth()
             .background(FnColors.Surface, RoundedCornerShape(PhoneRadius.md))
-            .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(PhoneRadius.md)),
+            .border(1.dp, FnColors.Hairline, RoundedCornerShape(PhoneRadius.md)),
         content = content,
     )
 }
@@ -130,7 +130,7 @@ internal fun PhoneSettingsDivider(startInset: Int = 16) {
             .fillMaxWidth()
             .padding(start = startInset.dp)
             .height(1.dp)
-            .background(Color.White.copy(alpha = 0.05f)),
+            .background(FnColors.Hairline),
     )
 }
 
@@ -343,7 +343,7 @@ internal fun PhoneChoiceChip(
             )
             .border(
                 1.dp,
-                if (selected) FnColors.Coral.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.07f),
+                if (selected) FnColors.Coral.copy(alpha = 0.7f) else FnColors.Hairline,
                 shape,
             )
             .phoneTap(onClick),

@@ -10,6 +10,7 @@ import com.yueyin.tv.core.data.localmusic.LocalMusicLibrary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.withContext
 import com.yueyin.tv.update.UpdateCoordinator
 
 class TvMusicApplication : Application() {
@@ -40,7 +41,11 @@ internal class AppContainer(private val application: Application) : AppUiDepende
         scope = applicationScope,
         loader = { coverId, variant ->
             musicRepository.artwork(coverId, variant)?.let { bytes ->
-                decodeArtwork(bytes, variant.width ?: 1_200)
+                decodeArtwork(bytes, variant.width ?: 1_200)?.let { bitmap ->
+                    // 榜单宣传图在这层统一提亮：手机与电视共用同一个缓存，改一次两端一致，
+                    // 且结果进的是内存缓存，滚动时不会再算第二遍。
+                    withContext(Dispatchers.Default) { boostRankBannerArtwork(coverId, bitmap) }
+                }
             }
         },
     )
@@ -56,6 +61,11 @@ internal class AppContainer(private val application: Application) : AppUiDepende
         applicationScope,
     )
     init {
+        // 在线内容的磁盘缓存目录：榜单/新歌/详情 + 每首歌的取链元数据。
+        // 不初始化的话冷启动会退化成每次全量请求网络（用户侧感受是「退出再进又全部重连」）。
+        com.yueyin.tv.core.data.online.OnlineCacheStore.init(
+            java.io.File(application.cacheDir, "online-cache"),
+        )
         // 启动即按"当前激活平台"决定数据源：飞牛 → 走原有链路（protocolSource=null）；
         // 其它平台 → 装一个协议数据源，首页/歌单/播放/搜索自动变成该平台的内容。
         com.yueyin.tv.ui.connect.ConnectRuntime.onActiveChanged = { profile -> applyProtocolSource(profile) }

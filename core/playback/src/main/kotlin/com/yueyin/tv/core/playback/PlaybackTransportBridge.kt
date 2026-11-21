@@ -22,6 +22,26 @@ object PlaybackTransportBridge {
     )
     private val ownershipListeners = CopyOnWriteArrayList<() -> Unit>()
 
+    /**
+     * 空直链守卫。
+     *
+     * 队列里除开头几首外都是以空 uri 入队的（见 ProtocolLibrarySource.queueEager），
+     * 而媒体键 / 车机 / 通知栏的「下一首」是直接打到播放内核上的，不经过 PlaybackController。
+     * 只要放行一次，ExoPlayer 就会拿空 uri 去加载、报「音源文件不存在」，并且连锁污染后续曲目。
+     *
+     * 所以切歌动作统一先问这里：返回 true 表示可以原生切过去（目标已有直链），
+     * 返回 false 表示已经拦截并转交 PlaybackController 去取链，取到后再切。
+     * 由 [PlaybackController] 注册；它是同进程内的回调，不跨进程。
+     */
+    @Volatile
+    internal var skipGuard: ((targetIndex: Int) -> Boolean)? = null
+
+    /** 返回 true 表示放行；没有注册守卫（例如服务刚起来）时一律放行。 */
+    internal fun canSkipTo(targetIndex: Int): Boolean {
+        if (targetIndex < 0) return true
+        return skipGuard?.invoke(targetIndex) ?: true
+    }
+
     fun register(handler: (PlaybackTransportDirection) -> Unit) {
         updateRegistration { it.copy(handler = handler) }
     }
@@ -32,6 +52,7 @@ object PlaybackTransportBridge {
     }
 
     fun unregister() {
+        skipGuard = null
         val previous = registration.getAndSet(
             Registration(PlaybackTransportOwnership.Restoring, null),
         )
@@ -117,13 +138,28 @@ internal class RoutingPlayer(
 
     override fun seekToPrevious() = routePrevious()
 
+    /**
+     * 队列面板点选 / 外部控制器指定某一首也走同一个守卫。
+     *
+     * 内部 routeNext/routePrevious 用的是 `delegate.seekTo(...)`（不走这个重载），
+     * 所以这里只拦「外部直接点某一首」的调用，不会重复拦截。
+     */
+    override fun seekTo(mediaItemIndex: Int, positionMs: Long) {
+        if (!PlaybackTransportBridge.canSkipTo(mediaItemIndex)) return
+        delegate.seekTo(mediaItemIndex, positionMs)
+    }
+
     private fun routeNext() {
         when (PlaybackTransportBridge.route(PlaybackTransportDirection.Next)) {
             PlaybackTransportOwnership.Normal -> {
                 if (delegate.repeatMode == Player.REPEAT_MODE_ONE && delegate.mediaItemCount > 1) {
                     val nextIndex = (delegate.currentMediaItemIndex + 1) % delegate.mediaItemCount
+                    if (!PlaybackTransportBridge.canSkipTo(nextIndex)) return
                     delegate.seekTo(nextIndex, 0L)
                 } else {
+                    // 下一首还没拿到直链时不能放行：空 uri 会被 ExoPlayer 当成文件路径，
+                    // 直接报「音源文件不存在」，而且会连锁拖垮后面几首。
+                    if (!PlaybackTransportBridge.canSkipTo(delegate.nextMediaItemIndex)) return
                     delegate.seekToNextMediaItem()
                 }
             }
@@ -141,8 +177,10 @@ internal class RoutingPlayer(
                 } else if (delegate.repeatMode == Player.REPEAT_MODE_ONE && delegate.mediaItemCount > 1) {
                     val previousIndex = (delegate.currentMediaItemIndex - 1 + delegate.mediaItemCount) %
                         delegate.mediaItemCount
+                    if (!PlaybackTransportBridge.canSkipTo(previousIndex)) return
                     delegate.seekTo(previousIndex, 0L)
                 } else {
+                    if (!PlaybackTransportBridge.canSkipTo(delegate.previousMediaItemIndex)) return
                     delegate.seekToPreviousMediaItem()
                 }
             }

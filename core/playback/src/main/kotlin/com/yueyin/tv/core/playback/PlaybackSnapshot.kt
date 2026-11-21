@@ -38,7 +38,17 @@ internal data class PlaybackSnapshot(
 )
 
 internal object PlaybackSnapshotCodec {
-    const val Version = 2
+    /**
+     * 快照版本。
+     *
+     * v3 起**不再持久化在线直链**：音源直链带签名与时效，通常几分钟就死。
+     * 旧实现把它原样写进 Room，下次启动恢复出来的是一整队死链——
+     * 用户看到的就是「播放过的歌，退出再进就播放失败」。
+     * 现在只存「这是哪一首」（mediaId + 标题/歌手/封面等元数据），uri 留空，
+     * 恢复时按需重新取链；本地曲目的 content:// 仍然照存（那是稳定的）。
+     */
+    const val Version = 3
+    private const val MinSupportedVersion = 2
     private const val MaxItems = 250
 
     fun encode(snapshot: PlaybackSnapshot): String = encodeSnapshot(snapshot, depth = 0).toString()
@@ -79,7 +89,10 @@ internal object PlaybackSnapshotCodec {
     private fun decodeSnapshot(root: JSONObject, depth: Int): PlaybackSnapshot {
         require(depth <= 1) { "Playback snapshot nesting is too deep" }
         val legacy = !root.has("version")
-        if (!legacy) require(root.getInt("version") == Version) { "Unsupported playback snapshot version" }
+        if (!legacy) {
+            val version = root.getInt("version")
+            require(version in MinSupportedVersion..Version) { "Unsupported playback snapshot version" }
+        }
 
         val itemValues = root.getJSONArray("items")
         require(legacy || itemValues.length() <= MaxItems) { "Playback queue exceeds its active limit" }
@@ -162,7 +175,7 @@ internal object PlaybackSnapshotCodec {
 
     private fun encodeMediaItem(item: MediaItem): JSONObject = JSONObject()
         .put("id", item.mediaId)
-        .put("uri", item.localConfiguration?.uri?.toString())
+        .put("uri", persistableUriOf(item))
         .put("title", item.mediaMetadata.title?.toString())
         .put("artist", item.mediaMetadata.artist?.toString())
         .put("album", item.mediaMetadata.albumTitle?.toString())
@@ -176,10 +189,24 @@ internal object PlaybackSnapshotCodec {
         )
         .put("art", item.mediaMetadata.artworkUri?.toString())
 
+    /**
+     * 只把稳定的本地地址写进快照。
+     *
+     * http(s) 是在线音源现取的直链，带签名与时效（多数只有几分钟），
+     * 落盘再恢复出来必然是死链，所以一律不存——恢复时留空 uri，由播放链路重新取。
+     * content:// / file:// 指向本机文件，稳定，照常持久化。
+     */
+    private fun persistableUriOf(item: MediaItem): String {
+        val uri = item.localConfiguration?.uri ?: return ""
+        val scheme = uri.scheme?.lowercase().orEmpty()
+        return if (scheme == "http" || scheme == "https") "" else uri.toString()
+    }
+
     private fun decodeMediaItem(value: JSONObject): MediaItem {
         val id = value.getString("id")
-        val uri = value.getString("uri")
-        require(id.isNotBlank() && uri.isNotBlank()) { "Playback item is missing its ID or URI" }
+        require(id.isNotBlank()) { "Playback item is missing its ID" }
+        // v3 起在线曲目的 uri 允许为空：那是「还没取链」，不是坏数据。
+        val uri = value.optNullableString("uri").orEmpty()
         return MediaItem.Builder()
             .setMediaId(id)
             .setUri(uri)

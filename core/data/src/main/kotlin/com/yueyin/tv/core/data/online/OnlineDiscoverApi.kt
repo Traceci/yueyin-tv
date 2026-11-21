@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.yueyin.tv.core.data.online
 
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -12,6 +16,7 @@ import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
 /** 一次多平台抓取的结果：拿到的条目 + 谁挂了 */
+@kotlinx.serialization.Serializable
 data class FeedPart<T>(
     val items: List<T>,
     val errors: List<OnlineSourceError> = emptyList(),
@@ -35,9 +40,110 @@ class OnlineDiscoverApi(
 ) {
     private val client get() = api.client
 
+    // ------------------------------------------------------------- 缓存
+    //
+    // 在线内容的列表接口（新歌/新碟/榜单/歌单/详情）原来只在内存里留一份，
+    // 进程一退就没，于是每次冷启动都要把四五个板块重新请求一遍——
+    // 用户侧的感受就是「退出再进又要全部重新连接读取一遍」。
+    //
+    // 这里加一层磁盘缓存：命中就**立刻**把上次的内容交给界面，同时后台刷新；
+    // 只有第一次（或缓存损坏）才真的等网络。缓存的是列表/元数据，绝不缓存直链。
+
+    private val cacheJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** 榜单/新歌这类运营位变化不算快，10 分钟内直接复用磁盘缓存。 */
+    private val feedTtlMs = 10 * 60_000L
+
+    /** 详情（某个榜单/专辑/歌单的曲目表）变化得更慢，给 30 分钟。 */
+    private val collectionTtlMs = 30 * 60_000L
+
+    suspend fun newSongs(limit: Int = 30): FeedPart<OnlineSong> = cachedOrStale(
+        key = "discover:newSongs:$limit",
+        ttlMs = feedTtlMs,
+        decode = { payload ->
+            runCatching {
+                cacheJson.decodeFromString(FeedPart.serializer(OnlineSong.serializer()), payload)
+            }.getOrNull()
+        },
+        encode = { cacheJson.encodeToString(FeedPart.serializer(OnlineSong.serializer()), it) },
+        fetch = { loadNewSongs(limit) },
+    )
+
+    suspend fun newAlbums(limit: Int = 24): FeedPart<OnlineAlbum> = cachedOrStale(
+        key = "discover:newAlbums:$limit",
+        ttlMs = feedTtlMs,
+        decode = { payload ->
+            runCatching {
+                cacheJson.decodeFromString(FeedPart.serializer(OnlineAlbum.serializer()), payload)
+            }.getOrNull()
+        },
+        encode = { cacheJson.encodeToString(FeedPart.serializer(OnlineAlbum.serializer()), it) },
+        fetch = { loadNewAlbums(limit) },
+    )
+
+    suspend fun rankGroups(): FeedPart<OnlineRankGroup> = cachedOrStale(
+        key = "discover:ranks",
+        ttlMs = feedTtlMs,
+        decode = { payload ->
+            runCatching {
+                cacheJson.decodeFromString(FeedPart.serializer(OnlineRankGroup.serializer()), payload)
+            }.getOrNull()
+        },
+        encode = { cacheJson.encodeToString(FeedPart.serializer(OnlineRankGroup.serializer()), it) },
+        fetch = { loadRankGroups() },
+    )
+
+    suspend fun playlists(limit: Int = 24): FeedPart<OnlinePlaylist> = cachedOrStale(
+        key = "discover:playlists:$limit",
+        ttlMs = feedTtlMs,
+        decode = { payload ->
+            runCatching {
+                cacheJson.decodeFromString(FeedPart.serializer(OnlinePlaylist.serializer()), payload)
+            }.getOrNull()
+        },
+        encode = { cacheJson.encodeToString(FeedPart.serializer(OnlinePlaylist.serializer()), it) },
+        fetch = { loadPlaylists(limit) },
+    )
+
+    /**
+     * 磁盘优先 + 后台刷新。
+     *
+     * - 缓存新鲜：直接返回，零网络。
+     * - 缓存过期：先把旧内容返回（界面立刻有东西），后台拉新的写回。
+     * - 没有缓存：等网络；失败时若还有旧内容就退回旧内容，不让页面空白。
+     */
+    private suspend fun <T> cachedOrStale(
+        key: String,
+        ttlMs: Long,
+        decode: (String) -> T?,
+        encode: (T) -> String,
+        fetch: suspend () -> T,
+    ): T {
+        val cached = OnlineCacheStore.read(key)
+        val stale = cached?.let { entry -> decode(entry.payload) }
+        if (cached != null && stale != null) {
+            if (System.currentTimeMillis() - cached.atMillis < ttlMs) return stale
+            refreshScope.launch {
+                runCatching { fetch() }
+                    .getOrNull()
+                    ?.let { fresh -> runCatching { OnlineCacheStore.write(key, encode(fresh)) } }
+            }
+            return stale
+        }
+        val fresh = try {
+            fetch()
+        } catch (cause: Throwable) {
+            if (stale != null) return stale
+            throw cause
+        }
+        runCatching { OnlineCacheStore.write(key, encode(fresh)) }
+        return fresh
+    }
+
     // ------------------------------------------------------------- 新歌
 
-    suspend fun newSongs(limit: Int = 30): FeedPart<OnlineSong> = coroutineScope {
+    private suspend fun loadNewSongs(limit: Int = 30): FeedPart<OnlineSong> = coroutineScope {
         val jobs = OnlinePlatform.entries.map { platform ->
             platform to async { runCatching { fetchNewSongs(platform, limit) } }
         }
@@ -149,7 +255,7 @@ class OnlineDiscoverApi(
 
     // ------------------------------------------------------------- 新碟
 
-    suspend fun newAlbums(limit: Int = 24): FeedPart<OnlineAlbum> = coroutineScope {
+    private suspend fun loadNewAlbums(limit: Int = 24): FeedPart<OnlineAlbum> = coroutineScope {
         val platforms = listOf(
             OnlinePlatform.Kuwo,
             OnlinePlatform.NetEase,
@@ -332,7 +438,7 @@ class OnlineDiscoverApi(
      * 榜单列表。各平台的分组（官方榜/特色榜/地区榜）原样保留——
      * 这是平台编辑的分类，不是我们能编的，硬合并成一坨反而更难找。
      */
-    suspend fun rankGroups(): FeedPart<OnlineRankGroup> = coroutineScope {
+    private suspend fun loadRankGroups(): FeedPart<OnlineRankGroup> = coroutineScope {
         val platforms = listOf(
             OnlinePlatform.Kuwo,
             OnlinePlatform.NetEase,
@@ -529,7 +635,7 @@ class OnlineDiscoverApi(
 
     // ------------------------------------------------------------- 歌单
 
-    suspend fun playlists(limit: Int = 24): FeedPart<OnlinePlaylist> = coroutineScope {
+    private suspend fun loadPlaylists(limit: Int = 24): FeedPart<OnlinePlaylist> = coroutineScope {
         val platforms = listOf(
             OnlinePlatform.NetEase,
             OnlinePlatform.Kuwo,
@@ -661,6 +767,25 @@ class OnlineDiscoverApi(
      * 某一家的接口挂了就抛异常，由页面显示"这家打不开"而不是空白页。
      */
     suspend fun collection(
+        kind: OnlineCollectionKind,
+        platform: OnlinePlatform,
+        id: String,
+        title: String = "",
+        extra: String = "",
+        limit: Int = 200,
+    ): OnlineCollection = cachedOrStale(
+        key = "collection:${kind.name}:${platform.key}:$id:$extra",
+        ttlMs = collectionTtlMs,
+        decode = { payload ->
+            runCatching {
+                cacheJson.decodeFromString(OnlineCollection.serializer(), payload)
+            }.getOrNull()
+        },
+        encode = { cacheJson.encodeToString(OnlineCollection.serializer(), it) },
+        fetch = { loadCollection(kind, platform, id, title, extra, limit) },
+    )
+
+    private suspend fun loadCollection(
         kind: OnlineCollectionKind,
         platform: OnlinePlatform,
         id: String,

@@ -29,7 +29,7 @@ import com.mocharealm.accompanist.lyrics.core.model.SyncedLyrics
 import com.mocharealm.accompanist.lyrics.ui.composable.lyrics.KaraokeBreathingDotsDefaults
 import com.mocharealm.accompanist.lyrics.ui.composable.lyrics.KaraokeLyricsView
 import com.yueyin.tv.core.lyrics.lyricText
-import com.yueyin.tv.ui.FnColors
+import com.yueyin.tv.ui.FnMediaColors
 
 /**
  * 手机端歌词视图。
@@ -101,7 +101,7 @@ private fun KaraokeTimedLyrics(
         val currentPosition = remember { { positionState.value } }
         // 普通行压暗，当前句保持亮色：LyricsLineItem 用 activeAlpha=1 / inactiveAlpha=0.4
         // 再拉一档差距；逐字扫填的 activeColor 也用亮色，两种歌词类型都能看出当前句。
-        val dimText = FnColors.Text.copy(alpha = 0.62f)
+        val dimText = FnMediaColors.Text.copy(alpha = 0.62f)
         CompositionLocalProvider(
             androidx.compose.material3.LocalTextStyle provides TextStyle(
                 color = dimText,
@@ -128,7 +128,7 @@ private fun KaraokeTimedLyrics(
                     lineHeight = 19.sp,
                     fontWeight = FontWeight.SemiBold,
                 ),
-                textColor = FnColors.Text,
+                textColor = FnMediaColors.Text,
                 blendMode = BlendMode.SrcOver,
                 useBlurEffect = false,
                 showTranslation = true,
@@ -169,7 +169,7 @@ private fun UntimedLyrics(text: String, modifier: Modifier = Modifier) {
         item {
             Text(
                 text,
-                color = Color.White.copy(alpha = 0.72f),
+                color = FnMediaColors.idle(0.72f),
                 fontSize = PhoneType.Body,
                 lineHeight = 26.sp,
                 modifier = Modifier
@@ -194,7 +194,7 @@ private fun LyricNotice(
     ) {
         Text(
             text,
-            color = Color.White.copy(alpha = 0.52f),
+            color = FnMediaColors.idle(0.52f),
             fontSize = PhoneType.Section,
             maxLines = 2,
             textAlign = TextAlign.Center,
@@ -203,7 +203,7 @@ private fun LyricNotice(
             Spacer(Modifier.height(PhoneSpace.sm))
             Text(
                 caption,
-                color = Color.White.copy(alpha = 0.30f),
+                color = FnMediaColors.idle(0.30f),
                 fontSize = PhoneType.Caption,
                 maxLines = 1,
             )
