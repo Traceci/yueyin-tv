@@ -28,7 +28,9 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionError
 import androidx.media3.session.SessionResult
+import com.yueyin.tv.core.data.api.TrimMusicApi
 import com.yueyin.tv.core.model.stream.PlaybackHttp
+import java.net.URI
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -238,6 +240,13 @@ class PlaybackService : MediaLibraryService() {
                     val accessCode = args.getString(PlaybackCommands.AccessCode)
                     val headers = playbackRequestHeaders(token, accessCode, relayMode)
                     httpFactory.setDefaultRequestProperties(headers)
+                    val apiBase = args.getString(PlaybackCommands.ApiBase).orEmpty()
+                    val host = runCatching { URI(apiBase).host }.getOrNull()
+                    TrimMusicApi.applyPlaybackTls(
+                        allowSelfSigned = args.getBoolean(PlaybackCommands.AllowSelfSigned, false),
+                        host = host,
+                        pin = args.getString(PlaybackCommands.CertFingerprint),
+                    )
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
                 if (customCommand.customAction == PlaybackCommands.SetShuffleOrder) {

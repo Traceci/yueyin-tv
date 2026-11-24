@@ -29,7 +29,7 @@ class LoginHistorySmokeTest {
                     savedServer = "",
                     recentServers = emptyList(),
                     initialError = null,
-                    onLogin = { _, _, _, password, _, accessCode ->
+                    onLogin = { _, _, _, password, _, accessCode, _ ->
                         password.fill('\u0000')
                         accessCode.fill('\u0000')
                     },
@@ -73,7 +73,7 @@ class LoginHistorySmokeTest {
                     savedServer = "",
                     recentServers = emptyList(),
                     initialError = null,
-                    onLogin = { _, _, _, password, _, accessCode ->
+                    onLogin = { _, _, _, password, _, accessCode, _ ->
                         password.fill('\u0000')
                         accessCode.fill('\u0000')
                     },

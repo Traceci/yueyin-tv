@@ -6,6 +6,8 @@ sealed interface AppError {
     data object AccessCodeRequired : AppError
     data object InvalidAccessCode : AppError
     data object NetworkUnavailable : AppError
+    /** TLS 证书不被信任（自签名 / 域名不匹配），与普通网络不通区分开。 */
+    data object CertificateUntrusted : AppError
     data object NotFound : AppError
     data object UnavailableTrack : AppError
     data object MediaUnsupported : AppError

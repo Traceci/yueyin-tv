@@ -47,6 +47,7 @@ import com.yueyin.tv.core.model.Artist
 import com.yueyin.tv.core.model.CoverVariant
 import com.yueyin.tv.core.model.Playlist
 import com.yueyin.tv.core.model.Track
+import com.yueyin.tv.core.model.library.FolderEntry
 import com.yueyin.tv.ui.FnColors
 import com.yueyin.tv.ui.InitialArtworkPlaceholder
 import com.yueyin.tv.ui.appErrorMessage
@@ -309,6 +310,58 @@ internal fun PhoneAlbumCard(album: Album, onClick: () -> Unit, modifier: Modifie
         Text(
             // 「歌手 · 年份」；没有年份就只显示歌手（与电视端 Album.cardSubtitle 同一条规则）
             album.cardSubtitle,
+            color = FnColors.Muted,
+            fontSize = PhoneType.Micro,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/** 文件夹/歌曲共用的网格卡：与 [PhoneAlbumCard] 同一套 1:1 图区 + 两行文字。 */
+@Composable
+internal fun PhoneFolderCard(
+    entry: FolderEntry,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    folderCoverId: String? = null,
+) {
+    Column(modifier.phoneTap(onClick)) {
+        if (entry.isFolder && !folderCoverId.isNullOrBlank()) {
+            PhoneArtwork(
+                coverId = folderCoverId,
+                title = entry.name,
+                modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+            )
+        } else if (entry.isFolder) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f)
+                    .background(FnColors.SurfaceAlt, RoundedCornerShape(PhoneRadius.md)),
+                contentAlignment = Alignment.Center,
+            ) {
+                PhoneIcon(PhoneGlyph.Library, FnColors.Muted, Modifier.size(32.dp))
+            }
+        } else {
+            PhoneArtwork(
+                coverId = entry.coverId,
+                title = entry.name,
+                modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+            )
+        }
+        Spacer(Modifier.height(PhoneSpace.sm))
+        Text(
+            entry.name,
+            color = FnColors.Text,
+            fontSize = PhoneType.Caption,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            entry.subtitle,
             color = FnColors.Muted,
             fontSize = PhoneType.Micro,
             maxLines = 1,

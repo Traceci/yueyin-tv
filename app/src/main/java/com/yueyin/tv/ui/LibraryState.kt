@@ -1,6 +1,7 @@
 package com.yueyin.tv.ui
 
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.yueyin.tv.core.data.connect.ConnectProfile
@@ -12,6 +13,7 @@ import com.yueyin.tv.core.model.Page
 import com.yueyin.tv.core.model.Playlist
 import com.yueyin.tv.core.model.Track
 import com.yueyin.tv.core.model.connect.ConnectType
+import com.yueyin.tv.core.model.library.FolderEntry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -24,6 +26,8 @@ internal sealed interface LibraryRoute {
     data object Albums : LibraryRoute
     data object AllTracks : LibraryRoute
     data object Favorites : LibraryRoute
+    /** 平台目录浏览：仅飞牛/Jellyfin/Emby 有该能力时出现。 */
+    data object Folders : LibraryRoute
     /** 本机曲库：与在线/平台音乐并行，不参与 activeId 切换。 */
     data object LocalMusic : LibraryRoute
     data class ArtistDetail(val artist: Artist) : LibraryRoute
@@ -192,6 +196,19 @@ internal class LibraryRetainedStateStore(val scope: CoroutineScope) {
     private val pagedStates = mutableMapOf<String, RetainedPagedGridState<*>>()
     private val trackStates = mutableMapOf<String, RetainedTrackCollectionState>()
     private val listStates = mutableMapOf<String, RetainedListState<*>>()
+    private val folderScrollPositions = mutableMapOf<String, Int>()
+
+    /** 目录封面缓存：key 为目录 path，value 为该目录里挑出的固定封面 coverId。 */
+    val folderCovers = mutableStateMapOf<String, String?>()
+
+    /** 文件夹目录栈保留在 store 里，切走分段再回来仍停在原目录。 */
+    var folderStack by mutableStateOf<List<FolderEntry>>(emptyList())
+
+    fun folderScroll(key: String): Int = folderScrollPositions[key] ?: 0
+
+    fun setFolderScroll(key: String, index: Int) {
+        folderScrollPositions[key] = index
+    }
 
     @Suppress("UNCHECKED_CAST")
     fun <T> paged(key: String): RetainedPagedGridState<T> =
@@ -212,6 +229,9 @@ internal class LibraryRetainedStateStore(val scope: CoroutineScope) {
         pagedStates.entries.removeAll { !it.key.startsWith(LOCAL_STATE_PREFIX) }
         trackStates.entries.removeAll { !it.key.startsWith(LOCAL_STATE_PREFIX) }
         listStates.entries.removeAll { !it.key.startsWith(LOCAL_STATE_PREFIX) }
+        folderScrollPositions.entries.removeAll { !it.key.startsWith(LOCAL_STATE_PREFIX) }
+        folderCovers.entries.removeAll { !it.key.startsWith(LOCAL_STATE_PREFIX) }
+        folderStack = emptyList()
     }
 
     companion object {
@@ -363,6 +383,7 @@ internal fun LibraryRoute.storageKey(): String = when (this) {
     LibraryRoute.Albums -> "albums"
     LibraryRoute.AllTracks -> "tracks"
     LibraryRoute.Favorites -> "favorites"
+    LibraryRoute.Folders -> "folders"
     LibraryRoute.LocalMusic -> "local:music"
     is LibraryRoute.ArtistDetail -> "artist:${artist.guid.value}"
     is LibraryRoute.AlbumDetail -> "album:${album.guid.value}"

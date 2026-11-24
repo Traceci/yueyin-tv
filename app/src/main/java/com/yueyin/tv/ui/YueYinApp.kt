@@ -173,8 +173,10 @@ internal fun YueYinApp(container: AppUiDependencies, onExitApplication: () -> Un
                             loginHistory = current.loginHistory,
                             initialSelectedProfileId = current.selectedProfileId,
                             initialError = current.error,
-                            onLogin = { server, https, user, password, remember, accessCode ->
-                                container.sessionRepository.login(server, https, user, password, remember, accessCode)
+                            onLogin = { server, https, user, password, remember, accessCode, allowSelfSigned ->
+                                container.sessionRepository.login(
+                                    server, https, user, password, remember, accessCode, allowSelfSigned,
+                                )
                             },
                             onHistoryLogin = container.sessionRepository::loginWithHistory,
                             onHistoryDelete = container.sessionRepository::deleteLoginHistory,
@@ -278,7 +280,7 @@ internal fun LoginScreen(
     savedServer: String,
     recentServers: List<String>,
     initialError: AppError?,
-    onLogin: suspend (String, Boolean, String, CharArray, Boolean, CharArray) -> Unit,
+    onLogin: suspend (String, Boolean, String, CharArray, Boolean, CharArray, Boolean) -> Unit,
     loginHistory: List<LoginHistoryEntry> = emptyList(),
     initialSelectedProfileId: String? = null,
     onHistoryLogin: suspend (String, CharArray?, Boolean) -> Unit = { _, accessCode, _ ->
@@ -301,6 +303,9 @@ internal fun LoginScreen(
     var accessCode by remember(selectedDraft?.profileId) { mutableStateOf(selectedDraft?.accessCode.orEmpty()) }
     var rememberLogin by remember { mutableStateOf(true) }
     var https by remember(initialServer) { mutableStateOf(initialServer.useHttps) }
+    var allowSelfSigned by remember(selectedDraft?.profileId) {
+        mutableStateOf(selectedDraft?.allowSelfSigned == true)
+    }
     var selectedProfileId by remember(initialSelectedProfileId) { mutableStateOf(initialSelectedProfileId) }
     var hasSavedPassword by remember(selectedDraft?.profileId) {
         mutableStateOf(selectedDraft?.hasSavedPassword == true)
@@ -319,6 +324,7 @@ internal fun LoginScreen(
     val accessCodeFocus = remember { FocusRequester() }
     val rememberFocus = remember { FocusRequester() }
     val httpsFocus = remember { FocusRequester() }
+    val selfSignedFocus = remember { FocusRequester() }
     val loginFocus = remember { FocusRequester() }
     val fnIdInput = ConnectionResolver.isFnId(server)
     val validServer = fnIdInput || ServerUrlNormalizer.normalize(server, https) is ServerUrlResult.Valid
@@ -477,7 +483,7 @@ internal fun LoginScreen(
                         .focusProperties {
                             up = rememberFocus
                             left = rememberFocus
-                            down = if (canSubmit) loginFocus else FocusRequester.Cancel
+                            down = selfSignedFocus
                         }
                         .focusRequester(httpsFocus).focusBringIntoView(),
                 ) {
@@ -486,8 +492,28 @@ internal fun LoginScreen(
                     hasSavedPassword = false
                 }
             }
+            Row(
+                Modifier.fillMaxWidth().padding(top = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                LoginCheckbox(
+                    label = "自签证书（仅这台 NAS）",
+                    selected = allowSelfSigned,
+                    modifier = Modifier.fillMaxWidth()
+                        .focusProperties {
+                            up = httpsFocus
+                            left = httpsFocus
+                            down = if (canSubmit) loginFocus else FocusRequester.Cancel
+                        }
+                        .focusRequester(selfSignedFocus).focusBringIntoView(),
+                ) { allowSelfSigned = !allowSelfSigned }
+            }
             val statusMessage = error?.let {
-                if (loginAttempted && it == AppError.Unauthenticated) "账号或密码错误" else errorMessage(it)
+                when {
+                    loginAttempted && it == AppError.Unauthenticated -> "账号或密码错误"
+                    it == AppError.CertificateUntrusted -> "证书不被信任，可勾选「自签证书」后重试"
+                    else -> errorMessage(it)
+                }
             } ?: when {
                 fnIdInput -> "FNID 将自动选择可用连接"
                 !https -> "局域网 HTTP 连接未加密"
@@ -517,7 +543,7 @@ internal fun LoginScreen(
                                 submittedPassword.fill('\u0000')
                                 onHistoryLogin(savedProfileId, submittedAccessCode, rememberLogin)
                             } else {
-                                onLogin(server, https, username, submittedPassword, rememberLogin, submittedAccessCode)
+                                onLogin(server, https, username, submittedPassword, rememberLogin, submittedAccessCode, allowSelfSigned)
                             }
                         }
                             .onFailure { error = (it as? AppException)?.error ?: AppError.Unknown() }

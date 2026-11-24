@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.Text
 import com.yueyin.tv.core.data.server.ConnectionResolver
 import com.yueyin.tv.core.data.server.ServerUrlNormalizer
@@ -64,6 +65,8 @@ internal fun PhoneFnLoginPage(
     }
     var server by remember { mutableStateOf(saved.address) }
     var https by remember { mutableStateOf(saved.useHttps) }
+    var allowSelfSigned by remember { mutableStateOf(false) }
+    val trustedFingerprint by repository.trustedCertFingerprint.collectAsStateWithLifecycle()
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var accessCode by remember { mutableStateOf("") }
@@ -90,6 +93,7 @@ internal fun PhoneFnLoginPage(
                     // 手机是随身设备，默认记住登录：下次启动直接进曲库。
                     remember = true,
                     accessCode = accessCode.toCharArray(),
+                    allowSelfSigned = allowSelfSigned,
                 )
             }
             submitting = false
@@ -188,6 +192,21 @@ internal fun PhoneFnLoginPage(
                 checked = https,
                 onToggle = { https = it },
             )
+            PhoneSettingsSwitchRow(
+                title = "允许这台 NAS 的自签名证书",
+                subtitle = "只对当前主机生效；首次连接会记录证书指纹，之后只认这张证书",
+                checked = allowSelfSigned,
+                onToggle = { allowSelfSigned = it },
+            )
+        }
+        if (!trustedFingerprint.isNullOrBlank()) {
+            Spacer(Modifier.height(PhoneSpace.sm))
+            Text(
+                "已信任证书指纹 SHA-256：${trustedFingerprint!!.take(16)}…",
+                color = FnColors.Muted,
+                fontSize = PhoneType.Micro,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
         }
 
         if (error != null) {
@@ -236,6 +255,7 @@ private fun fnLoginFailureText(cause: Throwable): String {
         AppError.AccessCodeRequired -> "这台服务器需要安全码，请填写后再登录"
         AppError.InvalidAccessCode -> "安全码不正确"
         AppError.NetworkUnavailable -> "连不上 NAS：检查地址、端口与当前网络"
+        AppError.CertificateUntrusted -> "证书不被信任：可打开「允许这台 NAS 的自签名证书」后重试"
         AppError.NotFound -> "地址通了，但没找到音乐接口，确认 NAS 上已安装「音乐」应用"
         AppError.FnIdUnavailable -> "FNID 没有可用连接，改用局域网地址试试"
         else -> "登录失败，请重试"

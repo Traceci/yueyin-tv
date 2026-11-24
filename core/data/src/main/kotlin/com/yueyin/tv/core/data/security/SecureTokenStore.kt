@@ -24,6 +24,10 @@ internal data class StoredLoginProfile(
     val accessCode: String? = null,
     val userToken: String? = null,
     val lastUsedAt: Long,
+    /** 用户显式授权过这台 NAS 的自签证书，且只对该主机生效。 */
+    val allowSelfSigned: Boolean = false,
+    /** 首次连接记录的证书 SHA-256，之后只认这张证书（TOFU 固定）。 */
+    val certFingerprint: String? = null,
 )
 
 @Serializable

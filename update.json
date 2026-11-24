@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
   "packageName": "com.yueyin.tv",
-  "versionName": "2.1.5",
-  "versionCode": 44,
-  "title": "悦音 2.1.5",
-  "notes": "# 悦音 2.1.5\n\n## 修复\n\n- 连续切歌不再卡死：播不了的歌自动跳下一首，不会弹错卡在原地。\n- 退出再进能接着播：队列和进度都还在，打开直接出声。\n- 补齐歌手、时长、封面，不再显示「未知歌手」和空白封面。\n- 播放失败能自动恢复，不用再手动点一下。\n- 坏链接自动换源或跳过，切歌不再等十几秒。\n\n## 改进\n\n- 手机端恢复浅色模式，播放页、歌词也跟着主题变色。\n- 启动更快：首页不再每次整页重新加载。\n- 切歌出声更快，播放中途卡一下恢复也更快。\n- 榜单封面不再发暗，画面更亮更正。",
+  "versionName": "2.1.6",
+  "versionCode": 45,
+  "title": "悦音 2.1.6",
+  "notes": "# 悦音 2.1.6\n\n## 新增\n\n1. 2 端增加飞牛音乐文件夹访问功能，入口：手机端 曲库；电视端-我的。\n2. 文件夹增加封面功能。\n\n## 改进\n\n1. 加快冷启动，点播起播速度。\n2. 优化 HTTPS 签名证书问题，解决个别情况下 HTTPS 登录失败情况。\n3. 调优部分界面不协调情况。",
   "apk": {
-    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v2.1.5/yueyin-2.1.5-release.apk",
-    "size": 8127547,
-    "sha256": "cf17994b54b481fb91ed0fab3c04e8bfb80d31c0e516080929e6a2891cc039de"
+    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v2.1.6/yueyin-2.1.6-release.apk",
+    "size": 8160310,
+    "sha256": "3c78d32df4403eb62bd4ab199a630ed796be2aa2eb742b6f720eca3895571be4"
   },
-  "publishedAt": "2026-11-21T09:44:54Z",
-  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v2.1.5"
+  "publishedAt": "2026-11-24T03:55:00Z",
+  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v2.1.6"
 }

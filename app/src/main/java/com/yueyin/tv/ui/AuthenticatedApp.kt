@@ -50,6 +50,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -174,6 +175,7 @@ import com.yueyin.tv.core.model.PlaybackTrack
 import com.yueyin.tv.core.model.PlayerStyle
 import com.yueyin.tv.core.model.Playlist
 import com.yueyin.tv.core.model.Track
+import com.yueyin.tv.core.model.library.FolderEntry
 import com.yueyin.tv.core.model.playback.QueueSource
 import com.yueyin.tv.core.model.playback.QueueKind
 import com.yueyin.tv.core.model.playback.PlayMode
@@ -199,6 +201,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlin.math.pow
 import kotlin.math.sqrt
 
@@ -773,6 +777,7 @@ internal fun AuthenticatedApp(
                 onPlaylist = { open(LibraryRoute.PlaylistDetail(it)) },
                 onArtist = { open(LibraryRoute.ArtistDetail(it)) },
                 onAlbum = { open(LibraryRoute.AlbumDetail(it)) },
+                onFolders = { open(LibraryRoute.Folders) },
                 onPlayer = { open(LibraryRoute.Player(null)) },
             )
             // 平台管理走正式路由：AnimatedContent 会用新的子树替换旧页面，
@@ -856,8 +861,10 @@ internal fun AuthenticatedApp(
                         loginHistory = snapshot.loginHistory,
                         initialSelectedProfileId = snapshot.selectedProfileId,
                         initialError = snapshot.error,
-                        onLogin = { server, https, user, password, remember, accessCode ->
-                            container.sessionRepository.login(server, https, user, password, remember, accessCode)
+                        onLogin = { server, https, user, password, remember, accessCode, allowSelfSigned ->
+                            container.sessionRepository.login(
+                                server, https, user, password, remember, accessCode, allowSelfSigned,
+                            )
                             // login() 失败会抛异常，走不到这一行；所以这里等价于「真的登进来了」
                             fnLoginOk = true
                         },
@@ -1021,6 +1028,11 @@ internal fun AuthenticatedApp(
                     emptyMessage = "还没有收藏歌曲",
                 )
             }
+            LibraryRoute.Folders -> TvFolderPage(
+                container = container,
+                onBack = back,
+                onOpenPlayer = { open(LibraryRoute.Player(null)) },
+            )
             is LibraryRoute.ArtistDetail -> ArtistDetail(
                 container = container,
                 artist = targetRoute.artist,
@@ -2506,6 +2518,389 @@ internal fun isHomeBackConfirmed(
 ): Boolean = previousBackAt > 0L && currentBackAt >= previousBackAt &&
     currentBackAt - previousBackAt <= windowMs
 
+/**
+ * 电视端「文件夹」页。
+ *
+ * 之前是纯文字两行列表（目录名 + 「N 首」），既没有卡片也没有焦点绘制，遥控器移动时屏幕上
+ * 完全看不出焦点在哪；返回也只有标题文字变色这一条暗线，而 BACK 键还被全局 BackHandler
+ * 直接退掉整页。现在统一到「全部专辑 / 歌手」那套海报网格：文件夹是方形文件夹图标卡、
+ * 歌曲是方形封面卡，焦点走 FnFocus 白描边；返回同时给面包屑、右上胶囊、遥控器 BACK 三个入口。
+ */
+@Composable
+private fun TvFolderPage(
+    container: AuthenticatedAppDependencies,
+    onBack: () -> Unit,
+    onOpenPlayer: () -> Unit,
+) {
+    // 栈里存整条 FolderEntry（不是 id）：退回上级时面包屑要显示目录名。
+    var stack by remember { mutableStateOf<List<FolderEntry>>(emptyList()) }
+    var entries by remember { mutableStateOf<List<FolderEntry>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var focusedKey by remember { mutableStateOf<String?>(null) }
+    // 从子目录退回时，焦点要落回刚点进去的那个目录，而不是跳回第一格。
+    var focusReturnTo by remember { mutableStateOf<String?>(null) }
+    // 取链 + 起播是异步的，连点会把同一批请求打多遍。
+    var busy by remember { mutableStateOf(false) }
+    val gridFocus = remember { FocusRequester() }
+    val gridState = rememberLazyGridState()
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val metrics = rememberAlbumPosterMetrics()
+    val parentId = stack.lastOrNull()?.id
+    val coverCache = LocalLibraryRetainedState.current.folderCovers
+
+    LaunchedEffect(parentId) {
+        loading = true
+        runCatching { gridState.scrollToItem(0) }
+        entries = runCatching { container.musicRepository.folderEntries(parentId) }
+            .getOrDefault(emptyList())
+        loading = false
+    }
+    // 目录封面异步补：最多 3 个并发，不挡首屏；结果按 path 缓存，返回上层不会重新拉。
+    LaunchedEffect(entries) {
+        val pending = entries.filter { it.isFolder && !coverCache.containsKey(it.id) }
+        if (pending.isEmpty()) return@LaunchedEffect
+        val gate = Semaphore(3)
+        pending.forEach { folder ->
+            launch {
+                gate.withPermit {
+                    val cover = runCatching { container.musicRepository.folderCover(folder.id) }
+                        .getOrNull()
+                    coverCache[folder.id] = cover?.takeIf(String::isNotBlank)
+                }
+            }
+        }
+    }
+    // 换目录（parentId 变）或内容变化后把焦点交给第一格，遥控器一进页面就能直接操作。
+    LaunchedEffect(parentId, entries) {
+        if (entries.isEmpty()) return@LaunchedEffect
+        val target = entries.firstOrNull { it.id == focusReturnTo } ?: entries.first()
+        focusReturnTo = null
+        focusedKey = target.id
+        yield()
+        runCatching { gridFocus.requestFocus() }
+    }
+
+    /** 退一级目录：焦点落回刚进来的那个目录，而不是跳回第一格。 */
+    fun backOneLevel() {
+        focusReturnTo = stack.lastOrNull()?.id
+        stack = stack.dropLast(1)
+    }
+
+    // 只在本页栈深 > 0 时拦返回键：一次退一级目录；回到根目录后再按才交还全局（退出到「我的」）。
+    BackHandler(enabled = stack.isNotEmpty()) { backOneLevel() }
+
+    /** 播放整份目录，[startEntry] 为 null 表示从第一首开始（「播放全部」）。 */
+    fun play(startEntry: FolderEntry?) {
+        if (busy) return
+        busy = true
+        scope.launch {
+            try {
+                val all = runCatching { container.musicRepository.folderPlayableTracks(parentId) }
+                    .getOrDefault(emptyList())
+                    .filter(::isTrackPlayable)
+                if (all.isEmpty()) {
+                    Toast.makeText(context, "这个文件夹里没有可播放的歌曲", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                val startGuid = startEntry?.id
+                val startIndex = startGuid
+                    ?.let { guid -> all.indexOfFirst { it.guid.value == guid } }
+                    ?.takeIf { it >= 0 } ?: 0
+                // prepareQueue 内部只认前 250 首。这里先按点击位置截窗口，
+                // 否则点目录里第 300 首时它会被截掉，最后播成第 1 首。
+                val window = all.drop(startIndex).take(250)
+                val prepared = runCatching {
+                    container.musicRepository.prepareQueue(window, 0, 2)
+                }.getOrNull()
+                val playIndex = startGuid
+                    ?.let { guid -> prepared?.indexOfFirst { it.track.guid.value == guid } }
+                    ?.takeIf { it >= 0 } ?: 0
+                if (prepared.isNullOrEmpty()) {
+                    Toast.makeText(context, "取播放地址失败，请稍后重试", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                if (prepared[playIndex].streamUrl.isBlank()) {
+                    Toast.makeText(context, "取播放地址失败，请稍后重试", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                val transition = runCatching {
+                    container.playbackController.playQueue(prepared, playIndex)
+                }.getOrNull()
+                if (transition == null) {
+                    Toast.makeText(context, "播放失败，请稍后重试", Toast.LENGTH_SHORT).show()
+                } else {
+                    onOpenPlayer()
+                    runCatching { transition.awaitCommitted() }
+                }
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    Column(Modifier.fillMaxSize().padding(horizontal = 48.dp).padding(top = 12.dp, bottom = 28.dp)) {
+        // 返回入口一：面包屑，每一级都能聚焦点回去。
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FolderCrumb("我的", onClick = onBack)
+            FolderCrumbChevron()
+            FolderCrumb("文件夹", active = stack.isEmpty(), onClick = {
+                focusReturnTo = null
+                stack = emptyList()
+            })
+            // 路径太深时只展示最后两级，前面用「…」收掉，否则一行面包屑会被挤爆。
+            val shown = if (stack.size > 2) stack.takeLast(2) else stack
+            val offset = stack.size - shown.size
+            if (offset > 0) {
+                FolderCrumbChevron()
+                Text("…", color = FnColors.Muted, fontSize = FnType.Sub)
+            }
+            shown.forEachIndexed { index, folder ->
+                FolderCrumbChevron()
+                val level = offset + index
+                FolderCrumb(folder.name, active = level == stack.lastIndex, onClick = {
+                    // 跳到第 level 级：列表变成它自己的内容，焦点落在刚才所在的那个子目录上。
+                    focusReturnTo = stack.getOrNull(level + 1)?.id
+                    stack = stack.take(level + 1)
+                })
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.Bottom) {
+                Text(
+                    stack.lastOrNull()?.name ?: "文件夹",
+                    color = FnColors.Text,
+                    fontSize = 34.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(14.dp))
+                Text(
+                    if (loading) "读取目录中…" else "共 ${entries.size} 项",
+                    color = FnColors.Muted,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
+            }
+            Spacer(Modifier.width(18.dp))
+            if (entries.any { !it.isFolder }) {
+                FolderPill("播放全部") { play(null) }
+                Spacer(Modifier.width(10.dp))
+            }
+            // 返回入口二：右上角胶囊按钮，看着就是能按的东西。
+            if (stack.isNotEmpty()) {
+                FolderPill("‹ 返回上级") { backOneLevel() }
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
+            val availableWidthDp =
+                rememberCanvasWidthDp() - FnCanvas.MinSafeHorizontal.value * 2 - FnGrid.ContentInsetDp
+            val columns = FnGrid.columnsFor(availableWidthDp, targetCardWidth = FnGrid.PosterCardWidth)
+            val columnWidth = ((availableWidthDp - (columns - 1) * FnGrid.Gutter.value) / columns).dp
+            if (!loading && entries.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("这个文件夹里没有内容", color = FnColors.Muted, fontSize = FnType.Body)
+                }
+            } else {
+                LazyVerticalGrid(
+                    state = gridState,
+                    columns = GridCells.Fixed(columns),
+                    contentPadding = PaddingValues(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(FnGrid.Gutter),
+                    verticalArrangement = Arrangement.spacedBy(FnGrid.Gutter),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        // 整行吸附：底部只露出一条封面顶边时直接收掉，不出现「切边」。
+                        .height(catalogGridHeight(maxHeight, columnWidth + metrics.textBlock)),
+                ) {
+                    gridItemsIndexed(entries, key = { _, entry -> entry.id }) { _, entry ->
+                        val entryKey = entry.id
+                        val cardModifier = Modifier
+                            .then(if (focusedKey == entryKey) Modifier.focusRequester(gridFocus) else Modifier)
+                            .onFocusChanged { if (it.isFocused) focusedKey = entryKey }
+                        if (entry.isFolder) {
+                            FolderCard(
+                                name = entry.name,
+                                subtitle = entry.subtitle.ifBlank { "${entry.childCount} 首" },
+                                coverId = coverCache[entry.id],
+                                modifier = cardModifier,
+                            ) {
+                                focusReturnTo = null
+                                stack = stack + entry
+                            }
+                        } else {
+                            // folder-view/tracks 本身带 coverId；没有时专辑卡自己走歌名首字降级。
+                            AlbumPosterCard(
+                                title = entry.name,
+                                subtitle = entry.subtitle,
+                                coverId = entry.coverId,
+                                modifier = cardModifier,
+                            ) { play(entry) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FolderCrumb(label: String, active: Boolean = false, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    Text(
+        label,
+        color = if (focused || active) FnColors.Text else FnColors.Muted,
+        fontSize = FnType.Sub,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            // 目录名可能很长，限制单级宽度，整行面包屑不会被一段名字撑爆。
+            .widthIn(max = 220.dp)
+            .clip(RoundedCornerShape(FnRadius.sm))
+            .background(if (focused) FnColors.FocusFill else Color.Transparent)
+            .onFocusChanged { focused = it.isFocused }
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    )
+}
+
+@Composable
+private fun FolderCrumbChevron() {
+    Text("›", color = FnColors.Muted, fontSize = FnType.Sub, modifier = Modifier.padding(horizontal = 2.dp))
+}
+
+@Composable
+private fun FolderPill(label: String, onClick: () -> Unit) {
+    val shape = CircleShape
+    Button(
+        onClick = onClick,
+        shape = ButtonDefaults.shape(shape, shape, shape, shape, shape),
+        scale = ButtonDefaults.scale(focusedScale = 1f),
+        colors = lockupButtonColors(),
+        border = lockupButtonBorder(shape),
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
+    ) {
+        Text(label, color = FnColors.Text, fontSize = FnType.Label, maxLines = 1)
+    }
+}
+
+/**
+ * 文件夹卡：与 [AlbumPosterCard] 完全同构（1:1 方形图区 + 固定两行文字块），
+ * 只是把封面换成文件夹图标——同一行里文件夹和歌曲卡高度才会对齐。
+ */
+@Composable
+private fun FolderCard(
+    name: String,
+    subtitle: String,
+    coverId: String? = null,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val container = LocalAuthenticatedDependencies.current
+    val metrics = rememberAlbumPosterMetrics()
+    val shape = RoundedCornerShape(FnRadius.md)
+    val artworkShape = RoundedCornerShape(FnRadius.md)
+    var focused by remember { mutableStateOf(false) }
+    Button(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth().onFocusChanged { state ->
+            focused = state.isFocused
+            if (state.isFocused && coverId != null) {
+                container.artworkBitmapCache.prefetch(coverId, CoverVariant.Grid)
+            }
+        },
+        shape = ButtonDefaults.shape(shape, shape, shape, shape, shape),
+        scale = ButtonDefaults.scale(focusedScale = 1f),
+        colors = lockupButtonColors(),
+        border = invisibleButtonBorder(shape),
+        contentPadding = PaddingValues(0.dp),
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
+                if (coverId != null) {
+                    RemoteArtwork(
+                        container = container,
+                        coverId = coverId,
+                        variant = CoverVariant.Grid,
+                        modifier = Modifier.fillMaxSize(),
+                        shape = artworkShape,
+                        contentScale = ContentScale.Crop,
+                        placeholderContent = {
+                            Box(
+                                Modifier.fillMaxSize().clip(artworkShape).background(FnColors.SurfaceAlt),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                FolderGlyph(FnColors.Cyan, Modifier.fillMaxWidth(0.42f))
+                            }
+                        },
+                    )
+                } else {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .clip(artworkShape)
+                            // 还没取到目录封面时用比封面暗一档的实底，一眼能分清「这是目录」。
+                            .background(FnColors.SurfaceAlt),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        FolderGlyph(FnColors.Cyan, Modifier.fillMaxWidth(0.42f))
+                    }
+                }
+                if (focused) {
+                    Box(Modifier.fillMaxSize().border(FnFocus.ringWidth, FnFocus.ringColor, artworkShape))
+                }
+            }
+            Column(Modifier.fillMaxWidth().padding(top = AlbumPosterTextTop, bottom = AlbumPosterTextBottom)) {
+                Text(
+                    name,
+                    color = FnColors.Text,
+                    fontSize = AlbumPosterTitleSize,
+                    lineHeight = AlbumPosterTitleLineHeight,
+                    maxLines = AlbumPosterTitleLines,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth().height(metrics.titleBlock),
+                )
+                Text(
+                    subtitle,
+                    color = FnColors.Muted,
+                    fontSize = AlbumPosterArtistSize,
+                    lineHeight = AlbumPosterArtistLineHeight,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth().height(metrics.artistBlock),
+                )
+            }
+        }
+    }
+}
+
+/** 文件夹图标：两个圆角矩形（标签页 + 主体），颜色跟随主题，不依赖图标字体资源。 */
+@Composable
+private fun FolderGlyph(accent: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier.aspectRatio(1.25f)) {
+        val w = size.width
+        val h = size.height
+        val corner = CornerRadius(w * 0.08f)
+        // 标签页先画，主体压在它下半部分上，形成文件夹的折角轮廓。
+        drawRoundRect(
+            color = accent.copy(alpha = 0.72f),
+            topLeft = Offset(w * 0.06f, h * 0.12f),
+            size = Size(w * 0.44f, h * 0.24f),
+            cornerRadius = corner,
+        )
+        drawRoundRect(
+            color = accent,
+            topLeft = Offset(w * 0.04f, h * 0.26f),
+            size = Size(w * 0.92f, h * 0.62f),
+            cornerRadius = corner,
+        )
+    }
+}
+
 @Composable
 private fun BrowseMy(
     container: AuthenticatedAppDependencies,
@@ -2520,6 +2915,7 @@ private fun BrowseMy(
     onPlaylist: (Playlist) -> Unit,
     onArtist: (Artist) -> Unit,
     onAlbum: (Album) -> Unit,
+    onFolders: () -> Unit,
     onPlayer: () -> Unit,
 ) {
     val retainedStore = LocalLibraryRetainedState.current
@@ -2597,6 +2993,9 @@ private fun BrowseMy(
         com.yueyin.tv.core.model.connect.ConnectType.EMBY -> "Emby"
         else -> activeProfile.active?.type?.displayName.orEmpty()
     }
+    val foldersEnabled = activeProfile.active?.type?.let { type ->
+        type == ConnectType.FEINIU || type == ConnectType.JELLYFIN || type == ConnectType.EMBY
+    } ?: (session.server.guid.value != "local")
     // Dialog 是独立 Window，不会继承 YueYinTheme 里放大过的 LocalDensity；
     // 不透传就会导致弹层里 48dp 边距在 4K 上几乎贴边、560dp 输入框却占满屏（比例全乱）。
     Box(Modifier.fillMaxSize()) {
@@ -2713,6 +3112,12 @@ private fun BrowseMy(
                     downFocusRequester = FocusRequester.Cancel,
                     onFocused = { focusedKey = it },
                     borderless = true,
+                    extraTerminalEntry = if (foldersEnabled) {
+                        BandEntry("文件夹", "按目录浏览", null, BandKind.Library, "folders") {
+                            focusedKey = "folders"
+                            onFolders()
+                        }
+                    } else null,
                 )
             }
         }

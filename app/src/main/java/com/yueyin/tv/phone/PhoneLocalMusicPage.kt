@@ -276,7 +276,7 @@ internal fun PhoneLocalMusicPage(
 @Composable
 private fun LocalPermissionGuide(onGrant: () -> Unit, modifier: Modifier = Modifier) {
     Column(
-        modifier.padding(horizontal = PhoneSpace.screenHorizontal),
+        modifier.fillMaxWidth().padding(horizontal = PhoneSpace.screenHorizontal),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {

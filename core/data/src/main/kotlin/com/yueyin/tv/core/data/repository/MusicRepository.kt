@@ -2,14 +2,19 @@ package com.yueyin.tv.core.data.repository
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import android.util.Log
 import com.yueyin.tv.core.data.api.AlbumDto
 import com.yueyin.tv.core.data.api.ApiDecoder
 import com.yueyin.tv.core.data.api.ArtistDto
+import com.yueyin.tv.core.data.api.parseFolderCover
+import com.yueyin.tv.core.data.api.pickCoverId
+import com.yueyin.tv.core.data.api.parseFolderViewList
 import com.yueyin.tv.core.data.api.LyricListDto
 import com.yueyin.tv.core.data.api.PlaylistDetailDto
 import com.yueyin.tv.core.data.api.PlaylistDto
 import com.yueyin.tv.core.data.api.SharedLibraryDto
 import com.yueyin.tv.core.data.api.SortedPageListDto
+import com.yueyin.tv.core.data.api.TrimMusicApi
 import com.yueyin.tv.core.data.api.TrackDto
 import com.yueyin.tv.core.data.api.TrackMetadataDto
 import com.yueyin.tv.core.data.api.isRetryableRequestFailure
@@ -36,6 +41,8 @@ import com.yueyin.tv.core.model.SharedLibrary
 import com.yueyin.tv.core.model.Track
 import com.yueyin.tv.core.model.TrackGuid
 import com.yueyin.tv.core.model.connect.ConnectType
+import com.yueyin.tv.core.model.connect.supportsFolderBrowse
+import com.yueyin.tv.core.model.library.FolderEntry
 import com.yueyin.tv.core.model.playback.QueueSource
 import com.yueyin.tv.core.model.preferences.CacheUsage
 import com.yueyin.tv.core.lyrics.DefaultLyricsSources
@@ -68,6 +75,12 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 
 private const val MAX_ARTWORK_DOWNLOAD_BYTES = 20 * 1024 * 1024
+
+/** Media3 没有 ASF/WMA 提取器；这类格式优先请求服务端转码。 */
+private fun Track.needsServerTranscode(): Boolean =
+    audioFormat?.trim()?.lowercase()?.let { format ->
+        format.contains("wma") || format.contains("asf")
+    } ?: false
 private const val MAX_ARTWORK_EDGE = 8_192
 private const val MAX_ARTWORK_PIXELS = 16_000_000L
 private const val ARTWORK_VALIDATION_LONG_EDGE = 128
@@ -451,6 +464,9 @@ class MusicRepository internal constructor(
     )
     private val favoriteMutationMutex = Mutex()
 
+    /** 已登记转码会话的曲目 → HLS 播放列表地址；同一首重复 prepare 不再打服务端。 */
+    private val transcodeStreams = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     /**
      * 当前生效的协议数据源（非飞牛平台）。
      *
@@ -774,15 +790,138 @@ class MusicRepository internal constructor(
         withCurrentResourceRetry { trackMetadata(trackGuid) }
     }
 
+    /** 目录浏览：飞牛走 folder-view，Jellyfin/Emby 走各自协议；无能力平台返回空。 */
+    suspend fun folderEntries(parentId: String?): List<FolderEntry> {
+        val source = protocolSource
+        if (source != null) {
+            if (!source.type.supportsFolderBrowse) return emptyList()
+            return source.folderEntries(parentId)
+        }
+        val library = folderLibraryRoot("list") ?: return emptyList()
+        val parentPath = parentId?.takeIf { it.isNotBlank() } ?: library.path
+        return runCatching {
+            val entries = parseFolderViewList(api().folderViewList(library.guid, parentPath), parentId)
+            Log.i("YueyinFolder", "list parent=$parentPath count=${entries.size}")
+            entries
+        }.getOrElse { cause ->
+            Log.w(
+                "YueyinFolder",
+                "parent=$parentPath failed=${cause.javaClass.simpleName} error=${(cause as? AppException)?.error} msg=${cause.message}",
+            )
+            emptyList()
+        }
+    }
+
+    /** 目录封面：取该目录第一页音频里的一张，按路径哈希固定选中，不真随机。 */
+    suspend fun folderCover(folderPath: String): String? {
+        if (protocolSource != null) return null
+        val library = folderLibraryRoot("cover") ?: return null
+        return runCatching {
+            parseFolderCover(api().folderViewList(library.guid, folderPath), folderPath)
+                ?: run {
+                    // 容器目录（如「时光音乐会」「欧美音乐」）本层只有子文件夹、没有 tracks。
+                    // playable-tracks 会递归包含子目录里的歌曲，用它兜底一次即可覆盖多层目录。
+                    val tracks = api().folderViewPlayableTracks(library.guid, folderPath)
+                    val cover = pickCoverId(tracks.mapNotNull(TrackDto::coverId).distinct(), folderPath)
+                    Log.i(
+                        "YueyinFolder",
+                        "cover fallback parent=$folderPath tracks=${tracks.size} cover=${cover ?: "none"}",
+                    )
+                    cover
+                }
+        }.getOrElse { cause ->
+            Log.w(
+                "YueyinFolder",
+                "cover parent=$folderPath failed=${cause.javaClass.simpleName} error=${(cause as? AppException)?.error}",
+            )
+            null
+        }
+    }
+
+    /** 播放整个目录（含子目录，服务端上限 1000 首）；协议平台暂不提供。 */
+    suspend fun folderPlayableTracks(parentId: String?): List<Track> {
+        if (protocolSource != null) return emptyList()
+        val library = folderLibraryRoot("playable") ?: return emptyList()
+        val parentPath = parentId?.takeIf { it.isNotBlank() } ?: library.path
+        return runCatching {
+            api().folderViewPlayableTracks(library.guid, parentPath).map { it.toDomain() }
+        }.getOrElse { cause ->
+            Log.w(
+                "YueyinFolder",
+                "playable parent=$parentPath failed=${cause.javaClass.simpleName} error=${(cause as? AppException)?.error} msg=${cause.message}",
+            )
+            emptyList()
+        }
+    }
+
+    /**
+     * 文件夹视图要「共享库 GUID + 该库在 NAS 上的绝对路径」两件东西。
+     * 路径来自 shared-library/list 的 path 字段，缺任一项都无法发起请求，
+     * 这里统一取一次并把缺失原因打进日志，避免上层只看到「共 0 项」。
+     */
+    private suspend fun folderLibraryRoot(tag: String): SharedLibraryDto? {
+        val libraries = runCatching { session.authenticated { it.sharedLibraries() } }
+            .getOrElse { cause ->
+                Log.w("YueyinFolder", "$tag shared-library failed=${cause.javaClass.simpleName} msg=${cause.message}")
+                return null
+            }
+        // 优先挑可用的音乐库（accessStatus==0），否则退回第一个。
+        val library = libraries.firstOrNull { it.accessStatus == 0 && it.path.isNotBlank() }
+            ?: libraries.firstOrNull { it.path.isNotBlank() }
+            ?: libraries.firstOrNull()
+        if (library == null) {
+            Log.w("YueyinFolder", "$tag shared-library 为空，共 ${libraries.size} 个")
+            return null
+        }
+        if (library.guid.isBlank() || library.path.isBlank()) {
+            Log.w(
+                "YueyinFolder",
+                "$tag 共享库缺字段 guid='${library.guid}' path='${library.path}' name='${library.name}' 共 ${libraries.size} 个库",
+            )
+            return null
+        }
+        return library
+    }
+
+    private fun api() = session.requireApi()
+
+    /**
+     * WMA/ASF 这类 Media3 没有提取器的容器：先 POST 登记服务端转码会话，再取 HLS 播放列表。
+     * 失败返回 null，由调用方退回原始 stream 直链（至少能给出「格式不支持」的正确提示，
+     * 而不是把一个 404/HTML 当音频硬解）。
+     */
+    private suspend fun transcodeStream(api: TrimMusicApi, guid: String): String? {
+        transcodeStreams[guid]?.let { return it }
+        return runCatching {
+            val session = api.transcodeSession(guid)
+            val url = api.transcodePlaylistUrl(guid, session.url).toString()
+            Log.i("YueyinTranscode", "guid=$guid status=${session.status} url=$url")
+            transcodeStreams[guid] = url
+            url
+        }.getOrElse { cause ->
+            Log.w(
+                "YueyinTranscode",
+                "guid=$guid failed=${cause.javaClass.simpleName} error=${(cause as? AppException)?.error}",
+            )
+            null
+        }
+    }
+
     suspend fun prepare(track: Track): PlaybackTrack {
         protocolSource?.let { return it.prepare(track) }
         if (track.accessStatus != null && track.accessStatus != 0) throw AppException(AppError.UnavailableTrack)
         val refreshed = trackMetadata(track.guid.value)
         if (refreshed.isCue) throw AppException(AppError.TranscodeUnavailable)
         val api = session.requireApi()
+        val stream = if (refreshed.needsServerTranscode()) {
+            transcodeStream(api, refreshed.guid.value)
+                ?: api.streamUrl(refreshed.guid.value).toString()
+        } else {
+            api.streamUrl(refreshed.guid.value).toString()
+        }
         return PlaybackTrack(
             refreshed,
-            api.streamUrl(refreshed.guid.value).toString(),
+            stream,
             refreshed.coverId?.let { api.coverUrl(it, CoverVariant.Player.width).toString() },
         )
     }
@@ -804,14 +943,19 @@ class MusicRepository internal constructor(
             .filter { it.accessStatus == null || it.accessStatus == 0 }
             .filterNot(Track::isCue)
             .take(250)
+            .toList()
             .map { track ->
+                val stream = if (track.needsServerTranscode()) {
+                    transcodeStream(api, track.guid.value) ?: api.streamUrl(track.guid.value).toString()
+                } else {
+                    api.streamUrl(track.guid.value).toString()
+                }
                 PlaybackTrack(
                     track,
-                    api.streamUrl(track.guid.value).toString(),
+                    stream,
                     track.coverId?.let { api.coverUrl(it, CoverVariant.Player.width).toString() },
                 )
             }
-            .toList()
     }
 
     suspend fun lyrics(trackGuid: String): Pair<LyricDocument?, SyncedLyrics?> {

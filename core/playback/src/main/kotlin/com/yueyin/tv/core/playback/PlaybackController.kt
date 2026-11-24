@@ -16,6 +16,7 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionToken
+import com.yueyin.tv.core.data.api.TrimMusicApi
 import com.yueyin.tv.core.model.AppError
 import com.yueyin.tv.core.model.AppException
 import com.yueyin.tv.core.model.PlaybackCredentials
@@ -105,6 +106,10 @@ class PlaybackController(
     private var restored = false
     private var generation = 0L
     private var snapshotRevision = 0L
+
+    /** 起播分段计时：只记最后一次提交，STATE_READY 时打出提交→出声耗时。 */
+    private var startRequestAt = 0L
+    private var startRequestId: String? = null
     private var presentationRevision = 0L
     private var lastPresentationKey: PresentationKey? = null
     private var lastSnapshotAt = 0L
@@ -246,6 +251,15 @@ class PlaybackController(
         override fun onPlaybackStateChanged(playbackState: Int) {
             val player = controller ?: return
             if (playbackState == Player.STATE_READY) {
+                val id = player.currentMediaItem?.mediaId
+                if (id != null && id == startRequestId && startRequestAt > 0L) {
+                    Log.d(
+                        "YueyinStart",
+                        "submitted->ready=${SystemClock.elapsedRealtime() - startRequestAt}ms id=$id",
+                    )
+                    startRequestAt = 0L
+                    startRequestId = null
+                }
                 consecutivePlaybackFailures = 0
                 // 这一首已经正常出声了：清掉「已自动重取过」的标记，
                 // 否则它下次（比如拖进度、循环回来）再失败就不会自愈了。
@@ -382,14 +396,18 @@ class PlaybackController(
         // 用户看到的就是「退出再进等于从头开始 / 播过的歌播不了」。
         if (credentials.rawAuthorization.isBlank()) {
             Log.i("YueyinPlayback", "configure: 无 token（本地/协议会话），跳过鉴权直接恢复队列")
+            TrimMusicApi.applyPlaybackTls(false, null, null)
             onAuthConfigured(player, credentials, configureGeneration, configured = true)
             return
         }
         val args = Bundle().apply {
             putString(PlaybackCommands.Token, credentials.rawAuthorization)
             putString(PlaybackCommands.CacheNamespace, credentials.cacheNamespace)
+            putString(PlaybackCommands.ApiBase, credentials.apiBase)
             putString(PlaybackCommands.AccessCode, credentials.accessCodeHeader)
             putBoolean(PlaybackCommands.RelayMode, credentials.relayMode)
+            putBoolean(PlaybackCommands.AllowSelfSigned, credentials.allowSelfSigned)
+            putString(PlaybackCommands.CertFingerprint, credentials.certFingerprint)
         }
         val future = player.sendCustomCommand(PlaybackCommands.ConfigureAuthCommand, args)
         future.addListener(
@@ -487,6 +505,10 @@ class PlaybackController(
         failedDirection = null
         queueError = null
         val selectedReady = tracks[selected].streamUrl.isNotBlank()
+        if (selectedReady && autoPlay) {
+            startRequestAt = SystemClock.elapsedRealtime()
+            startRequestId = tracks[selected].track.guid.value
+        }
         // 空 URI 绝不能进加载路径：ExoPlayer 会把 "" 当 URL 去发请求，
         // 抛 MalformedURLException: no protocol。
         // 只 pause 不够：播放器已经处于 prepared 状态（例如启动时恢复了上次队列）时，

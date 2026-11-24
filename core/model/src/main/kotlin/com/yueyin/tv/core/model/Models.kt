@@ -109,6 +109,8 @@ data class PlaybackCredentials(
     val cacheNamespace: String,
     val accessCodeHeader: String? = null,
     val relayMode: Boolean = false,
+    val allowSelfSigned: Boolean = false,
+    val certFingerprint: String? = null,
 )
 
 data class PlaybackTrack(

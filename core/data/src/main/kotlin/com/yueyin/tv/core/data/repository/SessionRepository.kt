@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 
 data class LoginHistoryEntry(
@@ -50,6 +51,8 @@ data class LoginDraft(
     val useHttps: Boolean,
     val accessCode: String,
     val hasSavedPassword: Boolean = true,
+    val allowSelfSigned: Boolean = false,
+    val certFingerprint: String? = null,
 )
 
 sealed interface SessionState {
@@ -88,6 +91,11 @@ class SessionRepository internal constructor(
     private var memoryToken: String? = null
     private var memoryAccessCode: String? = null
     private var memoryProfileId: String? = null
+    private var memoryAllowSelfSigned = false
+    private var memoryCertFingerprint: String? = null
+    private val _trustedCertFingerprint = MutableStateFlow<String?>(null)
+    /** 最近一次被显式信任的证书指纹，登录页可展示给用户。 */
+    val trustedCertFingerprint: StateFlow<String?> = _trustedCertFingerprint.asStateFlow()
     private var rememberedCredentialsLoaded = false
     private var secureSessionUnreadable = false
     @Volatile private var securePayload = SecureSessionPayload()
@@ -154,6 +162,7 @@ class SessionRepository internal constructor(
         password: CharArray,
         remember: Boolean,
         accessCode: CharArray = charArrayOf(),
+        allowSelfSigned: Boolean = false,
     ) {
         try {
             loadRememberedCredentials()
@@ -165,6 +174,7 @@ class SessionRepository internal constructor(
                 passwordHash = passwordHash,
                 remember = remember,
                 accessCode = accessCode.concatToString(),
+                allowSelfSigned = allowSelfSigned,
             )
         } finally {
             password.fill('\u0000')
@@ -192,6 +202,8 @@ class SessionRepository internal constructor(
                 accessCode = accessCode?.concatToString() ?: profile.accessCode.orEmpty(),
                 restoredRelayMode = profile.relayMode,
                 existingProfileId = profile.id,
+                allowSelfSigned = profile.allowSelfSigned,
+                certFingerprint = profile.certFingerprint,
             )
         } catch (cause: CancellationException) {
             throw cause
@@ -214,6 +226,8 @@ class SessionRepository internal constructor(
             useHttps = editable.useHttps,
             accessCode = profile.accessCode.orEmpty(),
             hasSavedPassword = PasswordHash.parse(profile.passwordSha256) != null,
+            allowSelfSigned = profile.allowSelfSigned,
+            certFingerprint = profile.certFingerprint,
         )
     }
 
@@ -319,6 +333,8 @@ class SessionRepository internal constructor(
             cacheNamespace = "${current.server.guid.value}:${current.user.guid.value}",
             accessCodeHeader = connectionAccess.encodedAccessCode,
             relayMode = connectionAccess.relayMode,
+            allowSelfSigned = memoryAllowSelfSigned,
+            certFingerprint = memoryCertFingerprint,
         )
     }
 
@@ -365,7 +381,14 @@ class SessionRepository internal constructor(
 
     private suspend fun restoreAttempt(targetServer: String, profile: StoredLoginProfile?) {
         val accessCode = profile?.accessCode.orEmpty().ifBlank { memoryAccessCode.orEmpty() }
-        val connected = connect(targetServer, useHttps = false, accessCode, profile?.relayMode ?: savedRelayMode)
+        val connected = connect(
+            targetServer,
+            useHttps = false,
+            accessCode,
+            restoredRelayMode = profile?.relayMode ?: savedRelayMode,
+            allowSelfSigned = profile?.allowSelfSigned ?: false,
+            certFingerprint = profile?.certFingerprint,
+        )
         val token = memoryToken
         if (token != null) {
             try {
@@ -398,8 +421,17 @@ class SessionRepository internal constructor(
         accessCode: String,
         restoredRelayMode: Boolean? = null,
         existingProfileId: String? = null,
+        allowSelfSigned: Boolean = false,
+        certFingerprint: String? = null,
     ) {
-        val connected = connect(serverInput, useHttps, accessCode, restoredRelayMode)
+        val connected = connect(
+            serverInput,
+            useHttps,
+            accessCode,
+            restoredRelayMode,
+            allowSelfSigned,
+            certFingerprint,
+        )
         val result = connected.api.login(username, passwordHash, deviceId)
         memoryToken = result.userToken
         memoryAccessCode = accessCode.takeIf(String::isNotBlank)
@@ -418,6 +450,8 @@ class SessionRepository internal constructor(
                 accessCode = accessCode.takeIf(String::isNotBlank),
                 userToken = result.userToken,
                 lastUsedAt = clock(),
+                allowSelfSigned = allowSelfSigned,
+                certFingerprint = connected.certFingerprint,
             )
             memoryProfileId = profile.id
             persistProfile(profile, makeActive = true)
@@ -448,9 +482,20 @@ class SessionRepository internal constructor(
         useHttps: Boolean,
         accessCode: String,
         restoredRelayMode: Boolean? = null,
+        allowSelfSigned: Boolean = false,
+        certFingerprint: String? = null,
     ): ConnectedServer {
         try {
-            val client = clientFactory()
+            TrimMusicApi.lastAcceptedFingerprint = null
+            val host = runCatching {
+                (if (input.contains("://")) input else "https://$input")
+                    .toHttpUrlOrNull()?.host
+            }.getOrNull()
+            val client = if (allowSelfSigned) {
+                TrimMusicApi.client(allowSelfSigned = true, host = host, pin = certFingerprint)
+            } else {
+                clientFactory()
+            }
             val resolver = ConnectionResolver(client)
             val target = if (restoredRelayMode == null) {
                 resolver.resolve(input, useHttps)
@@ -461,7 +506,17 @@ class SessionRepository internal constructor(
             }
             val access = resolver.verifyAccessCode(target, accessCode)
             val candidate = TrimMusicApi(target.server, client, { memoryToken }, access)
-            return ConnectedServer(target.server, candidate.systemConfig().toDomain(), candidate, access)
+            val accepted = TrimMusicApi.lastAcceptedFingerprint
+            memoryAllowSelfSigned = allowSelfSigned
+            memoryCertFingerprint = certFingerprint ?: accepted
+            if (!accepted.isNullOrBlank()) _trustedCertFingerprint.value = accepted
+            return ConnectedServer(
+                target.server,
+                candidate.systemConfig().toDomain(),
+                candidate,
+                access,
+                certFingerprint = certFingerprint ?: accepted,
+            )
         } catch (cause: IOException) {
             throw AppException(AppError.NetworkUnavailable, cause)
         }
@@ -576,6 +631,7 @@ class SessionRepository internal constructor(
         val server: ServerIdentity,
         val api: TrimMusicApi,
         val access: ConnectionAccess,
+        val certFingerprint: String? = null,
     )
 
     private companion object {

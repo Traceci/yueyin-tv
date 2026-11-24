@@ -11,6 +11,9 @@ internal object PlaybackCommands {
     const val AccessCode = "access_code"
     const val RelayMode = "relay_mode"
     const val CacheNamespace = "cache_namespace"
+    const val ApiBase = "api_base"
+    const val AllowSelfSigned = "allow_self_signed"
+    const val CertFingerprint = "cert_fingerprint"
     const val MediaIds = "media_ids"
     const val SnapshotRevision = "snapshot_revision"
     val ConfigureAuthCommand = SessionCommand(ConfigureAuth, android.os.Bundle.EMPTY)

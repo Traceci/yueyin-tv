@@ -1,5 +1,7 @@
 package com.yueyin.tv.phone
 
+import android.os.SystemClock
+import android.util.Log
 import com.yueyin.tv.AppUiDependencies
 import com.yueyin.tv.core.model.PlaybackTrack
 import com.yueyin.tv.core.model.Track
@@ -30,9 +32,9 @@ internal object PhonePlayback {
     /**
      * 起播一组曲目。
      *
-     * 只给「要立刻播的那首 + 下一首」取直链，其余先空着在后台补：
+     * 同步只给「要立刻播的那首」取直链，其余先空着在后台补：
      * 在线音源每首取链要过一次隐藏 WebView 的脚本 + 一次探活（约 300ms），
-     * 整页 50 首一次性取完要 15 秒以上，用户点完「播放全部」会以为没反应。
+     * 以前连下一首一起同步取，第一声要等两首串完；现在下一首在队列提交后由 fillUrls 补。
      *
      * @return 队列是否已提交给播放器。false 表示没有可播曲目（全是 CUE / 无版权 / 取链全失败）。
      */
@@ -43,6 +45,7 @@ internal object PhonePlayback {
         backgroundScope: CoroutineScope,
         shuffle: Boolean = false,
     ): Boolean {
+        val tapAt = SystemClock.elapsedRealtime()
         val playable = tracks.filter(::isPlayable)
         if (playable.isEmpty()) return false
         // 随机起播：起点也从可播曲目里随机挑一首，而不是固定第 0 首。
@@ -51,10 +54,17 @@ internal object PhonePlayback {
         val target = if (shuffle) playable.random() else (tracks.getOrNull(startIndex) ?: return false)
         val playableIndex = playable.indexOfFirst { it.guid == target.guid }.coerceAtLeast(0)
 
+        // 同步只取当前首。以前取 2 首（单 WebView 串行），第一声要等第二首取完；
+        // 下一首由提交后的 fillUrls 在后台补，用户听到声音不再被它拖住。
         var queue = withContext(Dispatchers.IO) {
-            runCatching { deps.musicRepository.prepareQueue(playable, playableIndex, 2) }
+            runCatching { deps.musicRepository.prepareQueue(playable, playableIndex, 1) }
                 .getOrDefault(emptyList())
         }
+        val preparedAt = SystemClock.elapsedRealtime()
+        Log.d(
+            "YueyinStart",
+            "tap->prepared=${preparedAt - tapAt}ms tracks=${playable.size} prepared=${queue.size}",
+        )
         if (queue.isEmpty()) return false
         // 用 guid 反查，不用 playableIndex：`prepareQueue` 会过滤掉不可播与 CUE 条目，
         // 下标会整体前移。按 guid 找回来才是当前这首在队列里的真实位置。
@@ -74,6 +84,10 @@ internal object PhonePlayback {
         }
 
         val submitted = deps.playbackController.playQueue(queue, currentIndex) != null
+        Log.d(
+            "YueyinStart",
+            "prepared->submitted=${SystemClock.elapsedRealtime() - preparedAt}ms submitted=$submitted id=${target.guid.value}",
+        )
         if (!submitted) return false
 
         // 起播成功后切到随机模式。放后台重试而不是在这里同步等：

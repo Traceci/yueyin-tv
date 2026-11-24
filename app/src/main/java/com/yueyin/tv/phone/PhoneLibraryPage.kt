@@ -1,8 +1,10 @@
 package com.yueyin.tv.phone
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.border
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,6 +12,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -46,23 +49,31 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.Text
+import com.yueyin.tv.core.data.repository.MusicRepository
 import com.yueyin.tv.core.model.Album
 import com.yueyin.tv.core.model.AppError
 import com.yueyin.tv.core.model.AppException
 import com.yueyin.tv.core.model.Artist
+import com.yueyin.tv.core.model.connect.supportsFolderBrowse
+import com.yueyin.tv.core.model.library.FolderEntry
 import com.yueyin.tv.core.model.Page
 import com.yueyin.tv.core.model.Playlist
 import com.yueyin.tv.core.model.Track
+import com.yueyin.tv.core.model.TrackGuid
 import com.yueyin.tv.core.model.library.LibraryCapabilities
 import com.yueyin.tv.core.model.library.LibraryCapability
 import com.yueyin.tv.ui.FnColors
 import com.yueyin.tv.ui.LibraryRetainedStateStore
 import com.yueyin.tv.ui.LibraryRoute
 import com.yueyin.tv.ui.RetainedPagedGridState
+import com.yueyin.tv.ui.retainLoadedList
 import com.yueyin.tv.ui.retainLoadedPage
+import com.yueyin.tv.ui.shouldLoadInitialList
 import com.yueyin.tv.ui.shouldLoadInitialPage
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /**
  * 曲库的五个分段。
@@ -79,6 +90,7 @@ internal enum class PhoneLibrarySegment(val label: String) {
     Playlists("歌单"),
     Tracks("歌曲"),
     Favorites("收藏"),
+    Folders("文件夹"),
 }
 
 internal fun LibraryRoute.librarySegmentOrNull(): PhoneLibrarySegment? = when (this) {
@@ -87,6 +99,7 @@ internal fun LibraryRoute.librarySegmentOrNull(): PhoneLibrarySegment? = when (t
     LibraryRoute.AllPlaylists -> PhoneLibrarySegment.Playlists
     LibraryRoute.AllTracks -> PhoneLibrarySegment.Tracks
     LibraryRoute.Favorites -> PhoneLibrarySegment.Favorites
+    LibraryRoute.Folders -> PhoneLibrarySegment.Folders
     else -> null
 }
 
@@ -113,6 +126,8 @@ internal fun PhoneLibraryPage(
     }
     // 本地音乐入口受能力开关控制；关掉时整条来源切换行都不出现，在线曲库维持原样。
     val localEnabled = LibraryCapabilities.has(LibraryCapability.LocalMusic)
+    // 飞牛一方协议没有 protocolSource；有协议源时按 ConnectType 能力判断。
+    val foldersEnabled = deps.musicRepository.activeProtocolSource?.type?.supportsFolderBrowse ?: true
     var localSelected by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
         PhonePageTitle(
@@ -134,7 +149,9 @@ internal fun PhoneLibraryPage(
             // 选中态只有一份真相：路由（`segment`）。点分段条、从首页「全部 ›」进来都改路由，
             // Pager 只负责滑动表现，两个方向用 LaunchedEffect 来回同步——各自存一份状态的话，
             // 「滑过去」和「点过去」早晚会出现分段条高亮跟内容对不上的情况。
-            val segments = PhoneLibrarySegment.entries
+            val segments = PhoneLibrarySegment.entries.filter {
+                it != PhoneLibrarySegment.Folders || foldersEnabled
+            }
             val pagerState = rememberPagerState(initialPage = segment.ordinal) { segments.size }
             // 分段条的高亮完全跟着 Pager 的滚动进度走，而不是等路由回写：
             // 拖动到两页之间时横条就应该停在两格之间，松手后自然落到目标格。
@@ -161,7 +178,7 @@ internal fun PhoneLibraryPage(
                         if (target != currentSegment.value) onSelectSegment(target)
                     }
             }
-            SegmentBar(pageProgress = pageProgress, onSelect = onSelectSegment)
+            SegmentBar(segments = segments, pageProgress = pageProgress, onSelect = onSelectSegment)
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize().padding(horizontal = PhoneSpace.screenHorizontal),
@@ -227,6 +244,196 @@ internal fun PhoneLibraryPage(
                         favoriteStatuses = favoriteLibrary.statuses,
                         onToggleFavorite = toggleFavorite,
                     )
+
+                    PhoneLibrarySegment.Folders -> PhoneFolderPage(
+                        repository = deps.musicRepository,
+                        onPlayTracks = onPlayTracks,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 目录浏览页：与专辑页同一套网格；点文件夹进入，点歌曲或「播放全部」加入播放队列。 */
+@Composable
+private fun PhoneFolderPage(
+    repository: MusicRepository,
+    onPlayTracks: (List<Track>, Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val store = LocalPhoneStore.current
+    val stack = store.folderStack
+    val parentId = stack.lastOrNull()?.id
+    val keySuffix = parentId ?: "<root>"
+    val entriesKey = "phone:folder:entries:$keySuffix"
+    val playableKey = "phone:folder:playable:$keySuffix"
+    val entryState = store.list<FolderEntry>(entriesKey)
+    val playableState = store.list<Track>(playableKey)
+    val gridState = rememberLazyGridState(
+        initialFirstVisibleItemIndex = store.folderScroll(entriesKey),
+    )
+    val entries = entryState.snapshot.entries
+    val playable = playableState.snapshot.entries
+    val coverCache = store.folderCovers
+
+    fun backOneLevel() {
+        store.folderStack = stack.dropLast(1)
+    }
+
+    fun play(entry: FolderEntry) {
+        val index = playable.indexOfFirst { it.guid.value == entry.id }
+        if (index >= 0) {
+            onPlayTracks(playable, index)
+            return
+        }
+        // 服务端 playable-tracks 有 1000 首上限；超限时用目录行自己的完整元数据兜底。
+        onPlayTracks(
+            listOf(
+                Track(
+                    guid = TrackGuid(entry.id),
+                    title = entry.name,
+                    artistName = entry.artistName,
+                    albumName = entry.albumName,
+                    coverId = entry.coverId,
+                    durationMs = entry.durationMs,
+                    isCue = false,
+                ),
+            ),
+            0,
+        )
+    }
+
+    BackHandler(enabled = stack.isNotEmpty()) { backOneLevel() }
+
+    LaunchedEffect(entriesKey) {
+        if (shouldLoadInitialList(entryState.snapshot)) {
+            entryState.loading = true
+            entryState.snapshot = retainLoadedList(
+                entryState.snapshot,
+                runCatching { repository.folderEntries(parentId) }.getOrDefault(emptyList()),
+            )
+            entryState.loading = false
+        }
+        if (shouldLoadInitialList(playableState.snapshot)) {
+            playableState.loading = true
+            playableState.snapshot = retainLoadedList(
+                playableState.snapshot,
+                runCatching { repository.folderPlayableTracks(parentId) }.getOrDefault(emptyList()),
+            )
+            playableState.loading = false
+        }
+    }
+    // 目录封面异步补：最多 3 个并发，不挡首屏；按 path 缓存，返回上层不会重新拉。
+    LaunchedEffect(entries) {
+        val pending = entries.filter { it.isFolder && !coverCache.containsKey(it.id) }
+        if (pending.isEmpty()) return@LaunchedEffect
+        val gate = Semaphore(3)
+        pending.forEach { folder ->
+            launch {
+                gate.withPermit {
+                    val cover = runCatching { repository.folderCover(folder.id) }.getOrNull()
+                    coverCache[folder.id] = cover?.takeIf(String::isNotBlank)
+                }
+            }
+        }
+    }
+    LaunchedEffect(entriesKey, entryState.snapshot.initialLoadCompleted) {
+        if (entryState.snapshot.initialLoadCompleted) {
+            gridState.scrollToItem(store.folderScroll(entriesKey))
+        }
+    }
+    LaunchedEffect(entriesKey, gridState) {
+        snapshotFlow { gridState.firstVisibleItemIndex }.collect { index ->
+            store.setFolderScroll(entriesKey, index)
+        }
+    }
+
+    Column(modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "我的",
+                color = FnColors.Muted,
+                fontSize = PhoneType.Micro,
+                modifier = Modifier.clickable { store.folderStack = emptyList() },
+            )
+            Text(" › ", color = FnColors.Muted, fontSize = PhoneType.Micro)
+            Text(
+                "文件夹",
+                color = if (stack.isEmpty()) FnColors.Coral else FnColors.Muted,
+                fontSize = PhoneType.Micro,
+                modifier = Modifier.clickable { store.folderStack = emptyList() },
+            )
+            stack.forEachIndexed { index, folder ->
+                Text(" › ", color = FnColors.Muted, fontSize = PhoneType.Micro)
+                Text(
+                    folder.name,
+                    color = if (index == stack.lastIndex) FnColors.Coral else FnColors.Muted,
+                    fontSize = PhoneType.Micro,
+                    maxLines = 1,
+                    modifier = Modifier.clickable { store.folderStack = stack.take(index + 1) },
+                )
+            }
+        }
+        Spacer(Modifier.height(PhoneSpace.sm))
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                if (entryState.loading && entries.isEmpty()) "读取目录中…" else "共 ${entries.size} 项",
+                color = FnColors.Muted,
+                fontSize = PhoneType.Caption,
+                modifier = Modifier.weight(1f),
+            )
+            if (stack.isNotEmpty()) {
+                Text(
+                    "‹ 返回上级",
+                    color = FnColors.Coral,
+                    fontSize = PhoneType.Caption,
+                    modifier = Modifier
+                        .padding(horizontal = PhoneSpace.sm)
+                        .clickable { backOneLevel() },
+                )
+            }
+            if (playable.isNotEmpty()) {
+                Text(
+                    "播放全部",
+                    color = FnColors.Coral,
+                    fontSize = PhoneType.Caption,
+                    modifier = Modifier.clickable { onPlayTracks(playable, 0) },
+                )
+            }
+        }
+        LazyVerticalGrid(
+            state = gridState,
+            columns = GridCells.Fixed(LocalPhoneWindow.current.gridColumns),
+            contentPadding = PaddingValues(top = PhoneSpace.sm, bottom = PhoneSpace.xxl),
+            horizontalArrangement = Arrangement.spacedBy(PhoneSpace.md),
+            verticalArrangement = Arrangement.spacedBy(PhoneSpace.lg),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            items(entries, key = { it.id }) { entry ->
+                PhoneFolderCard(
+                    entry = entry,
+                    folderCoverId = coverCache[entry.id],
+                    onClick = {
+                        if (entry.isFolder) store.folderStack = stack + entry else play(entry)
+                    },
+                )
+            }
+            if (entries.isEmpty() && !entryState.loading) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    PhoneEmptyState(
+                        title = "这个文件夹里没有内容",
+                        caption = "换一个目录看看",
+                    )
                 }
             }
         }
@@ -241,8 +448,11 @@ internal fun PhoneLibraryPage(
  * `currentPage + currentPageOffsetFraction`，是同一个手势的连续量。
  */
 @Composable
-private fun SegmentBar(pageProgress: Float, onSelect: (PhoneLibrarySegment) -> Unit) {
-    val segments = PhoneLibrarySegment.entries
+private fun SegmentBar(
+    segments: List<PhoneLibrarySegment>,
+    pageProgress: Float,
+    onSelect: (PhoneLibrarySegment) -> Unit,
+) {
     val activeIndex = pageProgress.roundToInt().coerceIn(0, segments.size - 1)
     Column {
         Row(Modifier.fillMaxWidth().padding(horizontal = PhoneSpace.screenHorizontal)) {
