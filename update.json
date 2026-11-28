@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
   "packageName": "com.yueyin.tv",
-  "versionName": "2.1.6",
-  "versionCode": 45,
-  "title": "悦音 2.1.6",
-  "notes": "# 悦音 2.1.6\n\n## 新增\n\n1. 2 端增加飞牛音乐文件夹访问功能，入口：手机端 曲库；电视端-我的。\n2. 文件夹增加封面功能。\n\n## 改进\n\n1. 加快冷启动，点播起播速度。\n2. 优化 HTTPS 签名证书问题，解决个别情况下 HTTPS 登录失败情况。\n3. 调优部分界面不协调情况。",
+  "versionName": "2.1.7",
+  "versionCode": 46,
+  "title": "悦音 2.1.7",
+  "notes": "# 悦音 2.1.7\n\n## 新增\n\n1. 手机端-本地曲库，采用文件夹模式显示，更直观\n\n## 改进\n\n1. 电视端文件夹的显示方式改变，同步修复遥控器操作焦点问题\n2. 其它细节优化",
   "apk": {
-    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v2.1.6/yueyin-2.1.6-release.apk",
-    "size": 8160310,
-    "sha256": "3c78d32df4403eb62bd4ab199a630ed796be2aa2eb742b6f720eca3895571be4"
+    "url": "https://github.com/Traceci/yueyin-tv/releases/download/v2.1.7/yueyin-2.1.7-release.apk",
+    "size": 8176641,
+    "sha256": "70a0e732f104bf3c69aa8b5abde11f2cd591ed2e222d9207630c7b27eb442ba7"
   },
-  "publishedAt": "2026-11-24T03:55:00Z",
-  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v2.1.6"
+  "publishedAt": "2026-11-28T03:01:28Z",
+  "githubReleaseUrl": "https://github.com/Traceci/yueyin-tv/releases/tag/v2.1.7"
 }
